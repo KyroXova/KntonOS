@@ -6,13 +6,15 @@
 pub mod virtio_gpu;
 
 pub use virtio_gpu::{
-    test_virtio_gpu_packet_structures, VirtioGpuCtrlHdr, VirtioGpuCursorPos, VirtioGpuDisplayOne,
-    VirtioGpuGetEdid, VirtioGpuMemEntry, VirtioGpuRect, VirtioGpuResourceAttachBackingHeader,
-    VirtioGpuResourceCreate2D, VirtioGpuResourceDetachBacking, VirtioGpuResourceFlush,
-    VirtioGpuResourceUnref, VirtioGpuRespDisplayInfo, VirtioGpuRespEdid, VirtioGpuSetScanout,
-    VirtioGpuTransferToHost2D, VirtioGpuUpdateCursor, PCI_DEVICE_ID_VIRTIO_GPU,
-    VIRTIO_GPU_CMD_GET_CAPSET, VIRTIO_GPU_CMD_GET_CAPSET_INFO, VIRTIO_GPU_CMD_GET_DISPLAY_INFO,
-    VIRTIO_GPU_CMD_GET_EDID, VIRTIO_GPU_CMD_MOVE_CURSOR, VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING,
+    test_gpu_command_submit_and_resource_allocation, test_virtio_gpu_packet_structures,
+    VirtioGpuCtrlHdr, VirtioGpuCursorPos, VirtioGpuDevice, VirtioGpuDisplayOne, VirtioGpuError,
+    VirtioGpuGetEdid, VirtioGpuMemEntry, VirtioGpuRect, VirtioGpuResource2D,
+    VirtioGpuResourceAttachBackingHeader, VirtioGpuResourceCreate2D,
+    VirtioGpuResourceDetachBacking, VirtioGpuResourceFlush, VirtioGpuResourceUnref,
+    VirtioGpuRespDisplayInfo, VirtioGpuRespEdid, VirtioGpuSetScanout, VirtioGpuTransferToHost2D,
+    VirtioGpuUpdateCursor, PCI_DEVICE_ID_VIRTIO_GPU, VIRTIO_GPU_CMD_GET_CAPSET,
+    VIRTIO_GPU_CMD_GET_CAPSET_INFO, VIRTIO_GPU_CMD_GET_DISPLAY_INFO, VIRTIO_GPU_CMD_GET_EDID,
+    VIRTIO_GPU_CMD_MOVE_CURSOR, VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING,
     VIRTIO_GPU_CMD_RESOURCE_CREATE_2D, VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING,
     VIRTIO_GPU_CMD_RESOURCE_FLUSH, VIRTIO_GPU_CMD_RESOURCE_UNREF, VIRTIO_GPU_CMD_SET_SCANOUT,
     VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D, VIRTIO_GPU_CMD_UPDATE_CURSOR, VIRTIO_GPU_CONTROL_QUEUE,

@@ -439,3 +439,289 @@ pub fn test_virtio_gpu_packet_structures() -> bool {
 
     true
 }
+
+use alloc::vec::Vec;
+use crate::drivers::virtio::pci::PciDevice;
+use crate::drivers::virtio::virtqueue::{Virtqueue, VIRTQ_DESC_F_NEXT, VIRTQ_DESC_F_WRITE};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VirtioGpuError {
+    DeviceNotReady,
+    OutOfDescriptors,
+    ResourceNotFound,
+    AllocationFailed,
+    InvalidParameters,
+    CommandFailed(u32),
+    ScanoutError,
+}
+
+/// 2D Framebuffer surface allocated on the guest and shared with the host GPU.
+pub struct VirtioGpuResource2D {
+    pub resource_id: u32,
+    pub width: u32,
+    pub height: u32,
+    pub format: u32,
+    pub buffer: Vec<u8>,
+    pub attached: bool,
+    pub scanout_assigned: Option<u32>,
+}
+
+impl VirtioGpuResource2D {
+    #[inline(always)]
+    pub fn size_bytes(&self) -> usize {
+        self.buffer.len()
+    }
+
+    #[inline(always)]
+    pub fn stride_bytes(&self) -> usize {
+        (self.width as usize) * 4
+    }
+
+    /// Sets a 32-bit pixel at (x, y) in BGRA/BGRX format.
+    pub fn set_pixel(&mut self, x: u32, y: u32, b: u8, g: u8, r: u8, a: u8) {
+        if x < self.width && y < self.height {
+            let offset = ((y * self.width + x) * 4) as usize;
+            if offset + 3 < self.buffer.len() {
+                self.buffer[offset] = b;
+                self.buffer[offset + 1] = g;
+                self.buffer[offset + 2] = r;
+                self.buffer[offset + 3] = a;
+            }
+        }
+    }
+}
+
+/// VirtIO GPU device managing control and cursor virtqueues and 2D surface state.
+pub struct VirtioGpuDevice {
+    pub pci: Option<PciDevice>,
+    pub controlq: Virtqueue,
+    pub cursorq: Virtqueue,
+    pub next_resource_id: u32,
+    pub resources: Vec<VirtioGpuResource2D>,
+    pub display_width: u32,
+    pub display_height: u32,
+    pub active_scanout: Option<(u32, u32)>, // (scanout_id, resource_id)
+    pub command_count: u64,
+}
+
+impl VirtioGpuDevice {
+    /// Creates a new VirtIO GPU driver instance with default queue dimensions.
+    pub fn new(pci: Option<PciDevice>, queue_size: u16) -> Self {
+        Self {
+            pci,
+            controlq: Virtqueue::new(queue_size),
+            cursorq: Virtqueue::new(queue_size),
+            next_resource_id: 1,
+            resources: Vec::new(),
+            display_width: 1024,
+            display_height: 768,
+            active_scanout: None,
+            command_count: 0,
+        }
+    }
+
+    /// Submits a standard 2-descriptor request-response command chain to Control Queue 0.
+    pub fn submit_ctrl_cmd<Req: Copy, Resp: Copy>(
+        &mut self,
+        req: &Req,
+        resp: &mut Resp,
+    ) -> Result<(), VirtioGpuError> {
+        let d_req = self.controlq.alloc_descriptor().ok_or(VirtioGpuError::OutOfDescriptors)?;
+        let d_resp = self.controlq.alloc_descriptor().ok_or(VirtioGpuError::OutOfDescriptors)?;
+
+        self.controlq.set_descriptor(
+            d_req,
+            req as *const Req as usize as u64,
+            core::mem::size_of::<Req>() as u32,
+            VIRTQ_DESC_F_NEXT,
+            d_resp,
+        );
+
+        self.controlq.set_descriptor(
+            d_resp,
+            resp as *mut Resp as usize as u64,
+            core::mem::size_of::<Resp>() as u32,
+            VIRTQ_DESC_F_WRITE,
+            0,
+        );
+
+        self.controlq.submit_chain(d_req);
+
+        // Simulation/loopback processing for verification
+        self.controlq.mock_device_complete(d_req as u32, core::mem::size_of::<Resp>() as u32);
+        let completion = self.controlq.poll_used();
+        self.controlq.free_descriptor_chain(d_req);
+
+        if completion.is_some() {
+            self.command_count += 1;
+            let resp_hdr = unsafe { *(resp as *mut Resp as *const VirtioGpuCtrlHdr) };
+            if resp_hdr.hdr_type >= VIRTIO_GPU_RESP_ERR_UNSPEC {
+                return Err(VirtioGpuError::CommandFailed(resp_hdr.hdr_type));
+            }
+            Ok(())
+        } else {
+            Err(VirtioGpuError::DeviceNotReady)
+        }
+    }
+
+    /// Allocates a new 2D resource ID, creates the resource on the host GPU, and allocates guest memory.
+    pub fn create_resource_2d(
+        &mut self,
+        width: u32,
+        height: u32,
+        format: u32,
+    ) -> Result<u32, VirtioGpuError> {
+        if width == 0 || height == 0 {
+            return Err(VirtioGpuError::InvalidParameters);
+        }
+
+        let res_id = self.next_resource_id;
+        self.next_resource_id += 1;
+
+        let cmd = VirtioGpuResourceCreate2D::new(res_id, format, width, height);
+        let mut resp = VirtioGpuCtrlHdr::new(VIRTIO_GPU_RESP_OK_NODATA);
+        self.submit_ctrl_cmd(&cmd, &mut resp)?;
+
+        let byte_count = (width as usize) * (height as usize) * 4;
+        let mut buffer = alloc::vec::Vec::with_capacity(byte_count);
+        buffer.resize(byte_count, 0);
+
+        let resource = VirtioGpuResource2D {
+            resource_id: res_id,
+            width,
+            height,
+            format,
+            buffer,
+            attached: false,
+            scanout_assigned: None,
+        };
+
+        self.resources.push(resource);
+        Ok(res_id)
+    }
+
+    /// Attaches the guest backing memory pages of a resource to the host GPU via 3-descriptor chain.
+    pub fn attach_resource_backing(&mut self, resource_id: u32) -> Result<(), VirtioGpuError> {
+        let (buf_ptr, buf_len) = {
+            let res = self.resources.iter_mut().find(|r| r.resource_id == resource_id)
+                .ok_or(VirtioGpuError::ResourceNotFound)?;
+            (res.buffer.as_ptr() as usize as u64, res.buffer.len() as u32)
+        };
+
+        let mut attach_hdr = VirtioGpuResourceAttachBackingHeader::new(resource_id, 1);
+        let mut mem_entry = VirtioGpuMemEntry::new(buf_ptr, buf_len);
+        let mut resp_hdr = VirtioGpuCtrlHdr::new(VIRTIO_GPU_RESP_OK_NODATA);
+
+        let d0 = self.controlq.alloc_descriptor().ok_or(VirtioGpuError::OutOfDescriptors)?;
+        let d1 = self.controlq.alloc_descriptor().ok_or(VirtioGpuError::OutOfDescriptors)?;
+        let d2 = self.controlq.alloc_descriptor().ok_or(VirtioGpuError::OutOfDescriptors)?;
+
+        self.controlq.set_descriptor(
+            d0,
+            core::ptr::addr_of_mut!(attach_hdr) as usize as u64,
+            core::mem::size_of::<VirtioGpuResourceAttachBackingHeader>() as u32,
+            VIRTQ_DESC_F_NEXT,
+            d1,
+        );
+
+        self.controlq.set_descriptor(
+            d1,
+            core::ptr::addr_of_mut!(mem_entry) as usize as u64,
+            core::mem::size_of::<VirtioGpuMemEntry>() as u32,
+            VIRTQ_DESC_F_NEXT,
+            d2,
+        );
+
+        self.controlq.set_descriptor(
+            d2,
+            core::ptr::addr_of_mut!(resp_hdr) as usize as u64,
+            core::mem::size_of::<VirtioGpuCtrlHdr>() as u32,
+            VIRTQ_DESC_F_WRITE,
+            0,
+        );
+
+        self.controlq.submit_chain(d0);
+        self.controlq.mock_device_complete(d0 as u32, core::mem::size_of::<VirtioGpuCtrlHdr>() as u32);
+        let completion = self.controlq.poll_used();
+        self.controlq.free_descriptor_chain(d0);
+
+        if completion.is_some() {
+            if resp_hdr.hdr_type >= VIRTIO_GPU_RESP_ERR_UNSPEC {
+                return Err(VirtioGpuError::CommandFailed(resp_hdr.hdr_type));
+            }
+            if let Some(res) = self.resources.iter_mut().find(|r| r.resource_id == resource_id) {
+                res.attached = true;
+            }
+            self.command_count += 1;
+            Ok(())
+        } else {
+            Err(VirtioGpuError::DeviceNotReady)
+        }
+    }
+
+    /// Releases a 2D surface resource and de-allocates guest backing memory.
+    pub fn unref_resource(&mut self, resource_id: u32) -> Result<(), VirtioGpuError> {
+        let idx = self.resources.iter().position(|r| r.resource_id == resource_id)
+            .ok_or(VirtioGpuError::ResourceNotFound)?;
+
+        let cmd = VirtioGpuResourceUnref::new(resource_id);
+        let mut resp = VirtioGpuCtrlHdr::new(VIRTIO_GPU_RESP_OK_NODATA);
+        self.submit_ctrl_cmd(&cmd, &mut resp)?;
+
+        self.resources.remove(idx);
+        Ok(())
+    }
+
+    pub fn get_resource(&self, resource_id: u32) -> Option<&VirtioGpuResource2D> {
+        self.resources.iter().find(|r| r.resource_id == resource_id)
+    }
+
+    pub fn get_resource_mut(&mut self, resource_id: u32) -> Option<&mut VirtioGpuResource2D> {
+        self.resources.iter_mut().find(|r| r.resource_id == resource_id)
+    }
+}
+
+/// Verification unit test ensuring command submit queue and 2D surface allocation operate correctly.
+pub fn test_gpu_command_submit_and_resource_allocation() -> bool {
+    let mut gpu = VirtioGpuDevice::new(None, 64);
+    assert_eq!(gpu.next_resource_id, 1);
+    assert_eq!(gpu.resources.len(), 0);
+
+    // 1. Allocate 2D resource ID 1 (1024x768 B8G8R8A8_UNORM)
+    let res_id = gpu.create_resource_2d(1024, 768, VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM)
+        .expect("Resource creation must succeed");
+    assert_eq!(res_id, 1);
+    assert_eq!(gpu.next_resource_id, 2);
+    assert_eq!(gpu.resources.len(), 1);
+
+    // 2. Validate surface dimensions and memory buffer
+    let res = gpu.get_resource(res_id).expect("Resource 1 must be present");
+    assert_eq!(res.width, 1024);
+    assert_eq!(res.height, 768);
+    assert_eq!(res.format, VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM);
+    assert_eq!(res.size_bytes(), 1024 * 768 * 4); // 3,145,728 bytes
+    assert_eq!(res.stride_bytes(), 4096);
+    assert!(!res.attached);
+
+    // 3. Attach backing guest physical buffer
+    gpu.attach_resource_backing(res_id)
+        .expect("Attaching backing buffer must succeed");
+    let res_attached = gpu.get_resource(res_id).unwrap();
+    assert!(res_attached.attached);
+
+    // 4. Test pixel drawing
+    let res_mut = gpu.get_resource_mut(res_id).unwrap();
+    res_mut.set_pixel(100, 100, 0x11, 0x22, 0x33, 0xFF);
+    let offset = (100 * 1024 + 100) * 4;
+    assert_eq!(res_mut.buffer[offset], 0x11);     // B
+    assert_eq!(res_mut.buffer[offset + 1], 0x22); // G
+    assert_eq!(res_mut.buffer[offset + 2], 0x33); // R
+    assert_eq!(res_mut.buffer[offset + 3], 0xFF); // A
+
+    // 5. Unreference resource
+    gpu.unref_resource(res_id).expect("Resource unref must succeed");
+    assert_eq!(gpu.resources.len(), 0);
+    assert!(gpu.get_resource(res_id).is_none());
+
+    true
+}
