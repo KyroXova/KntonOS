@@ -17,7 +17,7 @@ These branches are managed by their respective developers with granular commit l
 
 | Contributor identity | Branch | Local workspace | Status |
 | --- | --- | --- | --- |
-| Ada Chen | `workspace/ada-chen` | `E:\Git Lab's\kntonOS-ada-chen` | Active (TASK-KNT-030) |
+| Ada Chen | `workspace/ada-chen` | `E:\Git Lab's\kntonOS-ada-chen` | Active (TASK-KNT-033) |
 | Jules Martin | `workspace/jules-martin` | `E:\Git Lab's\kntonOS-jules-martin` | Active (TASK-KNT-032) |
 | Priya Nair | `workspace/priya-nair` | `E:\Git Lab's\kntonOS-priya-nair` | Active (TASK-KNT-031) |
 
@@ -57,9 +57,10 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-030 | Embedded HTTP/1.1 Micro-Server & Kernel REST Telemetry API | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-030-http-server.md) |
 | TASK-KNT-031 | FAT32 Persistent File System Driver & VirtIO Block Mount Integration | Claimed | TASK-KNT-013 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-031-fat32.md) |
 | TASK-KNT-032 | Dynamic Linker & Shared Library Loader with GOT/PLT Relocations | Claimed | TASK-KNT-026 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-032-dynlink.md) |
+| TASK-KNT-033 | TLS 1.3 Cryptographic Handshake & AES-128-GCM AEAD Record Layer | Claimed | TASK-KNT-021 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-033-tls.md) |
 
 ## Active reservations
 
-- `kernel/src/net/server.rs`: reserved by Ada Chen for TASK-KNT-030.
+- `kernel/src/net/tls.rs`, `kernel/src/crypto/`: reserved by Ada Chen for TASK-KNT-033.
 - `kernel/src/loader/dynlink.rs`: reserved by Jules Martin for TASK-KNT-032.
 - `kernel/src/fs/fat32.rs`: reserved by Priya Nair for TASK-KNT-031.
