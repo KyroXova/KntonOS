@@ -1013,6 +1013,137 @@ pub fn test_network_stack() -> bool {
         crate::serial_write_str("[KNT-NET-SOCKET-PASS] BSD/WinSock socket lifecycle, data transfer, and poll multiplexer verified\r\n");
     }
 
+    // 8. Embedded HTTP/1.1 Micro-Server & Kernel REST Telemetry API Verification
+    {
+        crate::serial_write_str("[KNT-NET] Verifying HTTP/1.1 micro-server and REST telemetry endpoints...\r\n");
+
+        if !verify_http_server_routing() {
+            crate::serial_write_str("[KNT-PANIC] HTTP server route dispatch verification failed!\r\n");
+            return false;
+        }
+
+        if !verify_vfs_file_handler() {
+            crate::serial_write_str("[KNT-PANIC] HTTP server VFS static file handler verification failed!\r\n");
+            return false;
+        }
+
+        if !verify_telemetry_endpoints() {
+            crate::serial_write_str("[KNT-PANIC] HTTP server REST telemetry endpoints verification failed!\r\n");
+            return false;
+        }
+
+        // Full integration test with socket dispatch over BSD socket layer
+        let mut server = HttpServer::new(80);
+        server.register_telemetry_endpoints();
+        server.register_vfs_handler();
+
+        // Test sysinfo dispatch via raw request
+        let req_sys = b"GET /api/sysinfo HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+        let resp_sys = match server.handle_request_bytes(req_sys) {
+            Ok(r) => r,
+            Err(_) => {
+                crate::serial_write_str("[KNT-PANIC] HTTP server failed to handle /api/sysinfo!\r\n");
+                return false;
+            }
+        };
+        if resp_sys.status_code != 200 {
+            crate::serial_write_str("[KNT-PANIC] /api/sysinfo returned non-200 status code!\r\n");
+            return false;
+        }
+
+        // Test ps dispatch via raw request
+        let req_ps = b"GET /api/ps HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+        let resp_ps = match server.handle_request_bytes(req_ps) {
+            Ok(r) => r,
+            Err(_) => {
+                crate::serial_write_str("[KNT-PANIC] HTTP server failed to handle /api/ps!\r\n");
+                return false;
+            }
+        };
+        if resp_ps.status_code != 200 {
+            crate::serial_write_str("[KNT-PANIC] /api/ps returned non-200 status code!\r\n");
+            return false;
+        }
+
+        // Test static VFS 404 handling
+        let req_404 = b"GET /missing_asset.js HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+        let resp_404 = match server.handle_request_bytes(req_404) {
+            Ok(r) => r,
+            Err(_) => {
+                crate::serial_write_str("[KNT-PANIC] HTTP server failed on 404 test!\r\n");
+                return false;
+            }
+        };
+        if resp_404.status_code != 404 {
+            crate::serial_write_str("[KNT-PANIC] Missing asset did not return 404 status code!\r\n");
+            return false;
+        }
+
+        // Verify end-to-end socket transport dispatch using BSD loopback sockets
+        let srv_sock = match socket(SocketDomain::AfInet, SocketType::SockStream, SocketProtocol::Tcp) {
+            Ok(s) => s,
+            Err(_) => {
+                crate::serial_write_str("[KNT-PANIC] Failed to create HTTP server listening socket!\r\n");
+                return false;
+            }
+        };
+        let cli_sock = match socket(SocketDomain::AfInet, SocketType::SockStream, SocketProtocol::Tcp) {
+            Ok(s) => s,
+            Err(_) => {
+                crate::serial_write_str("[KNT-PANIC] Failed to create HTTP client socket!\r\n");
+                return false;
+            }
+        };
+
+        if bind(srv_sock, [127, 0, 0, 1], 80).is_err() || listen(srv_sock, 5).is_err() {
+            crate::serial_write_str("[KNT-PANIC] Failed to bind/listen HTTP server socket!\r\n");
+            return false;
+        }
+
+        if connect(cli_sock, [127, 0, 0, 1], 80).is_err() {
+            crate::serial_write_str("[KNT-PANIC] Failed to connect HTTP client socket!\r\n");
+            return false;
+        }
+
+        let (srv_conn, _cli_peer) = match accept(srv_sock) {
+            Ok(c) => c,
+            Err(_) => {
+                crate::serial_write_str("[KNT-PANIC] Failed to accept HTTP connection!\r\n");
+                return false;
+            }
+        };
+
+        let http_get = b"GET /api/sysinfo HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
+        if send(cli_sock, http_get) != Ok(http_get.len()) {
+            crate::serial_write_str("[KNT-PANIC] Failed to send HTTP request over socket!\r\n");
+            return false;
+        }
+
+        if server.dispatch_connection(srv_conn).is_err() {
+            crate::serial_write_str("[KNT-PANIC] dispatch_connection failed!\r\n");
+            return false;
+        }
+
+        let mut cli_resp = [0u8; 512];
+        let n_resp = match recv(cli_sock, &mut cli_resp) {
+            Ok(n) => n,
+            Err(_) => {
+                crate::serial_write_str("[KNT-PANIC] Failed to receive HTTP response on client socket!\r\n");
+                return false;
+            }
+        };
+
+        if n_resp == 0 || !cli_resp[..n_resp].starts_with(b"HTTP/1.1 200 OK\r\n") {
+            crate::serial_write_str("[KNT-PANIC] HTTP response header invalid!\r\n");
+            return false;
+        }
+
+        let _ = close(srv_sock);
+        let _ = close(cli_sock);
+
+        crate::serial_write_str("[KNT-NET-SERVER-PASS] Embedded HTTP/1.1 micro-server and REST telemetry API verified\r\n");
+    }
+
     crate::serial_write_str("[KNT-NET-TESTS-PASS] All embedded network protocol stack checks passed\r\n");
     true
 }
