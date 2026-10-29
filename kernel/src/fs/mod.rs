@@ -147,8 +147,8 @@ fn build_demo_tar() -> Vec<u8> {
     append_entry(&mut tar, "bin/", &[], true);
 
     // 4. File "bin/init.exe"
-    let exe_data = b"MZ\x90\x00\x03\x00\x00\x00KntonOS_Init";
-    append_entry(&mut tar, "bin/init.exe", exe_data, false);
+    let exe_data = crate::pe::build_demo_pe();
+    append_entry(&mut tar, "bin/init.exe", &exe_data, false);
 
     // Two 512-byte zero blocks terminating the archive
     tar.resize(tar.len() + TAR_BLOCK_SIZE * 2, 0);

@@ -80,8 +80,8 @@ impl PeImageLoader {
 
                 allocated_frames.push(frame.start_address());
 
-                // Zero-fill frame memory
-                let dest_ptr = vaddr.as_usize() as *mut u8;
+                // Zero-fill physical frame memory directly via kernel identity mapping
+                let dest_ptr = frame.start_address().0 as *mut u8;
                 core::ptr::write_bytes(dest_ptr, 0, PAGE_SIZE);
 
                 // Copy raw binary section data into page

@@ -59,8 +59,8 @@ impl UserStackAllocator {
 
             allocated_frames.push(frame.start_address());
 
-            // Zero-fill stack memory
-            core::ptr::write_bytes(vaddr.as_usize() as *mut u8, 0, PAGE_SIZE);
+            // Zero-fill stack frame memory via kernel physical identity mapping
+            core::ptr::write_bytes(frame.start_address().0 as *mut u8, 0, PAGE_SIZE);
         }
 
         // Align initial RSP to 16 bytes, reserving 32 bytes of Win64 shadow store

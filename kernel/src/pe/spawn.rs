@@ -27,6 +27,7 @@ pub struct UserProcess {
 }
 
 static mut USER_PROCESS_COUNT: u64 = 0;
+static mut USER_PML4: crate::memory::vmm::PageTable = crate::memory::vmm::PageTable::new();
 
 /// Spawns an independently mapped user process from raw PE64 binary bytes.
 pub fn spawn_user_process(
@@ -47,12 +48,17 @@ pub fn spawn_user_process(
     write_hex64(parsed_pe.image_base);
     serial_write_str(")\r\n");
 
-    // 2. Obtain current PML4 page table root
+    // 2. Clone active CR3 PML4 mappings into a writable kernel PageTable
     let cr3: u64;
     unsafe {
         core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags));
+        let fw_pml4 = (cr3 & !0xFFF) as *const crate::memory::vmm::PageTable;
+        let pml4_ptr = core::ptr::addr_of_mut!(USER_PML4);
+        for i in 0..512 {
+            (*pml4_ptr).entries[i] = (*fw_pml4).entries[i];
+        }
     }
-    let mut ptm = unsafe { PageTableManager::new((cr3 & !0xFFF) as *mut _) };
+    let mut ptm = unsafe { PageTableManager::new(core::ptr::addr_of_mut!(USER_PML4)) };
 
     // 3. Map PE sections into user memory space
     let loaded_image = unsafe {

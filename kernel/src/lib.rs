@@ -102,6 +102,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Syscall subsystem self-test failed!\r\n");
     }
 
+    // Spawn and execute initial Win32 PE64 userland process (/bin/init.exe)
+    if !pe::run_init_process() {
+        serial_write_str("[KNT-PANIC] Initial Win32 user process execution failed!\r\n");
+    }
+
     serial_write_str("[KNT-SUBSYSTEM] Display & Win32 PE64 loader modules active\r\n");
     serial_write_str("[KNT-BOOT-SUCCESS] Native UEFI-to-kernel boot verified\r\n");
 
