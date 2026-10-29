@@ -11,6 +11,7 @@ pub mod process;
 pub mod syscall;
 pub mod drivers;
 pub mod compositor;
+pub mod crypto;
 pub mod net;
 pub mod shell;
 pub mod ipc;
