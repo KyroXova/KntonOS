@@ -1,7 +1,12 @@
 #![no_std]
 
+extern crate alloc;
+
 pub mod display;
 pub mod pe;
+pub mod memory;
+
+pub use memory::ALLOCATOR;
 
 // 16550A UART COM1 port
 pub const COM1_PORT: u16 = 0x3F8;
@@ -63,8 +68,17 @@ pub fn serial_write_str(s: &str) {
 pub extern "C" fn kmain() -> ! {
     serial_init();
     serial_write_str("\r\n[KNT-KERNEL-INIT] KntonOS micro-kernel bootstrap reached\r\n");
-    serial_write_str("[KNT-BOOT-SUCCESS] Native UEFI-to-kernel boot verified\r\n");
+
+    // Initialize foundational memory management subsystems
+    memory::init();
+
+    // Execute memory subsystem verification self-test
+    if !memory::test_memory_subsystem() {
+        serial_write_str("[KNT-PANIC] Memory subsystem self-test failed!\r\n");
+    }
+
     serial_write_str("[KNT-SUBSYSTEM] Display & Win32 PE64 loader modules active\r\n");
+    serial_write_str("[KNT-BOOT-SUCCESS] Native UEFI-to-kernel boot verified\r\n");
 
     loop {
         unsafe {
