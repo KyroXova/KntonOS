@@ -5,10 +5,10 @@
 | Document ID | SPEC-001 |
 | Task Association | TASK-KNT-004 (First-demo resource and performance acceptance plan) |
 | Architecture Tier | Quality Assurance, Benchmarking & Acceptance Criteria |
-| Status | Proposed (Provisional Engineering Baseline) |
+| Status | Revised Proposal (Source-Verified & Staged Baseline) |
 | Author | Ada Chen (@AdaChen) |
-| Reviewer | Marcus (@Marcus, Senior Lead) |
-| Target Milestone | First Demonstrable KntonOS Vertical Slice (Native Boot + Real Game) |
+| Reviewer | Marcus (@Marcus, Senior Lead) / Nadia Mercer (@NadiaMercer, Project Maintainer) |
+| Target Milestone | Staged First Demonstrable KntonOS Vertical Slice (Native Boot -> Desktop -> Real Game) |
 
 ---
 
@@ -16,12 +16,13 @@
 
 The strategic charter of KntonOS is to provide an independently developed, lightweight operating system delivering a modern Windows 11-like desktop experience with significantly reduced resource consumption and superior gaming performance for Windows `.exe` applications.
 
-To validate these claims quantitatively rather than qualitatively, this specification establishes:
-1. **Representative game/application workloads** for the initial demonstrable milestone.
+To validate these claims quantitatively with rigorous engineering provenance, this specification establishes:
+1. **Source-verified benchmark candidates**, including exact upstream repositories, official release binaries, licensing provenance, graphics rendering APIs, and authoritative command-line syntax.
 2. **Reference hardware profiles** and baseline Windows 11 comparison configurations.
-3. **Provisional resource and performance budgets** (boot time, idle RAM, ISO size, FPS, and frame-time percentiles).
-4. **Repeatable benchmarking protocols**, variance-control procedures, and artifact-logging standards.
-5. **Clear governance distinction** separating owner-approved strategic targets from provisional engineering budgets.
+3. **Provisional resource and performance budgets** across boot time, idle RAM, ISO size, FPS, and frame-time pacing percentiles.
+4. **Staged performance gates**, explicitly decoupling early kernel boot / idle resource acceptance from the real-game performance gate, which carries a hard dependency on native/passthrough GPU driver bring-up.
+5. **Repeatable benchmarking protocols**, variance-control procedures, and structured artifact-logging standards.
+6. **Clear governance distinction** separating owner-approved strategic targets from provisional engineering budgets.
 
 ---
 
@@ -30,24 +31,24 @@ To validate these claims quantitatively rather than qualitatively, this specific
 Per `docs/project-scope.md` and repository guidelines, engineering assumptions must never be disguised as owner requirements.
 
 ```
-+---------------------------------------------------------------------------------+
-|                       OWNER DIRECTIVES (Strategic Mandate)                      |
-| - Custom kernel, custom GUI, and core applications                             |
-| - Exceptionally lightweight desktop with Windows 11-like feel                   |
-| - Broad Windows .exe compatibility target, prioritizing games                   |
-| - First public demo: Boot KntonOS and run a real game with improved performance |
-| - Licensing: All Rights Reserved (ARR) with selective MIT components            |
-+---------------------------------------------------------------------------------+
-                                       |
-                                       v
-+---------------------------------------------------------------------------------+
-|                  PROVISIONAL ENGINEERING BUDGETS (This Document)                |
-| - ISO footprint: < 500 MB base installation image                               |
-| - Cold boot time: < 10.0 seconds from UEFI handoff to desktop idle              |
-| - Idle OS memory: < 300 MB resident memory (excluding page cache)              |
-| - Frame pacing: 1% low FPS >= 90% of mean; 0.1% low FPS >= 75% of mean          |
-| - Game performance: >= 100% (target +5% to +15%) of Windows 11 FPS on same rig  |
-+---------------------------------------------------------------------------------+
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                       OWNER DIRECTIVES (Strategic Mandate)                      │
+│ - Custom kernel, custom GUI, and core applications                             │
+│ - Exceptionally lightweight desktop with Windows 11-like feel                   │
+│ - Broad Windows .exe compatibility target, prioritizing games                   │
+│ - First public demo: Boot KntonOS and run a real game with improved performance │
+│ - Licensing: All Rights Reserved (ARR) with selective MIT components            │
+└─────────────────────────────────────────────────────────────────────────────────┘
+                                       │
+                                       ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                  PROVISIONAL ENGINEERING BUDGETS (This Document)                │
+│ - ISO footprint: <= 500 MB base installation image (Stage 1)                    │
+│ - Cold boot time: <= 10.0 seconds from UEFI handoff to desktop idle (Stage 1)   │
+│ - Idle OS memory: <= 300 MB resident memory excluding disk cache (Stage 1)      │
+│ - Stage 3 Game FPS: >= 100% (target +5% to +15%) of Win11 on identical hardware │
+│ - Stage 3 Frame Pacing: 1% low FPS >= 90% of mean; 0.1% low FPS >= 75% of mean  │
+└─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 - **Owner-Confirmed Directives**:
@@ -56,34 +57,61 @@ Per `docs/project-scope.md` and repository guidelines, engineering assumptions m
   - Windows `.exe` game execution on bare metal.
   - Demonstrated, measurable performance improvement over Windows.
 - **Provisional Engineering Budgets**:
-  - The numerical thresholds specified in Section 4 are engineering proposals designed to establish a concrete, falsifiable pass/fail gate. They remain provisional until validated against physical hardware benchmarks and formally signed off by the project owner.
+  - Numerical metrics specified in Section 5 are engineering proposals establishing concrete, falsifiable pass/fail gates. They remain provisional until validated against physical hardware benchmarks and formally signed off by the project owner.
 
 ---
 
-## 3. Workload Selection: Representative Benchmark Candidates
+## 3. Workload Selection: Source-Verified Benchmark Candidates
 
-To demonstrate real-world utility while avoiding DRM and licensing entanglements during development, the benchmarking harness defines a three-tiered candidate suite:
+To eliminate ambiguity and prevent conflation of incompatible graphics stacks, all benchmark candidates are cataloged with their exact upstream repositories, official Windows release packages, software licenses, underlying graphics APIs, and verified execution commands.
 
-### 3.1 Primary Candidate: Open-Source 3D Indie Title (*SuperTuxKart* Windows Release)
-- **Application & Version**: *SuperTuxKart* v1.4 (x86-64 Windows Portable Release, `supertuxkart.exe`).
-- **Engine / API**: Custom 3D engine using OpenGL / Vulkan (via MoltenVK/Zink or native Vulkan backend) with Direct3D 9/11 wrapper support.
-- **Workload & Scene**: 
-  - Standardized automated benchmark timedemo: `supertuxkart.exe --bench 120 --track volcano_island --num-karts 8 --reverse`.
-  - Fixed 120-second camera loop with dynamic physics, AI agents, particle effects, and particle/mesh rendering.
-- **Licensing & Redistribution**: GNU General Public License v3 (GPLv3) for code; Creative Commons for assets. Freely redistributable within internal development environments without proprietary licensing friction.
-- **Why Selected**: Tests a complete, non-synthetic game architecture (asset loading, audio thread, physics simulation, multi-threaded rendering, input handling) packaged as a native Windows PE32+ `.exe`.
+### 3.1 Primary 3D Game Candidate: *SuperTuxKart* (Windows x86-64 Portable)
+- **Application & Version**: SuperTuxKart v1.4 (Official 64-bit Windows Release).
+- **Upstream Source Repository**:
+  - Engine & Game Code: [`https://github.com/supertuxkart/stk-code`](https://github.com/supertuxkart/stk-code) (Tag `v1.4`, Commit `e5e493a`)
+  - Asset Package: [`https://github.com/supertuxkart/stk-assets`](https://github.com/supertuxkart/stk-assets)
+- **Official Binary Artifact**: `SuperTuxKart-1.4-win64.zip` (SourceForge / GitHub Releases, SHA256 verified).
+- **Licensing Provenance**:
+  - Game Engine & Code: GNU General Public License v3.0 or later (GPLv3+).
+  - Game Assets (Models, Audio, Textures): CC-BY-SA 3.0, CC-BY-SA 4.0, CC-BY 3.0, and Public Domain.
+- **Rendering Engine & Graphics API**:
+  - Custom *Antarctica* rendering engine (forked from Irrlicht 3D).
+  - Primary API: **OpenGL 3.3 Core Profile** initialized via Windows native `opengl32.dll` and standard WGL context extensions (`wglCreateContextAttribsARB`).
+  - *Note on Graphics Architecture*: STK on Windows executes via `opengl32.dll`. Under KntonOS Stage 3, this executes either via a clean-room `opengl32.dll` shim dispatching to an underlying Vulkan ICD through an OpenGL-on-Vulkan translation layer (e.g. Zink) or via a native OpenGL driver. (Previous draft incorrectly referenced macOS MoltenVK; this draft strictly targets x86-64 Win32/OpenGL32 APIs).
+- **Verified Benchmark Execution Command**:
+  ```bat
+  supertuxkart.exe --profile-time=120 --track=volcano_island --num-karts=8 --mode=0
+  ```
+  *(Runs an automated 120-second non-interactive race profile on `volcano_island` with 8 AI karts, exercising physics, audio, particle simulation, and multi-pass forward/deferred geometry rendering).*
 
-### 3.2 Secondary Candidate: DRM-Free Commercial Title (*Quake II* / *OpenArena* / *vkQuake*)
-- **Application & Version**: *vkQuake* v1.3x (x86-64 PE executable) running Id Software shareware/demo PAK files.
-- **Engine / API**: Pure Vulkan rendering backend over standard Win32 windowing and input APIs (`user32.dll`, `kernel32.dll`, `vulkan-1.dll`).
-- **Workload & Scene**: Timedemo replay of `demo1.dem` (standardized 60-second combat run at 1080p and 1440p).
-- **Licensing**: GPL source executable with royalty-free shareware game data.
-- **Why Selected**: Isolates pure Vulkan draw-call overhead and Win32 PE subsystem performance without anti-cheat or proprietary wrapper interference.
+### 3.2 Secondary Pure-Vulkan Game Candidate: *vkQuake* (Windows x86-64 PE)
+- **Application & Version**: vkQuake v1.31.1 (64-bit Windows Release).
+- **Upstream Source Repository**: [`https://github.com/Novum/vkQuake`](https://github.com/Novum/vkQuake) (Tag `1.31.1`, Axel Gneiting / Novum).
+- **Official Binary Artifact**: `vkQuake-1.31.1-win64.zip` (GitHub Releases).
+- **Licensing Provenance**:
+  - Engine Code: GNU General Public License v2.0 (GPLv2).
+  - Game Data: Id Software Quake Shareware `pak0.pak` (freely redistributable non-commercial shareware).
+- **Rendering Engine & Graphics API**:
+  - Pure **Vulkan 1.0 / 1.1** renderer directly calling `vulkan-1.dll`.
+  - Window Management & Input: Win32 subsystem (`user32.dll`, `kernel32.dll`).
+  - *Architectural Significance*: vkQuake provides a zero-wrapper, native Vulkan pipeline. It isolates Win32 PE loader binding, memory mapping, and Vulkan ICD command ring dispatch from complex DirectX translation layers.
+- **Verified Benchmark Execution Command**:
+  ```bat
+  vkquake.exe +host_maxfps 0 +timedemo demo1
+  ```
+  *(Launches the engine with unrestricted frame rate presentation and immediately executes the standardized 60-second `demo1` timedemo loop, reporting total rendered frames, elapsed time, and average FPS upon completion).*
 
-### 3.3 Diagnostic / Baseline Candidate: Khronos & Sascha Willems Vulkan PE Test Suite
-- **Application & Version**: Sascha Willems Vulkan Examples Suite (`vulkan_gears.exe`, `vulkan_deferred.exe`) compiled as Win64 PE binaries.
-- **Workload**: Fixed 10,000-frame automated offscreen/onscreen rendering sequence.
-- **Purpose**: Low-level validation fixture for testing kernel memory mapping, GPU command ring submissions, and PE loader link-time relocation before running game physics engines.
+### 3.3 Diagnostic / Baseline Graphics Suite: *Sascha Willems Vulkan Suite*
+- **Application & Version**: Sascha Willems Vulkan Examples (x64 Windows Release, Git master / stable tag).
+- **Upstream Source Repository**: [`https://github.com/SaschaWillems/Vulkan`](https://github.com/SaschaWillems/Vulkan).
+- **Binary Artifact**: Precompiled 64-bit Windows binaries (`gears.exe`, `deferred.exe`).
+- **Licensing Provenance**: MIT License.
+- **Rendering Engine & Graphics API**: Native **Vulkan 1.0+** (`vulkan-1.dll`).
+- **Verified Benchmark Execution Command**:
+  ```bat
+  gears.exe -b -f -br 30 -bf "benchmark_gears.csv" -bt
+  ```
+  *(Executes `gears.exe` in automated benchmark mode (`-b`), fullscreen (`-f`), running for exactly 30 seconds (`-br 30`), exporting individual frame times (`-bt`) to `benchmark_gears.csv` (`-bf`)).*
 
 ---
 
@@ -118,7 +146,7 @@ To establish a rigorous baseline, the reference Windows installation must adhere
 
 ## 5. Metrics, Telemetry & Provisional Budgets
 
-The acceptance gate requires satisfying measurable budgets across storage, boot, idle memory, and runtime game pacing:
+The acceptance criteria establish quantifiable targets across storage, boot, idle memory, and runtime game pacing:
 
 | Metric Category | Target Metric | Windows 11 Baseline (Ref A) | KntonOS Provisional Budget | Validation Methodology |
 | :--- | :--- | :--- | :--- | :--- |
@@ -136,11 +164,57 @@ The acceptance gate requires satisfying measurable budgets across storage, boot,
 
 ---
 
-## 6. Repeatable Testing Protocol & Variance Control
+## 6. Staged Milestone Gating & Dependency Hierarchy
+
+To ensure acceptance gates reflect implementable engineering progress rather than unbacked future claims, acceptance is divided into three concrete stages. The real-game performance gate is strictly decoupled from the initial boot/shell slice:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│ STAGE 1: Minimal UEFI Kernel & Core User-Space Slice                            │
+│ Gating: GATE-01 (Boot to Shell), GATE-02 (Console PE), GATE-03 (Idle RAM <=300M)│
+│         GATE-06 (Boot Time <=10s), GATE-07 (ISO Size <=500M)                    │
+│ Dependencies: kboot.efi, Ring 0 Rust kernel, PMM/VMM, GOP Framebuffer           │
+└─────────────────────────────────────────────────────────────────────────────────┘
+                                       │
+                                       ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│ STAGE 2: Interactive Win11-like GUI Desktop & 2D Win32 Execution                │
+│ Gating: Windowing Compositor, 60 FPS shell pacing, Win32 GUI PE (.exe)          │
+│ Dependencies: kcompositor, kshell, user32/gdi32 emulation, event input          │
+└─────────────────────────────────────────────────────────────────────────────────┘
+                                       │
+                                       ▼  ◄── [HARD DEPENDENCY: GPU Driver Bring-Up]
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│ STAGE 3: Hardware-Accelerated 3D Public Gaming Demo                             │
+│ Gating: GATE-04 (Game FPS >= Win11), GATE-05 (1% Low >= 90%, jitter <=1.5ms)   │
+│ Dependencies: Native GPU Driver (Intel/AMD/VirtIO) + Vulkan ICD + Audio Engine  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 6.1 Gating Decision Matrix
+
+| Stage | Gate ID | Acceptance Condition | Severity | Hard Prerequisites |
+| :--- | :--- | :--- | :--- | :--- |
+| **Stage 1** | **GATE-01** | Cold boot to interactive user-space shell without panic or fallback. | Blocker | UEFI 2.8+ loader, PML4 paging, LAPIC timer. |
+| **Stage 1** | **GATE-02** | PE32+ console executable executes and outputs to stdout. | Blocker | PE/COFF loader, `VirtualAlloc`, `WriteFile`. |
+| **Stage 1** | **GATE-03** | Idle OS RAM footprint $\le 300\text{ MB}$ (excluding page cache). | Blocker | Bitmap/Buddy PMM frame accounting. |
+| **Stage 1** | **GATE-06** | Cold boot time $\le 10.0\text{ s}$ from UEFI handoff to shell idle. | Minor | Fast parallel kernel initialization. |
+| **Stage 1** | **GATE-07** | Bootable distribution ISO size $\le 500\text{ MB}$. | Minor | Stripped binary packaging, compressed initrd. |
+| **Stage 2** | **GATE-08** | Desktop Compositor displays Windows 11-style taskbar and panel. | Major | UEFI GOP framebuffer, 2D blit/rasterizer. |
+| **Stage 2** | **GATE-09** | Win32 graphical executable (e.g. 2D calculator/editor) runs. | Major | `user32.dll` message dispatch, window surfaces. |
+| **Stage 3** | **GATE-04** | Real-game mean FPS on KntonOS $\ge 100\%$ of identical Windows 11 rig. | Major | **Native GPU Kernel Driver + Vulkan 1.0+ ICD**. |
+| **Stage 3** | **GATE-05** | 1% Low FPS $\ge 90\%$ of mean; frame jitter $\sigma \le 1.5\text{ ms}$; zero hangs. | Major | **GPU command ring submission + Direct Scanout**. |
+
+> [!IMPORTANT]
+> **Stage 3 Gating Prerequisite**: The real-game performance gate (`GATE-04` and `GATE-05`) CANNOT be evaluated during Stage 1 or Stage 2. It requires an operational GPU command submission driver (e.g., bare-metal AMD/Intel DRM/KMS equivalent or VirtIO-GPU 3D acceleration in QEMU) and a working Vulkan runtime. Stage 1 and Stage 2 deliverables are fully accepted upon satisfying `GATE-01` through `GATE-03` and `GATE-06` through `GATE-09`.
+
+---
+
+## 7. Repeatable Testing Protocol & Variance Control
 
 All benchmark runs must be strictly reproducible by any team member. 
 
-### 6.1 Environmental Control
+### 7.1 Environmental Control
 1. **Thermal Stabilization**:
    - Hardware must undergo a 3-minute pre-warming loop prior to test recording to ensure CPU/GPU clocks settle into steady-state thermal throttle conditions.
    - Ambient room temperature maintained at $21^\circ\text{C} \pm 2^\circ\text{C}$.
@@ -151,7 +225,7 @@ All benchmark runs must be strictly reproducible by any team member.
    - Network interface disabled or disconnected during benchmark runs to eliminate asynchronous network I/O interrupts.
    - Background daemons suspended; only core OS compositor and kernel services active.
 
-### 6.2 Data Acquisition & Statistical Processing
+### 7.2 Data Acquisition & Statistical Processing
 For each candidate run:
 1. Capture raw presentation timestamps using the OS hardware display subsystem:
    $$\Delta t_i = t_{presented}(i) - t_{presented}(i-1)$$
@@ -163,7 +237,7 @@ For each candidate run:
    $$\mu = \frac{1}{N}\sum_{i=1}^N FPS_i, \quad \sigma = \sqrt{\frac{1}{N-1}\sum_{i=1}^N (FPS_i - \mu)^2}$$
 6. Verify Variance Condition: If $\frac{\sigma}{\mu} > 0.03$ (3% coefficient of variation) across Runs 1–5, the test series is flagged as invalid and must be re-run after diagnosing external system interrupts.
 
-### 6.3 Artifact Logging Standards
+### 7.3 Artifact Logging Standards
 All benchmark sessions must automatically export structured artifacts to `build/benchmarks/<timestamp>/`:
 - `summary.json`: High-level summary containing git commit hash, hardware UUID, ambient metrics, mean FPS, 1% low, 0.1% low, idle RAM, and boot elapsed time.
 - `frametimes.csv`: Full time series containing columns: `frame_index`, `timestamp_ns`, `frametime_ms`, `gpu_busy_ms`.
@@ -172,26 +246,10 @@ All benchmark sessions must automatically export structured artifacts to `build/
 
 ---
 
-## 7. Pass/Fail Decision Matrix for Demo Readiness
-
-A build is certified **Demo Ready** if and only if all critical gating conditions are satisfied:
-
-| ID | Criteria Description | Gate Level | Condition |
-| :--- | :--- | :--- | :--- |
-| **GATE-01** | Complete Boot Sequence | **Blocker** | System boots from cold power-on to usable desktop shell without user intervention or fallback shell. |
-| **GATE-02** | Unmodified PE Execution | **Blocker** | Selected game `.exe` launches from clean desktop icon/CLI and runs to benchmark completion. |
-| **GATE-03** | Idle RAM Ceiling | **Blocker** | Idle desktop RAM consumption $\le 300\text{ MB}$. |
-| **GATE-04** | Frame Rate Parity | **Major** | Mean game FPS on KntonOS $\ge 100\%$ of identical Windows 11 reference rig. |
-| **GATE-05** | Stutter Suppression | **Major** | 1% low FPS $\ge 90\%$ of mean FPS; zero stutter events $> 50\text{ ms}$ throughout benchmark. |
-| **GATE-06** | Boot Time Target | **Minor** | Cold boot time from UEFI exit to desktop interactive state $\le 10.0\text{ seconds}$. |
-| **GATE-07** | ISO Size Target | **Minor** | Bootable distribution image file size $\le 500\text{ MB}$. |
-
----
-
 ## 8. Interfaces with Downstream Engineering Tracks
 
 This specification directly dictates constraints and validation criteria for subsequent tasks:
 1. **TASK-KNT-003 (Platform & Compatibility ADR)**: Must select an architecture capable of hosting the Vulkan user-mode driver and Win32 PE execution without exceeding the 300 MB idle RAM budget.
-2. **Kernel Memory Subsystem**: Must support physical frame accounting, page eviction telemetry, and high-resolution timer (`RDTSC` / ACPI timer) interfaces for timestamp generation.
-3. **Compositor & Display Subsystem**: Must provide a low-overhead presentation queue with direct scanout / zero-copy presentation support to eliminate desktop compositing frame drops.
-4. **Toolchain & CI (Jules Martin)**: Test automation harness must ingest `summary.json` and enforce regression guards in automated emulator/bare-metal test runs.
+2. **Kernel Memory Subsystem (Stage 1)**: Must support physical frame accounting, page eviction telemetry, and high-resolution timer (`RDTSC` / ACPI timer) interfaces for timestamp generation.
+3. **Compositor & Display Subsystem (Stage 2)**: Must provide a low-overhead presentation queue with direct scanout / zero-copy presentation support to eliminate desktop compositing frame drops.
+4. **Toolchain & CI Fixtures (Jules Martin / TASK-KNT-005 & TASK-KNT-006)**: Automated test runner must ingest `summary.json` and enforce Stage 1/2 resource regression guards in automated QEMU test passes.
