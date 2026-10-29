@@ -1,0 +1,17 @@
+[package]
+name = "kntonk"
+version = "0.1.0"
+edition = "2021"
+authors = ["Knton OS Contributors"]
+license = "ARR"
+description = "Minimal independently developed KntonOS micro-kernel entry"
+
+[lib]
+name = "kntonk"
+path = "src/lib.rs"
+
+[[bin]]
+name = "kntonk"
+path = "src/main.rs"
+test = false
+bench = false

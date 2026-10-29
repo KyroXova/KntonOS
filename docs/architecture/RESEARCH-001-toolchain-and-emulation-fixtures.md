@@ -198,7 +198,7 @@ def run_boot_test(disk_image: str, firmware_dir: str, timeout_sec: int) -> int:
                 if SENTINEL_PANIC.search(line):
                     panic_detected = True
 
-                match_test = SENTINEL_PASS.search(line):
+                match_test = SENTINEL_PASS.search(line)
                 if match_test:
                     passed_tests.append(match_test.group(1))
 

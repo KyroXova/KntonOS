@@ -1,0 +1,16 @@
+[package]
+name = "kboot"
+version = "0.1.0"
+edition = "2021"
+authors = ["Knton OS Contributors"]
+license = "ARR"
+description = "Minimal independently developed KntonOS UEFI bootloader"
+
+[dependencies]
+kntonk = { path = "../kernel" }
+
+[[bin]]
+name = "kboot"
+path = "src/main.rs"
+test = false
+bench = false
