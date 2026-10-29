@@ -137,6 +137,12 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Syscall subsystem self-test failed!\r\n");
     }
 
+    // Initialize Inter-Process Communication (IPC) Shared Memory Rings & Fast Futex Engine
+    ipc::init();
+    if !ipc::test_ipc_subsystem() {
+        serial_write_str("[KNT-PANIC] IPC subsystem self-test failed!\r\n");
+    }
+
     // Initialize VirtIO Driver Subsystem (PCI discovery, split virtqueue, block device)
     drivers::virtio::init();
     if !drivers::virtio::test_virtio_subsystem() {

@@ -91,6 +91,11 @@ impl SectionManager {
 
         let cr3: u64;
         unsafe {
+            // Temporarily clear CR0.WP (bit 16) to allow writing intermediate paging structures in UEFI
+            let cr0: u64;
+            core::arch::asm!("mov {}, cr0", out(reg) cr0, options(nomem, nostack, preserves_flags));
+            core::arch::asm!("mov cr0, {}", in(reg) (cr0 & !(1 << 16)), options(nomem, nostack, preserves_flags));
+
             core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags));
             let root_pml4 = (cr3 & !0xFFF) as *mut crate::memory::vmm::PageTable;
             let mut ptm = PageTableManager::new(root_pml4);
@@ -106,6 +111,8 @@ impl SectionManager {
                     let _ = ptm.map_page(vaddr, *frame, flags, &mut *pmm);
                 }
             }
+
+            core::arch::asm!("mov cr0, {}", in(reg) cr0, options(nomem, nostack, preserves_flags));
         }
 
         Ok(base_vaddr)

@@ -16,3 +16,126 @@ pub use ring::{
     SpscRingBuffer, CACHELINE_SIZE, PACKET_HEADER_SIZE, PACKET_MAGIC,
 };
 pub use section::{SectionManager, SharedSection, SECTION_MANAGER};
+
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+static FUTEX_SYNC_WORD: AtomicU32 = AtomicU32::new(1); // 1 = locked
+static FUTEX_WORKER_FINISHED: AtomicBool = AtomicBool::new(false);
+
+fn ipc_futex_waiter_thread() {
+    let word_ptr = FUTEX_SYNC_WORD.as_ptr();
+    // Block until FUTEX_SYNC_WORD is unlocked and woken
+    let _ = futex_wait(word_ptr, 1, None);
+    FUTEX_WORKER_FINISHED.store(true, Ordering::SeqCst);
+}
+
+/// Initializes IPC shared memory ring and futex subsystems.
+pub fn init() {
+    crate::serial_write_str("[KNT-IPC] Initializing IPC shared memory rings & futex subsystem...\r\n");
+}
+
+/// Verification test suite exercising SPSC ring transfer, zero-copy section mapping,
+/// and cross-thread futex sleep/wake contention.
+pub fn test_ipc_subsystem() -> bool {
+    crate::serial_write_str("[KNT-IPC-TEST] Running IPC rings, futex synchronization, and section tests...\r\n");
+
+    // 1. SPSC lockless ring buffer verification
+    if !test_spsc_ring() {
+        crate::serial_write_str("[KNT-PANIC] SPSC ring unit test failed!\r\n");
+        return false;
+    }
+
+    // 2. Futex engine verification
+    if !test_futex_engine() {
+        crate::serial_write_str("[KNT-PANIC] Futex engine unit test failed!\r\n");
+        return false;
+    }
+
+    // 3. Shared memory section zero-copy aliasing test
+    {
+        let handle = {
+            let mut sm = SECTION_MANAGER.lock();
+            match sm.create_section("BenchSection", 8192) {
+                Ok(h) => h,
+                Err(_) => {
+                    crate::serial_write_str("[KNT-PANIC] Failed to create IPC section!\r\n");
+                    return false;
+                }
+            }
+        };
+
+        let sm = SECTION_MANAGER.lock();
+        let vaddr1 = match sm.map_view(handle, 0x0000_7FFF_8000_0000) {
+            Ok(v) => v,
+            Err(_) => {
+                crate::serial_write_str("[KNT-PANIC] Failed to map view 1 of section!\r\n");
+                return false;
+            }
+        };
+
+        let vaddr2 = match sm.map_view(handle, 0x0000_7FFF_8000_2000) {
+            Ok(v) => v,
+            Err(_) => {
+                crate::serial_write_str("[KNT-PANIC] Failed to map view 2 of section!\r\n");
+                return false;
+            }
+        };
+
+        // Write through View 1 and read back through View 2 (aliasing the same physical frame)
+        unsafe {
+            let p1 = vaddr1 as *mut u64;
+            *p1 = 0xFEED_FACE_CAFE_BABE;
+            let p2 = vaddr2 as *const u64;
+            if *p2 != 0xFEED_FACE_CAFE_BABE {
+                crate::serial_write_str("[KNT-PANIC] Zero-copy section mapping failed! View 2 mismatch!\r\n");
+                return false;
+            }
+        }
+        crate::serial_write_str("[KNT-IPC-SECTION-PASS] Zero-copy physical frame sharing across views verified\r\n");
+    }
+
+    // 4. Cross-thread Futex Contention & Wake test
+    {
+        FUTEX_SYNC_WORD.store(1, Ordering::SeqCst);
+        FUTEX_WORKER_FINISHED.store(false, Ordering::SeqCst);
+
+        let tid = crate::process::scheduler::spawn(
+            "ipc_futex_waiter",
+            crate::process::Priority::Normal,
+            ipc_futex_waiter_thread,
+        );
+        if tid == 0 {
+            crate::serial_write_str("[KNT-PANIC] Failed to spawn futex waiter thread!\r\n");
+            return false;
+        }
+
+        // Yield control to let the waiter run and enter futex_wait
+        crate::process::scheduler::yield_now();
+
+        // Verify waiter is still waiting (not finished)
+        if FUTEX_WORKER_FINISHED.load(Ordering::SeqCst) {
+            crate::serial_write_str("[KNT-PANIC] Futex waiter completed prematurely without being woken!\r\n");
+            return false;
+        }
+
+        // Release the lock and wake waiter thread
+        FUTEX_SYNC_WORD.store(0, Ordering::SeqCst);
+        let woken = futex_wake(FUTEX_SYNC_WORD.as_ptr(), 1);
+        if woken != 1 {
+            crate::serial_write_str("[KNT-PANIC] Futex wake did not wake exactly 1 thread!\r\n");
+            return false;
+        }
+
+        // Yield control to allow waiter to resume and complete
+        crate::process::scheduler::yield_now();
+
+        if !FUTEX_WORKER_FINISHED.load(Ordering::SeqCst) {
+            crate::serial_write_str("[KNT-PANIC] Futex waiter failed to resume after wake!\r\n");
+            return false;
+        }
+        crate::serial_write_str("[KNT-IPC-THREAD-PASS] Cross-thread futex sleep and wake synchronization verified\r\n");
+    }
+
+    crate::serial_write_str("[KNT-IPC-FUTEX-PASS] All IPC shared memory rings & futex benchmarks passed\r\n");
+    true
+}
