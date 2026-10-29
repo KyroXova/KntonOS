@@ -2,6 +2,8 @@
 
 pub mod dirty;
 pub mod cursor;
+pub mod window;
 
 pub use dirty::{DamageRegion, Rect};
 pub use cursor::{CursorState, CURSOR_HEIGHT, CURSOR_WIDTH};
+pub use window::{Window, BORDER_WIDTH, BUTTON_WIDTH, TITLEBAR_HEIGHT};
