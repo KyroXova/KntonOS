@@ -14,6 +14,7 @@ pub mod compositor;
 pub mod net;
 pub mod shell;
 pub mod ipc;
+pub mod loader;
 
 pub use memory::ALLOCATOR;
 
@@ -176,6 +177,12 @@ pub extern "C" fn kmain() -> ! {
     // Initialize and verify USB 3.0 xHCI & HID Keyboard/Mouse Input Pipeline
     if !drivers::usb::test_usb_hid_subsystem() {
         serial_write_str("[KNT-PANIC] USB HID subsystem self-test failed!\r\n");
+    }
+
+    // Initialize and verify ELF64 Executable Loader Subsystem
+    loader::init();
+    if !loader::test_loader_subsystem() {
+        serial_write_str("[KNT-PANIC] ELF64 loader subsystem self-test failed!\r\n");
     }
 
     // Spawn and execute initial Win32 PE64 userland process (/bin/init.exe)
