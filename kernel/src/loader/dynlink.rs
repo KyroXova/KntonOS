@@ -780,11 +780,11 @@ pub fn test_shared_library_loading_and_got_plt() -> bool {
     let mut linker = DynamicLinker::new();
 
     // 1. Create mock shared library "libcalc.so"
-    let mut libcalc = SharedLibrary::new("libcalc.so", 0x0000_7FFF_8000_0000, 0x10000);
     let add_fn_ptr = mock_lib_add as *const () as usize as u64;
     let mul_fn_ptr = mock_lib_mul as *const () as usize as u64;
-    libcalc.add_export("calc_add", add_fn_ptr - 0x0000_7FFF_8000_0000, 32, true);
-    libcalc.add_export("calc_mul", mul_fn_ptr - 0x0000_7FFF_8000_0000, 32, true);
+    let mut libcalc = SharedLibrary::new("libcalc.so", 0, 0x10000);
+    libcalc.add_export("calc_add", add_fn_ptr, 32, true);
+    libcalc.add_export("calc_mul", mul_fn_ptr, 32, true);
 
     linker.register_library(libcalc);
 
@@ -852,5 +852,34 @@ pub fn test_shared_library_loading_and_got_plt() -> bool {
         assert_eq!(prod, 42);
     }
 
+    true
+}
+
+/// Comprehensive verification test suite for ELF dynamic linker and shared library subsystem.
+pub fn test_dynamic_linker_subsystem() -> bool {
+    crate::serial_write_str("[KNT-DYNLINK-TEST] Running ELF dynamic linker and shared library test suite...\r\n");
+
+    // 1. Verify dynamic section parser and symbol table resolution
+    if !test_dynamic_parser_and_symbols() {
+        crate::serial_write_str("[KNT-PANIC] Dynamic section parser and symbol table resolution test failed!\r\n");
+        return false;
+    }
+    crate::serial_write_str("[KNT-DYNLINK-PARSER-PASS] PT_DYNAMIC section tags, string table, and symbol lookup verified\r\n");
+
+    // 2. Verify x86-64 RELA relocation records (RELATIVE, GLOB_DAT, JUMP_SLOT, 64)
+    if !test_relocation_engine() {
+        crate::serial_write_str("[KNT-PANIC] Relocation processing engine test failed!\r\n");
+        return false;
+    }
+    crate::serial_write_str("[KNT-DYNLINK-RELA-PASS] x86-64 RELA records (RELATIVE, GLOB_DAT, JUMP_SLOT, 64) verified\r\n");
+
+    // 3. Verify shared library loading, GOT/PLT slot patching, and cross-boundary function invocation
+    if !test_shared_library_loading_and_got_plt() {
+        crate::serial_write_str("[KNT-PANIC] Shared library loading and GOT/PLT execution test failed!\r\n");
+        return false;
+    }
+    crate::serial_write_str("[KNT-DYNLINK-GOTPLT-PASS] Shared library mapping, GOT/PLT binding, and function call execution verified\r\n");
+
+    crate::serial_write_str("[KNT-DYNLINK-PASS] Dynamic linker and shared library subsystem verified\r\n");
     true
 }

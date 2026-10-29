@@ -8,10 +8,10 @@ pub mod dynlink;
 
 pub use dynlink::{
     apply_relocations, compute_relocation, extract_string, find_symbol_in_symtab,
-    resolve_symbol_in_libraries, resolve_symbol_value, test_dynamic_parser_and_symbols,
-    test_relocation_engine, test_shared_library_loading_and_got_plt, DynamicLinker,
-    DynamicSectionInfo, DynLinkError, Elf64Dyn, Elf64Rela, Elf64Sym, ExportedSymbol,
-    SharedLibrary, DYNAMIC_LINKER, DT_BIND_NOW, DT_DEBUG, DT_FINI, DT_FINI_ARRAY,
+    resolve_symbol_in_libraries, resolve_symbol_value, test_dynamic_linker_subsystem,
+    test_dynamic_parser_and_symbols, test_relocation_engine,
+    test_shared_library_loading_and_got_plt, DynamicLinker, DynamicSectionInfo, DynLinkError,
+    Elf64Dyn, Elf64Rela, Elf64Sym, ExportedSymbol, SharedLibrary, DYNAMIC_LINKER, DT_BIND_NOW, DT_DEBUG, DT_FINI, DT_FINI_ARRAY,
     DT_FINI_ARRAYSZ, DT_FLAGS, DT_HASH, DT_INIT, DT_INIT_ARRAY, DT_INIT_ARRAYSZ, DT_JMPREL,
     DT_NEEDED, DT_NULL, DT_PLTGOT, DT_PLTREL, DT_PLTRELSZ, DT_REL, DT_RELA, DT_RELAENT,
     DT_RELASZ, DT_RELENT, DT_RELSZ, DT_RPATH, DT_SONAME, DT_STRSZ, DT_STRTAB, DT_SYMBOLIC,
@@ -101,6 +101,12 @@ pub fn test_loader_subsystem() -> bool {
 
         // Yield CPU to allow the spawned ELF user thread to execute and complete its syscall
         crate::process::scheduler::yield_now();
+    }
+
+    // 4. Verify Dynamic Linker & Shared Library Subsystem
+    if !dynlink::test_dynamic_linker_subsystem() {
+        crate::serial_write_str("[KNT-PANIC] Dynamic linker subsystem self-test failed!\r\n");
+        return false;
     }
 
     crate::serial_write_str("[KNT-ELF-PASS] ELF64 executable loader and userland execution verified\r\n");
