@@ -11,6 +11,7 @@ pub struct Scheduler {
     pub current: Option<Box<ThreadControlBlock>>,
     pub runqueues: [VecDeque<Box<ThreadControlBlock>>; 5],
     pub blocked_threads: alloc::vec::Vec<Box<ThreadControlBlock>>,
+    pub terminated_threads: alloc::vec::Vec<Box<ThreadControlBlock>>,
     pub switch_count: u64,
 }
 
@@ -26,6 +27,7 @@ impl Scheduler {
                 VecDeque::new(),
             ],
             blocked_threads: alloc::vec::Vec::new(),
+            terminated_threads: alloc::vec::Vec::new(),
             switch_count: 0,
         }
     }
@@ -110,7 +112,9 @@ pub fn yield_now() {
         // Re-enqueue prev thread into its priority runqueue ONLY if runnable
         if is_blocked {
             sched.blocked_threads.push(prev);
-        } else if !is_terminated {
+        } else if is_terminated {
+            sched.terminated_threads.push(prev);
+        } else {
             sched.runqueues[prev.priority as usize].push_back(prev);
         }
         sched.current = Some(next);
