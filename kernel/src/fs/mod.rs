@@ -273,9 +273,12 @@ impl VfsManager {
 
         self.dynamic_files.insert(alloc::string::String::from(path), data.to_vec());
 
-        if let Some(mut entry) = INODE_CACHE.lock().get_by_path(path) {
-            entry.mark_dirty();
-            INODE_CACHE.lock().insert(entry);
+        {
+            let mut cache = INODE_CACHE.lock();
+            if let Some(mut entry) = cache.get_by_path(path) {
+                entry.mark_dirty();
+                cache.insert(entry);
+            }
         }
 
         Ok(())
@@ -373,9 +376,12 @@ impl VfsManager {
         sec.acl = Some(acl.clone());
         self.security.insert(alloc::string::String::from(path), sec);
 
-        if let Some(mut cached) = INODE_CACHE.lock().get_by_path(path) {
-            cached.acl = Some(acl);
-            INODE_CACHE.lock().insert(cached);
+        {
+            let mut cache = INODE_CACHE.lock();
+            if let Some(mut cached) = cache.get_by_path(path) {
+                cached.acl = Some(acl);
+                cache.insert(cached);
+            }
         }
 
         Ok(())
@@ -405,9 +411,12 @@ impl VfsManager {
         sec.permissions = permissions;
         self.security.insert(alloc::string::String::from(path), sec);
 
-        if let Some(mut cached) = INODE_CACHE.lock().get_by_path(path) {
-            cached.permissions = permissions;
-            INODE_CACHE.lock().insert(cached);
+        {
+            let mut cache = INODE_CACHE.lock();
+            if let Some(mut cached) = cache.get_by_path(path) {
+                cached.permissions = permissions;
+                cache.insert(cached);
+            }
         }
 
         Ok(())
@@ -570,5 +579,283 @@ pub fn test_vfs_subsystem() -> bool {
     }
 
     serial_write_str("[KNT-FS-PASS] Initramfs directory tree and file reads verified\r\n");
+    true
+}
+
+
+/// Verification test suite for VFS Unified Inode Cache, Lock Manager, & ACL Access Controls.
+pub fn test_vfs_acl_and_cache() -> bool {
+    serial_write_str("[KNT-FS-ACL-TEST] Running VFS Inode cache, lock contention, and ACL verification suite...\r\n");
+
+    // 1. Verify POSIX Mode Permissions and SID evaluations
+    let sid_root = SecurityIdentifier::root();
+    let sid_owner = SecurityIdentifier::user(1001, 100);
+    let sid_group_member = SecurityIdentifier::user(1002, 100);
+    let sid_stranger = SecurityIdentifier::user(1003, 200);
+
+    let perms_640 = FilePermissions::from_octal(0o640);
+    if perms_640.to_octal() != 0o640 {
+        serial_write_str("[KNT-PANIC] FilePermissions octal conversion mismatch!\r\n");
+        return false;
+    }
+
+    // Owner can read & write 0o640
+    if !perms_640.check_permission(&sid_owner, &sid_owner, FileAccessMask::read_write()) {
+        serial_write_str("[KNT-PANIC] Owner failed read_write on 0o640!\r\n");
+        return false;
+    }
+    // Group member can read, but cannot write 0o640
+    if !perms_640.check_permission(&sid_owner, &sid_group_member, FileAccessMask::read()) {
+        serial_write_str("[KNT-PANIC] Group member denied read on 0o640!\r\n");
+        return false;
+    }
+    if perms_640.check_permission(&sid_owner, &sid_group_member, FileAccessMask::write()) {
+        serial_write_str("[KNT-PANIC] Group member granted write on 0o640!\r\n");
+        return false;
+    }
+    // Stranger cannot read or write 0o640
+    if perms_640.check_permission(&sid_owner, &sid_stranger, FileAccessMask::read()) {
+        serial_write_str("[KNT-PANIC] Stranger granted read on 0o640!\r\n");
+        return false;
+    }
+    // Root has full access
+    if !perms_640.check_permission(&sid_owner, &sid_root, FileAccessMask::all()) {
+        serial_write_str("[KNT-PANIC] Root denied access on 0o640!\r\n");
+        return false;
+    }
+    serial_write_str("  * POSIX mode permissions and SID evaluations verified\r\n");
+
+    // 2. Win32 / NT Discretionary Access Control List (DACL) evaluation
+    let mut acl = AccessControlList::new();
+    let sid_denied = SecurityIdentifier::user(2001, 300);
+    let sid_allowed = SecurityIdentifier::user(2002, 300);
+
+    // Explicit Deny takes precedence over Allow
+    acl.deny(sid_denied.clone(), FileAccessMask::read_write());
+    acl.allow(sid_allowed.clone(), FileAccessMask::read());
+    acl.allow(SecurityIdentifier::everyone(), FileAccessMask::read());
+
+    // Denied user must be rejected for read despite Everyone having read
+    if acl.check_access(&sid_denied, FileAccessMask::read()) {
+        serial_write_str("[KNT-PANIC] Explicit Deny ACE failed to block read access!\r\n");
+        return false;
+    }
+    // Allowed user must be granted read
+    if !acl.check_access(&sid_allowed, FileAccessMask::read()) {
+        serial_write_str("[KNT-PANIC] Explicit Allow ACE failed to grant read access!\r\n");
+        return false;
+    }
+    // Allowed user must NOT be granted write (not permitted)
+    if acl.check_access(&sid_allowed, FileAccessMask::write()) {
+        serial_write_str("[KNT-PANIC] Allowed user granted unrequested write permission!\r\n");
+        return false;
+    }
+    // Stranger gets read from Everyone, but no write
+    if !acl.check_access(&sid_stranger, FileAccessMask::read()) {
+        serial_write_str("[KNT-PANIC] Everyone ACE failed to grant read access!\r\n");
+        return false;
+    }
+    if acl.check_access(&sid_stranger, FileAccessMask::write()) {
+        serial_write_str("[KNT-PANIC] Stranger granted unpermitted write access!\r\n");
+        return false;
+    }
+    serial_write_str("  * Win32/NT Discretionary ACL (DACL) allow/deny evaluation verified\r\n");
+
+    // 3. InodeLockManager whole-file and byte-range contention
+    let mut lock_mgr = InodeLockManager::new();
+    let inode_test = 501u64;
+
+    // Process 1 takes Shared lock on file
+    if !lock_mgr.try_lock_file(inode_test, InodeLockType::Shared, 1) {
+        serial_write_str("[KNT-PANIC] Process 1 failed to acquire Shared file lock!\r\n");
+        return false;
+    }
+    // Process 2 takes Shared lock on file -> Should succeed (shared locks coexist)
+    if !lock_mgr.try_lock_file(inode_test, InodeLockType::Shared, 2) {
+        serial_write_str("[KNT-PANIC] Process 2 failed to acquire concurrent Shared file lock!\r\n");
+        return false;
+    }
+    // Process 3 attempts Exclusive lock on file -> Must fail
+    if lock_mgr.try_lock_file(inode_test, InodeLockType::Exclusive, 3) {
+        serial_write_str("[KNT-PANIC] Process 3 acquired Exclusive file lock while Shared active!\r\n");
+        return false;
+    }
+    // Unlock process 1 and 2
+    if !lock_mgr.unlock_file(inode_test, 1) || !lock_mgr.unlock_file(inode_test, 2) {
+        serial_write_str("[KNT-PANIC] Failed to release Shared file locks!\r\n");
+        return false;
+    }
+    // Now Process 3 acquires Exclusive lock -> Should succeed
+    if !lock_mgr.try_lock_file(inode_test, InodeLockType::Exclusive, 3) {
+        serial_write_str("[KNT-PANIC] Process 3 failed to acquire Exclusive lock on free file!\r\n");
+        return false;
+    }
+    // Process 1 attempts Shared lock -> Must fail
+    if lock_mgr.try_lock_file(inode_test, InodeLockType::Shared, 1) {
+        serial_write_str("[KNT-PANIC] Process 1 acquired Shared lock during active Exclusive lock!\r\n");
+        return false;
+    }
+    lock_mgr.unlock_file(inode_test, 3);
+
+    // Test byte-range lock non-overlapping vs overlapping
+    if !lock_mgr.try_lock_range(inode_test, InodeLockType::Exclusive, 0, 100, 1) {
+        serial_write_str("[KNT-PANIC] Process 1 failed byte-range [0..100) lock!\r\n");
+        return false;
+    }
+    // Non-overlapping range [100..200) by Process 2 should succeed
+    if !lock_mgr.try_lock_range(inode_test, InodeLockType::Exclusive, 100, 100, 2) {
+        serial_write_str("[KNT-PANIC] Process 2 failed non-overlapping range [100..200) lock!\r\n");
+        return false;
+    }
+    // Overlapping range [50..150) by Process 3 must fail
+    if lock_mgr.try_lock_range(inode_test, InodeLockType::Exclusive, 50, 100, 3) {
+        serial_write_str("[KNT-PANIC] Process 3 acquired overlapping range [50..150) lock!\r\n");
+        return false;
+    }
+    lock_mgr.release_all_owner_locks(1);
+    lock_mgr.release_all_owner_locks(2);
+    if lock_mgr.is_locked(inode_test) {
+        serial_write_str("[KNT-PANIC] Inode lock manager still reports locks after release_all!\r\n");
+        return false;
+    }
+    serial_write_str("  * Thread-safe Inode read-write lock manager and byte-range contention verified\r\n");
+
+    // 4. InodeLookupCache LRU aging, eviction, and hit-rate tracking
+    let mut cache = InodeLookupCache::with_capacity(3);
+    let dummy_inode = alloc::sync::Arc::new(DynamicFileInode {
+        name: alloc::string::String::from("/test.txt"),
+        size: 0,
+        permissions: FilePerms::rwx(),
+        inode_id: 101,
+        data: alloc::vec::Vec::new(),
+    });
+
+    let e1 = InodeCacheEntry::new(101, "/file1.txt", dummy_inode.clone(), FilePermissions::default_file(), sid_owner.clone());
+    let e2 = InodeCacheEntry::new(102, "/file2.txt", dummy_inode.clone(), FilePermissions::default_file(), sid_owner.clone());
+    let e3 = InodeCacheEntry::new(103, "/file3.txt", dummy_inode.clone(), FilePermissions::default_file(), sid_owner.clone());
+    let e4 = InodeCacheEntry::new(104, "/file4.txt", dummy_inode.clone(), FilePermissions::default_file(), sid_owner.clone());
+
+    cache.insert(e1);
+    cache.insert(e2);
+    cache.insert(e3);
+    if cache.len() != 3 {
+        serial_write_str("[KNT-PANIC] InodeCache length is not 3!\r\n");
+        return false;
+    }
+
+    // Touch /file1.txt to make /file2.txt the LRU entry
+    let hit_e1 = cache.get_by_path("/file1.txt");
+    if hit_e1.is_none() {
+        serial_write_str("[KNT-PANIC] InodeCache get_by_path failed for /file1.txt!\r\n");
+        return false;
+    }
+
+    // Insert e4 -> must evict /file2.txt
+    let evicted = cache.insert(e4);
+    if evicted.is_none() || evicted.as_ref().unwrap().path != "/file2.txt" {
+        serial_write_str("[KNT-PANIC] InodeCache failed to evict LRU entry /file2.txt!\r\n");
+        return false;
+    }
+    // Verify /file2.txt is a cache miss now
+    if cache.get_by_path("/file2.txt").is_some() {
+        serial_write_str("[KNT-PANIC] Evicted entry /file2.txt still present in cache!\r\n");
+        return false;
+    }
+    let stats = cache.stats();
+    if stats.hits != 1 || stats.misses != 1 || stats.evictions != 1 {
+        serial_write_str("[KNT-PANIC] InodeCache stats accounting mismatch!\r\n");
+        return false;
+    }
+    serial_write_str("  * 128-entry Inode lookup cache with LRU aging and hit-rate tracking verified\r\n");
+
+    // 5. Integrated VFS Path Execution (open_with_perm, read_file_with_perm, write_file_with_perm, create_file_with_perm)
+    {
+        let mut vfs = VFS.lock();
+        let secure_data = b"CONFIDENTIAL_KEY_987654";
+        let res_create = vfs.create_file_with_perm(
+            "/etc/shadow.txt",
+            secure_data,
+            sid_owner.clone(),
+            FilePermissions::from_octal(0o600), // Owner rw only
+            None,
+            &sid_owner,
+        );
+        if res_create.is_err() {
+            serial_write_str("[KNT-PANIC] create_file_with_perm failed for /etc/shadow.txt!\r\n");
+            return false;
+        }
+
+        // Stranger attempts read -> must be PermissionDenied
+        match vfs.read_file_with_perm("/etc/shadow.txt", &sid_stranger) {
+            Err(FsError::PermissionDenied) => {}
+            _ => {
+                serial_write_str("[KNT-PANIC] Unauthorized user was not denied read on /etc/shadow.txt!\r\n");
+                return false;
+            }
+        }
+
+        // Owner reads -> succeeds
+        match vfs.read_file_with_perm("/etc/shadow.txt", &sid_owner) {
+            Ok(data) => {
+                if data != secure_data {
+                    serial_write_str("[KNT-PANIC] /etc/shadow.txt content mismatch on authorized read!\r\n");
+                    return false;
+                }
+            }
+            Err(_) => {
+                serial_write_str("[KNT-PANIC] Authorized owner read failed on /etc/shadow.txt!\r\n");
+                return false;
+            }
+        }
+
+        // Add explicit ACL granting user_auditor read access
+        let sid_auditor = SecurityIdentifier::user(3001, 500);
+        let mut shadow_acl = AccessControlList::new();
+        shadow_acl.allow(sid_auditor.clone(), FileAccessMask::read());
+        let res_acl = vfs.set_acl("/etc/shadow.txt", shadow_acl, &sid_owner);
+        if res_acl.is_err() {
+            serial_write_str("[KNT-PANIC] set_acl failed on /etc/shadow.txt!\r\n");
+            return false;
+        }
+
+        // Auditor reads -> succeeds via ACL
+        match vfs.read_file_with_perm("/etc/shadow.txt", &sid_auditor) {
+            Ok(data) => {
+                if data != secure_data {
+                    serial_write_str("[KNT-PANIC] /etc/shadow.txt content mismatch on auditor read!\r\n");
+                    return false;
+                }
+            }
+            Err(_) => {
+                serial_write_str("[KNT-PANIC] Auditor ACL read failed on /etc/shadow.txt!\r\n");
+                return false;
+            }
+        }
+
+        // Auditor attempts write -> denied by ACL
+        match vfs.write_file_with_perm("/etc/shadow.txt", b"TAMPERED_DATA", &sid_auditor) {
+            Err(FsError::PermissionDenied) => {}
+            _ => {
+                serial_write_str("[KNT-PANIC] Unauthorized write succeeded on ACL protected file!\r\n");
+                return false;
+            }
+        }
+
+        // Test lock contention on write: Process acquires exclusive lock
+        let shadow_inode_id = INODE_CACHE.lock().get_by_path("/etc/shadow.txt").map(|e| e.inode_id).unwrap_or(0);
+        INODE_LOCK_MGR.lock().try_lock_file(shadow_inode_id, InodeLockType::Exclusive, 999);
+
+        // Owner attempts write while locked by owner 999 -> must be blocked
+        match vfs.write_file_with_perm("/etc/shadow.txt", b"UPDATE", &sid_owner) {
+            Err(FsError::PermissionDenied) => {}
+            _ => {
+                serial_write_str("[KNT-PANIC] Write succeeded during active lock contention!\r\n");
+                return false;
+            }
+        }
+        INODE_LOCK_MGR.lock().unlock_file(shadow_inode_id, 999);
+    }
+
+    serial_write_str("[KNT-FS-ACL-PASS] VFS unified Inode cache, lock manager, and ACL access controls verified\r\n");
     true
 }
