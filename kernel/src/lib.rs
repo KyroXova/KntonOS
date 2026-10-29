@@ -16,6 +16,7 @@ pub mod net;
 pub mod shell;
 pub mod ipc;
 pub mod loader;
+pub mod graphics;
 
 pub use memory::ALLOCATOR;
 
