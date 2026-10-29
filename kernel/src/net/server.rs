@@ -182,6 +182,66 @@ impl ServerResponse {
     }
 }
 
+/// Maps file extensions to standard MIME content types.
+pub fn guess_mime_type(path: &str) -> &'static str {
+    if path.ends_with(".html") || path.ends_with(".htm") {
+        "text/html; charset=utf-8"
+    } else if path.ends_with(".txt") || path.ends_with(".log") {
+        "text/plain; charset=utf-8"
+    } else if path.ends_with(".json") {
+        "application/json"
+    } else if path.ends_with(".css") {
+        "text/css; charset=utf-8"
+    } else if path.ends_with(".js") {
+        "application/javascript"
+    } else if path.ends_with(".png") {
+        "image/png"
+    } else {
+        "application/octet-stream"
+    }
+}
+
+/// Static VFS file handler serving files from the Virtual File System root (/).
+pub fn vfs_static_handler(req: &ServerRequest) -> ServerResponse {
+    let raw_path = req.path.trim();
+    let target_path = if raw_path == "/" || raw_path.is_empty() {
+        "/index.html"
+    } else {
+        raw_path
+    };
+
+    // Attempt to read from kernel VFS
+    let vfs_result = crate::fs::VFS.lock().read_file(target_path);
+    match vfs_result {
+        Ok(bytes) => {
+            let mime = guess_mime_type(target_path);
+            ServerResponse {
+                status_code: 200,
+                status_text: "OK",
+                content_type: mime,
+                headers: Vec::new(),
+                body: bytes,
+            }
+        }
+        Err(_) => {
+            // Also try stripping leading slash if lookup requires relative segment
+            if let Some(stripped) = target_path.strip_prefix('/') {
+                if let Ok(bytes) = crate::fs::VFS.lock().read_file(stripped) {
+                    let mime = guess_mime_type(target_path);
+                    return ServerResponse {
+                        status_code: 200,
+                        status_text: "OK",
+                        content_type: mime,
+                        headers: Vec::new(),
+                        body: bytes,
+                    };
+                }
+            }
+            ServerResponse::not_found()
+        }
+    }
+}
+
 /// Embedded HTTP Micro-Server with registered route handlers.
 pub struct HttpServer {
     pub port: u16,
@@ -201,6 +261,11 @@ impl HttpServer {
     /// Registers a route. `is_prefix = false` matches exact path, `true` matches path prefix.
     pub fn add_route(&mut self, path: &str, is_prefix: bool, handler: RouteHandler) {
         self.routes.push((String::from(path), is_prefix, handler));
+    }
+
+    /// Registers the default static VFS file handler for serving web assets from root.
+    pub fn register_vfs_handler(&mut self) {
+        self.add_route("/", true, vfs_static_handler);
     }
 
     /// Processes raw request bytes and routes to the matching handler.
@@ -290,6 +355,39 @@ pub fn verify_http_server_routing() -> bool {
         Err(_) => return false,
     };
     if resp3.status_code != 404 {
+        return false;
+    }
+
+    true
+}
+
+/// Self-test verifying MIME type resolution and 404 response on missing VFS paths.
+pub fn verify_vfs_file_handler() -> bool {
+    // 1. Verify MIME type mappings
+    if guess_mime_type("index.html") != "text/html; charset=utf-8" {
+        return false;
+    }
+    if guess_mime_type("log.txt") != "text/plain; charset=utf-8" {
+        return false;
+    }
+    if guess_mime_type("telemetry.json") != "application/json" {
+        return false;
+    }
+    if guess_mime_type("payload.bin") != "application/octet-stream" {
+        return false;
+    }
+
+    // 2. Verify 404 response for nonexistent file
+    let req = ServerRequest {
+        method: HttpMethod::Get,
+        path: String::from("/nonexistent-knton-test-file-99.txt"),
+        query: None,
+        headers: Vec::new(),
+        body: Vec::new(),
+    };
+
+    let resp = vfs_static_handler(&req);
+    if resp.status_code != 404 {
         return false;
     }
 
