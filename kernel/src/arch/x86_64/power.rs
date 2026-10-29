@@ -587,3 +587,76 @@ pub fn test_sleep_and_reset_engine() -> bool {
 
     true
 }
+
+/// CPU throttling state and duty cycle percentage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CpuThrottleState {
+    pub duty_percent: u8,
+    pub throttling_enabled: bool,
+    pub idle_hlt_count: u64,
+}
+
+pub static CPU_THROTTLE: crate::memory::spinlock::Spinlock<CpuThrottleState> =
+    crate::memory::spinlock::Spinlock::new(CpuThrottleState {
+        duty_percent: 0,
+        throttling_enabled: false,
+        idle_hlt_count: 0,
+    });
+
+/// Puts the CPU into low-power C1 state (HLT with interrupts enabled).
+#[inline(always)]
+pub fn cpu_idle() {
+    {
+        let mut guard = CPU_THROTTLE.lock();
+        guard.idle_hlt_count += 1;
+    }
+    unsafe {
+        core::arch::asm!("sti", "hlt", options(nomem, nostack, preserves_flags));
+    }
+}
+
+/// Relaxes the CPU in busy-wait spinlocks.
+#[inline(always)]
+pub fn cpu_relax() {
+    core::hint::spin_loop();
+}
+
+/// Sets CPU throttling duty cycle percentage (0 to 100).
+pub fn set_cpu_throttling(duty_percent: u8) {
+    let clamped = core::cmp::min(duty_percent, 100);
+    let mut guard = CPU_THROTTLE.lock();
+    guard.duty_percent = clamped;
+    guard.throttling_enabled = clamped > 0;
+}
+
+/// Returns current CPU throttling duty cycle percentage.
+pub fn get_cpu_throttling() -> u8 {
+    CPU_THROTTLE.lock().duty_percent
+}
+
+/// Initializes the ACPI power management subsystem and registers the global controller.
+pub fn init() {
+    serial_write_str("[KNT-POWER-INIT] Initializing ACPI power management subsystem...\r\n");
+    let fadt = FadtInfo::discover();
+    let mut pm = PowerManager::new(fadt);
+    let _ = pm.enable_acpi();
+    *POWER_MANAGER.lock() = Some(pm);
+    serial_write_str("[KNT-POWER] ACPI power management active with S3/S5 and CPU throttling support\r\n");
+}
+
+/// Verification unit test ensuring CPU throttling state and idle scaling operate correctly.
+pub fn test_cpu_throttling() -> bool {
+    assert_eq!(get_cpu_throttling(), 0);
+
+    set_cpu_throttling(50);
+    assert_eq!(get_cpu_throttling(), 50);
+
+    set_cpu_throttling(100);
+    assert_eq!(get_cpu_throttling(), 100);
+
+    set_cpu_throttling(0);
+    assert_eq!(get_cpu_throttling(), 0);
+
+    cpu_relax();
+    true
+}

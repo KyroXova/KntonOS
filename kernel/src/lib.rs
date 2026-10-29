@@ -120,6 +120,9 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] SMP and Local APIC timer self-test failed!\r\n");
     }
 
+    // Initialize ACPI Power Management Subsystem (FADT/DSDT S3/S5, CPU Throttling, Reset & Shutdown)
+    arch::init_power_management();
+
     // Initialize Virtual File System & mount demo initramfs
     fs::init();
     if !fs::test_vfs_subsystem() {
@@ -204,8 +207,6 @@ pub extern "C" fn kmain() -> ! {
     serial_write_str("[KNT-BOOT-SUCCESS] Native UEFI-to-kernel boot verified\r\n");
 
     loop {
-        unsafe {
-            core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
-        }
+        arch::cpu_idle();
     }
 }
