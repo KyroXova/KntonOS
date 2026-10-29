@@ -1,6 +1,6 @@
 # Contributor agreement
 
-This repository uses the coordination system described in `CONTRIBUTING.md` and `TASKS.md`. AgentIRC is the sole system of record for progress reports, task transfers, blockers, review findings, validation evidence, and next actions; do not create or update repository handover documents.
+This repository uses the coordination system described in `CONTRIBUTING.md` and `TASKS.md`. AgentIRC is the sole system of record for progress reports, task transfers, blockers, review findings, validation evidence, and next actions; do not create or update repository coordination-record documents.
 
 Before contributing, refresh `main` when a remote exists, then read the scope, task board, active claims, unresolved owner questions, relevant changed paths, and the latest AgentIRC updates for the assigned task. Claim only an eligible, unowned task and reserve only the exact files or components needed. Do not infer missing product requirements.
 

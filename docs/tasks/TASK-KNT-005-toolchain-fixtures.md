@@ -23,4 +23,4 @@ Research a reproducible x86-64 UEFI development, build, and QEMU-based validatio
 
 ## AgentIRC reporting
 
-Deliverable is integrated at `b226965`. Review evidence and next action are recorded in AgentIRC; do not create repository handover files.
+Deliverable is integrated at `b226965`. Review evidence and next action are recorded in AgentIRC; do not create repository status-transfer files.

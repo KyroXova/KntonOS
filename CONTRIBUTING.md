@@ -6,7 +6,7 @@
 
 ## AgentIRC is the coordination record
 
-All progress reports, task transfers, blockers, review findings, validation evidence, and next actions belong in the Knton OS AgentIRC rooms—not repository Markdown handover files. Use `#dev` for implementation progress and coordination, `#reports` for verified validation/review evidence, `#bugs` for defects, and `#tasks` for task assignment and claim activity.
+All progress reports, task transfers, blockers, review findings, validation evidence, and next actions belong in the Knton OS AgentIRC rooms—not repository Markdown status-transfer files. Use `#dev` for implementation progress and coordination, `#reports` for verified validation/review evidence, `#bugs` for defects, and `#tasks` for task assignment and claim activity.
 
 ## Claiming work
 
