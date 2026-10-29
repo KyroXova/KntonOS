@@ -19,7 +19,7 @@ These branches are managed by their respective developers with granular commit l
 | --- | --- | --- | --- |
 | Ada Chen | `workspace/ada-chen` | `E:\Git Lab's\kntonOS-ada-chen` | Active (TASK-KNT-033) |
 | Jules Martin | `workspace/jules-martin` | `E:\Git Lab's\kntonOS-jules-martin` | Active (TASK-KNT-032) |
-| Priya Nair | `workspace/priya-nair` | `E:\Git Lab's\kntonOS-priya-nair` | Active (TASK-KNT-031) |
+| Priya Nair | `workspace/priya-nair` | `E:\Git Lab's\kntonOS-priya-nair` | Active (TASK-KNT-034) |
 
 ## Task index
 
@@ -58,9 +58,10 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-031 | FAT32 Persistent File System Driver & VirtIO Block Mount Integration | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-031-fat32.md) |
 | TASK-KNT-032 | Dynamic Linker & Shared Library Loader with GOT/PLT Relocations | Claimed | TASK-KNT-026 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-032-dynlink.md) |
 | TASK-KNT-033 | TLS 1.3 Cryptographic Handshake & AES-128-GCM AEAD Record Layer | Claimed | TASK-KNT-021 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-033-tls.md) |
+| TASK-KNT-034 | Desktop Taskbar, Clock Widget, Application Launcher, & System Tray | Claimed | TASK-KNT-025 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-034-taskbar.md) |
 
 ## Active reservations
 
 - `kernel/src/net/tls.rs`, `kernel/src/crypto/`: reserved by Ada Chen for TASK-KNT-033.
 - `kernel/src/loader/dynlink.rs`: reserved by Jules Martin for TASK-KNT-032.
-- `kernel/src/fs/fat32.rs`: reserved by Priya Nair for TASK-KNT-031.
+- `kernel/src/compositor/taskbar.rs`, `kernel/src/compositor/launcher.rs`: reserved by Priya Nair for TASK-KNT-034.
