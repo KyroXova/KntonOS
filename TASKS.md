@@ -18,7 +18,7 @@ These branches are managed by their respective developers with granular commit l
 | Contributor identity | Branch | Local workspace | Status |
 | --- | --- | --- | --- |
 | Ada Chen | `workspace/ada-chen` | `E:\Git Lab's\kntonOS-ada-chen` | Active (TASK-KNT-036) |
-| Jules Martin | `workspace/jules-martin` | `E:\Git Lab's\kntonOS-jules-martin` | Active (TASK-KNT-035) |
+| Jules Martin | `workspace/jules-martin` | `E:\Git Lab's\kntonOS-jules-martin` | Idle (TASK-KNT-035 complete) |
 | Priya Nair | `workspace/priya-nair` | `E:\Git Lab's\kntonOS-priya-nair` | Active (TASK-KNT-034) |
 
 ## Task index
@@ -59,11 +59,10 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-032 | Dynamic Linker & Shared Library Loader with GOT/PLT Relocations | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-032-dynlink.md) |
 | TASK-KNT-033 | TLS 1.3 Cryptographic Handshake & AES-128-GCM AEAD Record Layer | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-033-tls.md) |
 | TASK-KNT-034 | Desktop Taskbar, Clock Widget, Application Launcher, & System Tray | Claimed | TASK-KNT-025 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-034-taskbar.md) |
-| TASK-KNT-035 | ACPI Power Management Subsystem (FADT/DSDT S3/S5, CPU Throttling, Reset & Shutdown) | Claimed | TASK-KNT-018 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-035-power.md) |
+| TASK-KNT-035 | ACPI Power Management Subsystem (FADT/DSDT S3/S5, CPU Throttling, Reset & Shutdown) | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-035-power.md) |
 | TASK-KNT-036 | Real-Time Audio Subsystem (Intel HDA / AC97 Codec Driver & PCM Audio Streamer) | Claimed | TASK-KNT-020 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-036-audio.md) |
 
 ## Active reservations
 
 - `kernel/src/compositor/taskbar.rs`, `kernel/src/compositor/launcher.rs`: reserved by Priya Nair for TASK-KNT-034.
-- `kernel/src/arch/x86_64/power.rs`: reserved by Jules Martin for TASK-KNT-035.
 - `kernel/src/drivers/audio/`: reserved by Ada Chen for TASK-KNT-036.
