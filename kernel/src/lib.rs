@@ -191,6 +191,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Software 3D graphics subsystem self-test failed!\r\n");
     }
 
+    // Initialize and verify AHCI SATA Persistent Storage Subsystem
+    if !drivers::storage::test_ahci_sata_subsystem() {
+        serial_write_str("[KNT-PANIC] AHCI SATA storage subsystem self-test failed!\r\n");
+    }
+
     // Initialize Embedded Network Protocol Stack (ARP, IPv4, ICMP, UDP, TCP)
     net::init();
     if !net::test_network_stack() {

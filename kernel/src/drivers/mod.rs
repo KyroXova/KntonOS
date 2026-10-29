@@ -6,6 +6,7 @@ pub mod pci_scanner;
 pub mod audio;
 pub mod usb;
 pub mod gpu;
+pub mod storage;
 
 use alloc::vec::Vec;
 use crate::memory::spinlock::Spinlock;
