@@ -48,7 +48,7 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-021 | Domain Name System (DNS) Resolver & HTTP/1.1 Micro-Client | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-021-dns-http.md) |
 | TASK-KNT-022 | IPC Zero-Copy Shared Memory Rings & Fast Futex Synchronization | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-022-ipc-futex.md) |
 | TASK-KNT-023 | USB 3.0 xHCI Enumeration & HID Keyboard/Mouse Input Pipeline | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-023-usb-hid.md) |
-| TASK-KNT-024 | DHCP IPv4 Lease Client & Network Auto-Configuration | Claimed | TASK-KNT-021 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-024-dhcp-client.md) |
+| TASK-KNT-024 | DHCP IPv4 Lease Client & Network Auto-Configuration | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-024-dhcp-client.md) |
 | TASK-KNT-025 | Desktop GUI Controls & Acrylic Backdrop Surface Renderer | Claimed | TASK-KNT-023 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-025-gui-controls.md) |
 | TASK-KNT-026 | ELF64 Executable Loader & Userland Execution Subsystem | Claimed | TASK-KNT-014 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-026-elf64-loader.md) |
 
