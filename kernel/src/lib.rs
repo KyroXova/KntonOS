@@ -11,6 +11,7 @@ pub mod process;
 pub mod syscall;
 pub mod drivers;
 pub mod compositor;
+pub mod net;
 
 pub use memory::ALLOCATOR;
 
