@@ -8,6 +8,8 @@ pub struct Context {
     pub r14: u64,
     pub r13: u64,
     pub r12: u64,
+    pub rsi: u64,
+    pub rdi: u64,
     pub rbx: u64,
     pub rbp: u64,
     pub rip: u64,
@@ -21,6 +23,8 @@ impl Context {
             r14: 0,
             r13: 0,
             r12: 0,
+            rsi: 0,
+            rdi: 0,
             rbx: 0,
             rbp: 0,
             rip: 0,
@@ -29,31 +33,32 @@ impl Context {
 }
 
 /// Low-level assembly context switch between two execution contexts.
-///
-/// Saves callee-saved registers and RFLAGS of `prev` onto its stack,
-/// saves `rsp` to `*prev_rsp`, loads `next_rsp` into `rsp`,
-/// and restores the new thread's registers and RFLAGS before returning.
+/// Uses `extern "win64"` ABI convention (RCX = prev_rsp, RDX = next_rsp).
 #[unsafe(naked)]
-pub unsafe extern "C" fn switch_context(prev_rsp: *mut u64, next_rsp: u64) {
+pub unsafe extern "win64" fn switch_context(prev_rsp: *mut u64, next_rsp: u64) {
     core::arch::naked_asm!(
         // Save callee-saved registers onto current thread stack
         "push rbp",
         "push rbx",
+        "push rdi",
+        "push rsi",
         "push r12",
         "push r13",
         "push r14",
         "push r15",
         "pushfq",
-        // Save current stack pointer to prev_rsp (rdi in SysV, rcx in Win64)
-        "mov [rdi], rsp",
-        // Load next stack pointer (rsi in SysV, rdx in Win64)
-        "mov rsp, rsi",
+        // Save current stack pointer to prev_rsp (in RCX for win64)
+        "mov [rcx], rsp",
+        // Load next stack pointer from next_rsp (in RDX for win64)
+        "mov rsp, rdx",
         // Restore next thread callee-saved registers
         "popfq",
         "pop r15",
         "pop r14",
         "pop r13",
         "pop r12",
+        "pop rsi",
+        "pop rdi",
         "pop rbx",
         "pop rbp",
         "ret",

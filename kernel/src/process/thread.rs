@@ -48,28 +48,32 @@ impl ThreadControlBlock {
         // Align stack top to 16 bytes
         let stack_top = (stack.as_ptr() as u64 + DEFAULT_STACK_SIZE as u64) & !0x0F;
 
-        // Initialize stack frame for `switch_context`
-        // Memory layout pushed from top to bottom:
-        // [stack_top - 8]:  thread_bootstrap entry return address
+        // Initialize stack frame for `switch_context` (win64 calling convention):
+        // 10 64-bit entries (80 bytes total):
+        // [stack_top - 8]:  thread_bootstrap return address
         // [stack_top - 16]: rbp (0)
         // [stack_top - 24]: rbx (0)
-        // [stack_top - 32]: r12 (entry function pointer)
-        // [stack_top - 40]: r13 (0)
-        // [stack_top - 48]: r14 (0)
-        // [stack_top - 56]: r15 (0)
-        // [stack_top - 64]: rflags (0x202 = Interrupts Enabled)
-        let rsp = stack_top - 64;
+        // [stack_top - 32]: rdi (0)
+        // [stack_top - 40]: rsi (0)
+        // [stack_top - 48]: r12 (thread entry function pointer)
+        // [stack_top - 56]: r13 (0)
+        // [stack_top - 64]: r14 (0)
+        // [stack_top - 72]: r15 (0)
+        // [stack_top - 80]: rflags (0x202 = Interrupts Enabled)
+        let rsp = stack_top - 80;
 
         unsafe {
             let p = rsp as *mut u64;
-            *p.add(7) = thread_bootstrap as *const () as usize as u64; // Return address
-            *p.add(6) = 0;                                 // RBP
-            *p.add(5) = 0;                                 // RBX
-            *p.add(4) = entry as usize as u64;            // R12 (thread entry func)
-            *p.add(3) = 0;                                 // R13
-            *p.add(2) = 0;                                 // R14
-            *p.add(1) = 0;                                 // R15
-            *p.add(0) = 0x202;                             // RFLAGS (IF enabled)
+            *p.add(9) = thread_bootstrap as *const () as usize as u64;
+            *p.add(8) = 0;
+            *p.add(7) = 0;
+            *p.add(6) = 0;
+            *p.add(5) = 0;
+            *p.add(4) = entry as *const () as usize as u64;
+            *p.add(3) = 0;
+            *p.add(2) = 0;
+            *p.add(1) = 0;
+            *p.add(0) = 0x202;
         }
 
         Self {
@@ -107,8 +111,9 @@ impl ThreadControlBlock {
 #[unsafe(naked)]
 unsafe extern "C" fn thread_bootstrap() {
     core::arch::naked_asm!(
+        "sub rsp, 32", // 32-byte Win64 shadow space
         "call r12",
-        // When thread function finishes, terminate the thread
+        "add rsp, 32",
         "call {exit}",
         "ud2",
         exit = sym thread_exit_handler,
@@ -116,12 +121,7 @@ unsafe extern "C" fn thread_bootstrap() {
 }
 
 #[no_mangle]
-extern "C" fn thread_exit_handler() {
+extern "C" fn thread_exit_handler() -> ! {
     crate::serial_write_str("[KNT-PROC] Thread execution completed. Terminating.\r\n");
-    // Handled by scheduler termination routine
-    loop {
-        unsafe {
-            core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
-        }
-    }
+    crate::process::scheduler::exit_current_thread();
 }

@@ -89,6 +89,12 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] VFS subsystem self-test failed!\r\n");
     }
 
+    // Initialize Process & Thread Scheduler subsystem
+    process::init();
+    if !process::test_process_subsystem() {
+        serial_write_str("[KNT-PANIC] Process subsystem self-test failed!\r\n");
+    }
+
     serial_write_str("[KNT-SUBSYSTEM] Display & Win32 PE64 loader modules active\r\n");
     serial_write_str("[KNT-BOOT-SUCCESS] Native UEFI-to-kernel boot verified\r\n");
 

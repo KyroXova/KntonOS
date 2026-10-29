@@ -91,8 +91,12 @@ pub fn yield_now() {
             None => return,
         };
 
-        prev.state = ThreadState::Ready;
-        prev.quantum_remaining = DEFAULT_TIME_QUANTUM;
+        let is_terminated = prev.state == ThreadState::Terminated;
+
+        if !is_terminated {
+            prev.state = ThreadState::Ready;
+            prev.quantum_remaining = DEFAULT_TIME_QUANTUM;
+        }
 
         next.state = ThreadState::Running;
         next.quantum_remaining = DEFAULT_TIME_QUANTUM;
@@ -100,8 +104,10 @@ pub fn yield_now() {
         let prev_rsp_ptr = &raw mut prev.rsp;
         let next_rsp = next.rsp;
 
-        // Re-enqueue prev thread into its priority runqueue
-        sched.runqueues[prev.priority as usize].push_back(prev);
+        // Re-enqueue prev thread into its priority runqueue ONLY if not terminated
+        if !is_terminated {
+            sched.runqueues[prev.priority as usize].push_back(prev);
+        }
         sched.current = Some(next);
         sched.switch_count += 1;
 
@@ -111,6 +117,24 @@ pub fn yield_now() {
     // Perform low-level register swap and stack switch outside the spinlock
     unsafe {
         switch_context(prev_rsp_ptr, next_rsp);
+    }
+}
+
+/// Terminates the current thread and immediately switches to the next available thread.
+pub fn exit_current_thread() -> ! {
+    {
+        let mut guard = SCHEDULER.lock();
+        if let Some(ref mut sched) = *guard {
+            if let Some(ref mut current) = sched.current {
+                current.state = ThreadState::Terminated;
+            }
+        }
+    }
+    yield_now();
+    loop {
+        unsafe {
+            core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
+        }
     }
 }
 
