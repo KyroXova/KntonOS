@@ -4,6 +4,8 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use crate::display::color::Color;
 use crate::display::font::{get_glyph, FONT_HEIGHT, FONT_WIDTH};
+use super::acrylic::{AcrylicConfig, AcrylicSurface};
+use super::controls::{Button, TitleBarButton, TitleBarButtonType};
 use super::dirty::Rect;
 
 pub const TITLEBAR_HEIGHT: usize = 32;
@@ -26,6 +28,11 @@ pub struct Window {
     pub client_buffer: Vec<Color>,
     pub client_width: usize,
     pub client_height: usize,
+    pub close_button: TitleBarButton,
+    pub max_button: TitleBarButton,
+    pub min_button: TitleBarButton,
+    pub widgets: Vec<Button>,
+    pub use_acrylic: bool,
 }
 
 impl Window {
@@ -35,6 +42,24 @@ impl Window {
         let buffer_size = client_width * client_height;
         let mut client_buffer = Vec::with_capacity(buffer_size);
         client_buffer.resize(buffer_size, Color::WIN11_CARD_BG);
+
+        let tb_y = y + BORDER_WIDTH;
+        let close_x = x + width.saturating_sub(BORDER_WIDTH + BUTTON_WIDTH);
+        let max_x = close_x.saturating_sub(BUTTON_WIDTH);
+        let min_x = max_x.saturating_sub(BUTTON_WIDTH);
+
+        let close_button = TitleBarButton::new(
+            TitleBarButtonType::Close,
+            Rect::new(close_x, tb_y, BUTTON_WIDTH, TITLEBAR_HEIGHT),
+        );
+        let max_button = TitleBarButton::new(
+            TitleBarButtonType::Maximize,
+            Rect::new(max_x, tb_y, BUTTON_WIDTH, TITLEBAR_HEIGHT),
+        );
+        let min_button = TitleBarButton::new(
+            TitleBarButtonType::Minimize,
+            Rect::new(min_x, tb_y, BUTTON_WIDTH, TITLEBAR_HEIGHT),
+        );
 
         Self {
             id,
@@ -50,6 +75,11 @@ impl Window {
             client_buffer,
             client_width,
             client_height,
+            close_button,
+            max_button,
+            min_button,
+            widgets: Vec::new(),
+            use_acrylic: false,
         }
     }
 
@@ -90,9 +120,89 @@ impl Window {
         }
     }
 
+    pub fn update_control_bounds(&mut self) {
+        let tb_y = self.y + BORDER_WIDTH;
+        let close_x = self.x + self.width.saturating_sub(BORDER_WIDTH + BUTTON_WIDTH);
+        let max_x = close_x.saturating_sub(BUTTON_WIDTH);
+        let min_x = max_x.saturating_sub(BUTTON_WIDTH);
+
+        self.close_button.bounds = Rect::new(close_x, tb_y, BUTTON_WIDTH, TITLEBAR_HEIGHT);
+        self.max_button.bounds = Rect::new(max_x, tb_y, BUTTON_WIDTH, TITLEBAR_HEIGHT);
+        self.min_button.bounds = Rect::new(min_x, tb_y, BUTTON_WIDTH, TITLEBAR_HEIGHT);
+    }
+
+    pub fn set_acrylic(&mut self, enable: bool) {
+        self.use_acrylic = enable;
+    }
+
+    pub fn add_button(&mut self, id: u32, rel_x: usize, rel_y: usize, width: usize, height: usize, label: &str) {
+        let abs_x = self.x + BORDER_WIDTH + rel_x;
+        let abs_y = self.y + BORDER_WIDTH + TITLEBAR_HEIGHT + rel_y;
+        let bounds = Rect::new(abs_x, abs_y, width, height);
+        self.widgets.push(Button::new(id, bounds, label));
+    }
+
+    pub fn add_accent_button(&mut self, id: u32, rel_x: usize, rel_y: usize, width: usize, height: usize, label: &str) {
+        let abs_x = self.x + BORDER_WIDTH + rel_x;
+        let abs_y = self.y + BORDER_WIDTH + TITLEBAR_HEIGHT + rel_y;
+        let bounds = Rect::new(abs_x, abs_y, width, height);
+        self.widgets.push(Button::new_accent(id, bounds, label));
+    }
+
+    pub fn dispatch_mouse(
+        &mut self,
+        mx: usize,
+        my: usize,
+        is_down: bool,
+        was_down: bool,
+    ) -> (Option<Rect>, bool, bool, bool) {
+        if self.is_minimized {
+            return (None, false, false, false);
+        }
+
+        let mut dirty: Option<Rect> = None;
+
+        let close_changed = self.close_button.handle_mouse(mx, my, is_down, was_down);
+        if close_changed {
+            dirty = Some(dirty.map_or(self.close_button.bounds, |d| d.union(&self.close_button.bounds)));
+        }
+
+        let max_changed = self.max_button.handle_mouse(mx, my, is_down, was_down);
+        if max_changed {
+            dirty = Some(dirty.map_or(self.max_button.bounds, |d| d.union(&self.max_button.bounds)));
+        }
+
+        let min_changed = self.min_button.handle_mouse(mx, my, is_down, was_down);
+        if min_changed {
+            dirty = Some(dirty.map_or(self.min_button.bounds, |d| d.union(&self.min_button.bounds)));
+        }
+
+        for btn in self.widgets.iter_mut() {
+            if btn.handle_mouse(mx, my, is_down, was_down) {
+                dirty = Some(dirty.map_or(btn.bounds, |d| d.union(&btn.bounds)));
+            }
+        }
+
+        let close_req = self.close_button.take_click();
+        let max_req = self.max_button.take_click();
+        let min_req = self.min_button.take_click();
+
+        (dirty, close_req, min_req, max_req)
+    }
+
     pub fn set_position(&mut self, new_x: usize, new_y: usize) {
+        let dx = new_x as isize - self.x as isize;
+        let dy = new_y as isize - self.y as isize;
         self.x = new_x;
         self.y = new_y;
+        self.update_control_bounds();
+
+        for btn in self.widgets.iter_mut() {
+            let new_bx = (btn.bounds.x as isize + dx).max(0) as usize;
+            let new_by = (btn.bounds.y as isize + dy).max(0) as usize;
+            btn.bounds.x = new_bx;
+            btn.bounds.y = new_by;
+        }
     }
 
     pub fn resize(&mut self, new_width: usize, new_height: usize) {
@@ -103,6 +213,7 @@ impl Window {
         let buffer_size = self.client_width * self.client_height;
         self.client_buffer.clear();
         self.client_buffer.resize(buffer_size, Color::WIN11_CARD_BG);
+        self.update_control_bounds();
     }
 
     pub fn clear_client(&mut self, color: Color) {
@@ -223,17 +334,31 @@ impl Window {
         // 2. Titlebar background
         let tb_x = self.x + BORDER_WIDTH;
         let tb_y = self.y + BORDER_WIDTH;
-        self.render_rect_clipped(
-            target,
-            target_w,
-            target_h,
-            tb_x,
-            tb_y,
-            self.client_width,
-            TITLEBAR_HEIGHT,
-            titlebar_color,
-            clip,
-        );
+        let tb_rect = Rect::new(tb_x, tb_y, self.client_width, TITLEBAR_HEIGHT);
+
+        if self.use_acrylic {
+            let cfg = AcrylicConfig::titlebar(self.is_focused);
+            AcrylicSurface::render_acrylic_in_place(
+                target,
+                target_w,
+                target_h,
+                &tb_rect,
+                &cfg,
+                clip,
+            );
+        } else {
+            self.render_rect_clipped(
+                target,
+                target_w,
+                target_h,
+                tb_x,
+                tb_y,
+                self.client_width,
+                TITLEBAR_HEIGHT,
+                titlebar_color,
+                clip,
+            );
+        }
 
         // 3. Titlebar text
         let title_x = tb_x + 12;
@@ -250,80 +375,9 @@ impl Window {
         );
 
         // 4. Window controls (Minimize, Maximize, Close buttons)
-        let close_x = self.x + self.width - BORDER_WIDTH - BUTTON_WIDTH;
-        // Close button: subtle red accent
-        self.render_rect_clipped(
-            target,
-            target_w,
-            target_h,
-            close_x,
-            tb_y,
-            BUTTON_WIDTH,
-            TITLEBAR_HEIGHT,
-            Color::WIN11_CLOSE_RED,
-            clip,
-        );
-        self.render_string_clipped(
-            target,
-            target_w,
-            target_h,
-            close_x + 12,
-            tb_y + 8,
-            "X",
-            Color::WHITE,
-            clip,
-        );
-
-        // Maximize button
-        let max_x = close_x - BUTTON_WIDTH;
-        self.render_rect_clipped(
-            target,
-            target_w,
-            target_h,
-            max_x,
-            tb_y,
-            BUTTON_WIDTH,
-            TITLEBAR_HEIGHT,
-            Color::WIN11_HOVER,
-            clip,
-        );
-        self.render_rect_outline_clipped(
-            target,
-            target_w,
-            target_h,
-            max_x + 11,
-            tb_y + 11,
-            10,
-            10,
-            1,
-            Color::WIN11_TEXT_PRIMARY,
-            clip,
-        );
-
-        // Minimize button
-        let min_x = max_x - BUTTON_WIDTH;
-        self.render_rect_clipped(
-            target,
-            target_w,
-            target_h,
-            min_x,
-            tb_y,
-            BUTTON_WIDTH,
-            TITLEBAR_HEIGHT,
-            Color::WIN11_HOVER,
-            clip,
-        );
-        self.render_rect_clipped(
-            target,
-            target_w,
-            target_h,
-            min_x + 11,
-            tb_y + 17,
-            10,
-            2,
-            Color::WIN11_TEXT_PRIMARY,
-            clip,
-        );
+        self.min_button.render(target, target_w, target_h, clip);
+        self.max_button.render(target, target_w, target_h, clip);
+        self.close_button.render(target, target_w, target_h, clip);
 
         // 5. Client area pixels
         let client_x = self.x + BORDER_WIDTH;
@@ -350,6 +404,11 @@ impl Window {
                 let color = self.client_buffer[cy * self.client_width + cx];
                 target[ty * target_w + tx] = color;
             }
+        }
+
+        // 6. Interactive client widgets
+        for btn in &self.widgets {
+            btn.render(target, target_w, target_h, clip);
         }
     }
 

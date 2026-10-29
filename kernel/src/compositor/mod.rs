@@ -49,6 +49,13 @@ pub fn update_cursor(dx: i32, dy: i32, buttons: u8) {
     });
 }
 
+/// Dispatch mouse pointer coordinates and button state directly into the compositor.
+pub fn dispatch_mouse_input(mx: usize, my: usize, buttons: u8) {
+    with_compositor(|comp| {
+        comp.dispatch_mouse_input(mx, my, buttons);
+    });
+}
+
 /// Verification self-test suite for the KntonOS compositor subsystem.
 pub fn test_compositor_subsystem() -> bool {
     serial_write_str("[KNT-COMPOSITOR-TEST] Running compositor verification suite...\r\n");

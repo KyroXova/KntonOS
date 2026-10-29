@@ -184,4 +184,79 @@ impl AcrylicSurface {
             }
         }
     }
+
+    /// In-place variant of `render_acrylic` when reading and writing to the same target buffer.
+    pub fn render_acrylic_in_place(
+        target: &mut [Color],
+        width: usize,
+        height: usize,
+        bounds: &Rect,
+        config: &AcrylicConfig,
+        clip: Option<&Rect>,
+    ) {
+        if bounds.is_empty() || width == 0 || height == 0 {
+            return;
+        }
+
+        let start_x = bounds.x;
+        let end_x = (bounds.x + bounds.width).min(width);
+        let start_y = bounds.y;
+        let end_y = (bounds.y + bounds.height).min(height);
+        let actual_w = end_x.saturating_sub(start_x);
+        let actual_h = end_y.saturating_sub(start_y);
+
+        if actual_w == 0 || actual_h == 0 {
+            return;
+        }
+
+        let mut sample_buf = alloc::vec::Vec::with_capacity(actual_w * actual_h);
+        for y in start_y..end_y {
+            let row_offset = y * width;
+            for x in start_x..end_x {
+                sample_buf.push(target[row_offset + x]);
+            }
+        }
+
+        for (row_idx, y) in (start_y..end_y).enumerate() {
+            for (col_idx, x) in (start_x..end_x).enumerate() {
+                if let Some(c) = clip {
+                    if !c.contains_point(x, y) {
+                        continue;
+                    }
+                }
+
+                let mut sum_r = 0u32;
+                let mut sum_g = 0u32;
+                let mut sum_b = 0u32;
+                let mut count = 0u32;
+
+                for dy in 0..=2 {
+                    let py = (row_idx + dy).saturating_sub(1).min(actual_h - 1);
+                    let row_offset = py * actual_w;
+                    for dx in 0..=2 {
+                        let px = (col_idx + dx).saturating_sub(1).min(actual_w - 1);
+                        let p = sample_buf[row_offset + px];
+                        sum_r += p.r as u32;
+                        sum_g += p.g as u32;
+                        sum_b += p.b as u32;
+                        count += 1;
+                    }
+                }
+
+                let blurred = Color::rgb(
+                    (sum_r / count) as u8,
+                    (sum_g / count) as u8,
+                    (sum_b / count) as u8,
+                );
+
+                let tinted = config.tint_color.blend(blurred);
+                let grain = pseudo_noise(x, y);
+                let grain_alpha = ((config.noise_alpha as u32 * (grain as u32 + 16)) / 48) as u8;
+                let noise_color = Color::rgba(255, 255, 255, grain_alpha);
+                let final_pixel = noise_color.blend(tinted);
+
+                target[y * width + x] = final_pixel;
+            }
+        }
+    }
 }
