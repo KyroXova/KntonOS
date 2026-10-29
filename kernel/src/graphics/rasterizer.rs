@@ -124,6 +124,10 @@ impl Rasterizer3D {
         if self.width == 0 || self.height == 0 {
             return 0;
         }
+        let required_bytes = self.width.checked_mul(self.height).and_then(|pixels| pixels.checked_mul(4));
+        if required_bytes.map_or(true, |bytes| framebuffer.len() < bytes) {
+            return 0;
+        }
         let p0 = tri.vertices[0].position;
         let p1 = tri.vertices[1].position;
         let p2 = tri.vertices[2].position;
@@ -396,6 +400,14 @@ fn test_shared_edges_and_empty_targets() {
         assert_eq!(rasterizer.draw_triangle(&a, &mut []), 0);
         assert_eq!(rasterizer.rasterized_pixel_count, 0);
     }
+    let mut rasterizer = Rasterizer3D::new(2, 2);
+    let mut short_buffer = [0u8; 15];
+    assert_eq!(rasterizer.draw_triangle(&a, &mut short_buffer), 0);
+    assert_eq!(short_buffer, [0; 15]);
+    assert!(rasterizer.depth_buffer.buffer.iter().all(|&depth| depth == u16::MAX));
+    assert_eq!(rasterizer.rasterized_pixel_count, 0);
+    let mut framebuffer = [0u8; 16];
+    assert!(rasterizer.draw_triangle(&a, &mut framebuffer) > 0, "A rejected draw must not occlude a valid retry");
 }
 
 #[cfg(test)]
