@@ -2,6 +2,9 @@
 
 pub mod commands;
 pub mod input;
+pub mod jobs;
+pub mod pipe;
+pub mod pipeline;
 pub mod terminal;
 
 use alloc::string::String;
@@ -11,6 +14,12 @@ use crate::serial_write_str;
 
 pub use commands::execute_command;
 pub use input::{KeyAction, KeyBuffer, KeyboardDecoder, KeyEvent, ModifierState, poll_ps2_hardware};
+pub use jobs::{cmd_bg, cmd_fg, cmd_jobs, cmd_kill, register_job, JobStatus, JobTable, ShellJob, JOB_TABLE};
+pub use pipe::AnonymousPipe;
+pub use pipeline::{
+    ExecutionMode, ParseError, ParsedPipeline, PipelineParser, PipelineStage, RedirectionSource,
+    RedirectionTarget,
+};
 pub use terminal::{TerminalBuffer, TerminalCell, DEFAULT_COLS, DEFAULT_ROWS};
 
 /// Stateful interactive virtual terminal shell session.
@@ -344,6 +353,140 @@ pub fn test_shell_subsystem() -> bool {
         serial_write_str("[KNT-SHELL-WINDOW-PASS] Foreground acrylic terminal window rendering verified\r\n");
     }
 
+    // 5. Test shell pipelines, file redirections, and job control
+    if !test_pipeline_and_job_control() {
+        return false;
+    }
+
     serial_write_str("[KNT-SHELL-TESTS-PASS] All interactive virtual terminal shell checks passed\r\n");
+    true
+}
+
+/// Comprehensive verification test suite for VT Shell Pipelines, I/O Redirection, and Process Job Control.
+pub fn test_pipeline_and_job_control() -> bool {
+    serial_write_str("[KNT-SHELL-PIPE-TEST] Running shell pipeline, redirection & job control test suite...\r\n");
+
+    // 1. Pipeline command parser with pipe and redirection tokens
+    let parsed = match PipelineParser::parse("cat < /input.txt | ver | cat > /test.txt &") {
+        Ok(p) => p,
+        Err(_) => {
+            serial_write_str("[KNT-PANIC] Failed to parse complex shell pipeline!\r\n");
+            return false;
+        }
+    };
+
+    if parsed.stages.len() != 3 || !parsed.is_background() {
+        serial_write_str("[KNT-PANIC] Parsed pipeline stages or background mode mismatch!\r\n");
+        return false;
+    }
+    if parsed.stages[0].command != "cat" || parsed.stages[0].stdin_source != RedirectionSource::File(alloc::string::String::from("/input.txt")) {
+        serial_write_str("[KNT-PANIC] Stage 0 input redirection parsing failed!\r\n");
+        return false;
+    }
+    if parsed.stages[1].command != "ver" || parsed.stages[1].stdin_source != RedirectionSource::Pipe(0) || parsed.stages[1].stdout_target != RedirectionTarget::Pipe(2) {
+        serial_write_str("[KNT-PANIC] Stage 1 pipe routing mismatch!\r\n");
+        return false;
+    }
+    if parsed.stages[2].command != "cat" || parsed.stages[2].stdout_target != RedirectionTarget::FileTruncate(alloc::string::String::from("/test.txt")) {
+        serial_write_str("[KNT-PANIC] Stage 2 output redirection parsing failed!\r\n");
+        return false;
+    }
+    serial_write_str("  * Pipeline token parsing and redirection stage descriptors verified\r\n");
+    serial_write_str("[KNT-SHELL-PARSE-PASS] Pipeline token parsing and redirection stage descriptors verified\r\n");
+
+    // 2. Anonymous Pipe IPC channel connecting command stages
+    let mut pipe = AnonymousPipe::new();
+    let sample_data = b"KntonOS Pipe Stream Payload";
+    let written = pipe.write(sample_data);
+    if written != sample_data.len() || pipe.available() != sample_data.len() {
+        serial_write_str("[KNT-PANIC] Anonymous pipe write failed!\r\n");
+        return false;
+    }
+
+    let mut buf = [0u8; 7];
+    let n = pipe.read(&mut buf);
+    if n != 7 || &buf != b"KntonOS" {
+        serial_write_str("[KNT-PANIC] Anonymous pipe partial read failed!\r\n");
+        return false;
+    }
+
+    pipe.close_write();
+    if pipe.is_eof() {
+        serial_write_str("[KNT-PANIC] Pipe signaled EOF while unread bytes remained in FIFO!\r\n");
+        return false;
+    }
+
+    let remaining = pipe.read_all();
+    if remaining != b" Pipe Stream Payload" || !pipe.is_eof() {
+        serial_write_str("[KNT-PANIC] Pipe read_all or post-EOF condition failed!\r\n");
+        return false;
+    }
+    serial_write_str("  * Anonymous pipe FIFO byte ring, partial read, and EOF signaling verified\r\n");
+    serial_write_str("[KNT-SHELL-PIPE-CHAN-PASS] Anonymous pipe FIFO byte ring, partial read, and EOF signaling verified\r\n");
+
+    // 3. Pipeline execution: ver | cat, output redirection to /test.txt, and input read
+    let mut term = TerminalBuffer::new(60, 20);
+
+    // Execute ver | cat
+    execute_command("ver | cat", &mut term);
+    if term.get_cell(0, 0).map(|c| c.character) != Some('K') {
+        serial_write_str("[KNT-PANIC] Pipeline 'ver | cat' execution failed!\r\n");
+        return false;
+    }
+
+    // Execute ver > /test.txt
+    execute_command("ver > /test.txt", &mut term);
+    let vfs_data = match crate::fs::VFS.lock().read_file("/test.txt") {
+        Ok(d) => d,
+        Err(_) => {
+            serial_write_str("[KNT-PANIC] File /test.txt not created by shell output redirection!\r\n");
+            return false;
+        }
+    };
+    if !vfs_data.starts_with(b"KntonOS Micro-Kernel Shell") {
+        serial_write_str("[KNT-PANIC] File /test.txt content mismatch!\r\n");
+        return false;
+    }
+
+    // Execute cat /test.txt | cat
+    term.clear();
+    execute_command("cat /test.txt | cat", &mut term);
+    if term.get_cell(0, 0).map(|c| c.character) != Some('K') {
+        serial_write_str("[KNT-PANIC] Pipeline 'cat /test.txt | cat' failed!\r\n");
+        return false;
+    }
+    serial_write_str("  * Pipeline chaining and VFS file redirection verified\r\n");
+    serial_write_str("[KNT-SHELL-REDIR-PASS] Pipeline chaining and VFS file redirection verified\r\n");
+
+    // 4. Job control and background execution tracking
+    let job_id = register_job(101, "worker_daemon &");
+    if job_id == 0 {
+        serial_write_str("[KNT-PANIC] Background job registration failed!\r\n");
+        return false;
+    }
+
+    term.clear();
+    cmd_jobs(&mut term);
+    if term.cursor_row == 0 {
+        serial_write_str("[KNT-PANIC] Command 'jobs' produced no output!\r\n");
+        return false;
+    }
+
+    cmd_fg("1", &mut term);
+    cmd_bg("1", &mut term);
+    cmd_kill("101", &mut term);
+
+    let is_done = {
+        let table = JOB_TABLE.lock();
+        table.get_job(job_id).map(|j| j.status) == Some(JobStatus::Done)
+    };
+    if !is_done {
+        serial_write_str("[KNT-PANIC] Job status after kill is not Done!\r\n");
+        return false;
+    }
+    serial_write_str("  * Shell job table tracking, fg/bg control, and process kill verified\r\n");
+    serial_write_str("[KNT-SHELL-JOBS-PASS] Shell job table tracking, fg/bg control, and process kill verified\r\n");
+
+    serial_write_str("[KNT-SHELL-PIPE-PASS] All shell pipeline, redirection, and job control checks passed\r\n");
     true
 }

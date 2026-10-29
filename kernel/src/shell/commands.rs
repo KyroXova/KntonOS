@@ -13,6 +13,13 @@ pub fn execute_command(line: &str, term: &mut TerminalBuffer) {
         return;
     }
 
+    if trimmed.contains('|') || trimmed.contains('>') || trimmed.contains('<') || trimmed.ends_with('&') {
+        if let Ok(pipeline) = super::pipeline::PipelineParser::parse(trimmed) {
+            pipeline.execute(term);
+            return;
+        }
+    }
+
     let mut parts = trimmed.split_whitespace();
     let cmd = parts.next().unwrap_or("");
     let args: Vec<&str> = parts.collect();
@@ -23,6 +30,22 @@ pub fn execute_command(line: &str, term: &mut TerminalBuffer) {
         "ls" | "dir" => cmd_ls(&args, term),
         "cat" | "type" => cmd_cat(&args, term),
         "ps" | "tasklist" => cmd_ps(term),
+        "jobs" => super::jobs::cmd_jobs(term),
+        "fg" => {
+            let id_str = if args.is_empty() { "1" } else { args[0] };
+            super::jobs::cmd_fg(id_str, term);
+        }
+        "bg" => {
+            let id_str = if args.is_empty() { "1" } else { args[0] };
+            super::jobs::cmd_bg(id_str, term);
+        }
+        "kill" => {
+            if args.is_empty() {
+                term.write_str("Usage: kill <pid>\r\n");
+            } else {
+                super::jobs::cmd_kill(args[0], term);
+            }
+        }
         "clear" | "cls" => cmd_clear(term),
         unknown => {
             term.write_str("\x1B[31mUnknown command: \x1B[0m");
@@ -39,6 +62,10 @@ fn cmd_help(term: &mut TerminalBuffer) {
     term.write_str("  \x1B[33mls [path]\x1B[0m  - List directory contents from Virtual File System\r\n");
     term.write_str("  \x1B[33mcat <file>\x1B[0m - Output text contents of a file from VFS\r\n");
     term.write_str("  \x1B[33mps\x1B[0m         - List active processes, threads, and scheduler queues\r\n");
+    term.write_str("  \x1B[33mjobs\x1B[0m       - List active background processes and pipelines\r\n");
+    term.write_str("  \x1B[33mfg <id>\x1B[0m    - Bring a background job to the foreground\r\n");
+    term.write_str("  \x1B[33mbg <id>\x1B[0m    - Resume a suspended job in the background\r\n");
+    term.write_str("  \x1B[33mkill <pid>\x1B[0m - Terminate a process by PID\r\n");
     term.write_str("  \x1B[33mclear\x1B[0m      - Clear the terminal screen\r\n");
 }
 
