@@ -177,6 +177,27 @@ impl SceneCompositor {
         self.damage_rect(cursor_damage);
     }
 
+    /// Update mouse cursor position and button state from relative mouse delta.
+    pub fn update_cursor(&mut self, dx: i32, dy: i32, buttons: u8) {
+        let max_x = self.width.saturating_sub(1);
+        let max_y = self.height.saturating_sub(1);
+
+        let new_x = if dx >= 0 {
+            (self.cursor.x + dx as usize).min(max_x)
+        } else {
+            self.cursor.x.saturating_sub((-dx) as usize)
+        };
+
+        let new_y = if dy >= 0 {
+            (self.cursor.y + dy as usize).min(max_y)
+        } else {
+            self.cursor.y.saturating_sub((-dy) as usize)
+        };
+
+        self.cursor.buttons = buttons;
+        self.move_cursor(new_x, new_y);
+    }
+
     /// Render wallpaper and taskbar within a damaged rectangle.
     fn render_background_clipped(&mut self, clip: &Rect) {
         let center_y = self.height / 3;

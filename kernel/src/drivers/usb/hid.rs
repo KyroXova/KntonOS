@@ -352,6 +352,28 @@ impl HidKeyboardReport {
         self.lalt || self.ralt
     }
 
+    /// Convert active key presses in this report into key events.
+    pub fn to_key_events(&self) -> Vec<crate::shell::KeyEvent> {
+        let mut events = Vec::new();
+        let shift = self.is_shift();
+        let ctrl = self.is_ctrl();
+        let alt = self.is_alt();
+
+        for &keycode in self.keys.iter() {
+            if keycode != 0 {
+                events.push(crate::shell::KeyEvent {
+                    char_code: Self::hid_keycode_to_char(keycode, shift),
+                    scancode: keycode,
+                    action: crate::shell::KeyAction::Press,
+                    shift,
+                    ctrl,
+                    alt,
+                });
+            }
+        }
+        events
+    }
+
     /// Converts standard USB HID keycodes to ASCII character.
     pub fn hid_keycode_to_char(keycode: u8, shift: bool) -> Option<char> {
         match keycode {
@@ -388,3 +410,16 @@ impl HidKeyboardReport {
         }
     }
 }
+
+/// Route a decoded USB HID mouse report into the desktop compositor cursor.
+pub fn dispatch_mouse_report(report: &HidMouseReport) {
+    crate::compositor::update_cursor(report.dx as i32, report.dy as i32, report.buttons);
+}
+
+/// Route a decoded USB HID keyboard report into the virtual terminal shell.
+pub fn dispatch_keyboard_report(report: &HidKeyboardReport) {
+    for event in report.to_key_events() {
+        crate::shell::push_key_event(event);
+    }
+}
+
