@@ -45,9 +45,9 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-018 | SMP Multi-Core Discovery and Local APIC Timer Subsystem | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-018-smp-apic.md) |
 | TASK-KNT-019 | Transmission Control Protocol (TCP) State Machine and Stream Sockets | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-019-tcp-stack.md) |
 | TASK-KNT-020 | PCI Device Subsystem and USB xHCI Host Controller Discovery | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-020-pci-xhci.md) |
-| TASK-KNT-021 | Domain Name System (DNS) Resolver & HTTP/1.1 Micro-Client | Claimed | TASK-KNT-019 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-021-dns-http.md) |
+| TASK-KNT-021 | Domain Name System (DNS) Resolver & HTTP/1.1 Micro-Client | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-021-dns-http.md) |
 | TASK-KNT-022 | IPC Zero-Copy Shared Memory Rings & Fast Futex Synchronization | Claimed | TASK-KNT-011 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-022-ipc-futex.md) |
-| TASK-KNT-023 | USB 3.0 xHCI Enumeration & HID Keyboard/Mouse Input Pipeline | Claimed | TASK-KNT-020 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-023-usb-hid.md) |
+| TASK-KNT-023 | USB 3.0 xHCI Enumeration & HID Keyboard/Mouse Input Pipeline | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-023-usb-hid.md) |
 
 ## Active reservations
 
