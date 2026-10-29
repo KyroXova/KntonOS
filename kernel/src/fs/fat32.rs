@@ -861,3 +861,289 @@ impl FileSystem for Fat32FileSystem {
         }))
     }
 }
+
+/// Constructs an in-memory synthetic FAT32 filesystem image formatted with
+/// root directory, cluster chains, and test files (`/readme.txt` and `/docs/kernel.log`).
+pub fn build_synthetic_fat32_image() -> Vec<u8> {
+    let total_sectors = 128;
+    let mut image = alloc::vec![0u8; total_sectors * FAT32_SECTOR_SIZE];
+
+    // --- Sector 0: Boot Sector / BPB ---
+    let mut boot = [0u8; FAT32_SECTOR_SIZE];
+    boot[0] = 0xEB;
+    boot[1] = 0x58;
+    boot[2] = 0x90;
+    boot[3..11].copy_from_slice(b"MSWIN4.1");
+    boot[11..13].copy_from_slice(&512u16.to_le_bytes());
+    boot[13] = 1; // 1 sector per cluster (512 bytes)
+    boot[14..16].copy_from_slice(&32u16.to_le_bytes()); // 32 reserved sectors
+    boot[16] = 2; // 2 FAT tables
+    boot[21] = 0xF8; // fixed disk
+    boot[32..36].copy_from_slice(&(total_sectors as u32).to_le_bytes());
+    boot[36..40].copy_from_slice(&32u32.to_le_bytes()); // 32 sectors per FAT
+    boot[44..48].copy_from_slice(&2u32.to_le_bytes()); // Root dir cluster 2
+    boot[48..50].copy_from_slice(&1u16.to_le_bytes());
+    boot[50..52].copy_from_slice(&6u16.to_le_bytes());
+    boot[64] = 0x80;
+    boot[66] = 0x29;
+    boot[67..71].copy_from_slice(&0x12345678u32.to_le_bytes());
+    boot[71..82].copy_from_slice(b"KNTON_FAT32");
+    boot[82..90].copy_from_slice(b"FAT32   ");
+    boot[510] = 0x55;
+    boot[511] = 0xAA;
+
+    image[0..512].copy_from_slice(&boot);
+
+    // --- FAT1 & FAT2 Tables (Sectors 32..63 and 64..95) ---
+    let write_entry = |img: &mut [u8], cluster: usize, val: u32| {
+        let fat1_offset = 32 * FAT32_SECTOR_SIZE + cluster * 4;
+        let fat2_offset = 64 * FAT32_SECTOR_SIZE + cluster * 4;
+        img[fat1_offset..fat1_offset + 4].copy_from_slice(&val.to_le_bytes());
+        img[fat2_offset..fat2_offset + 4].copy_from_slice(&val.to_le_bytes());
+    };
+
+    write_entry(&mut image, 0, 0x0FFF_FFF8); // Media indicator
+    write_entry(&mut image, 1, 0x0FFF_FFFF); // EOC marker
+    write_entry(&mut image, 2, 0x0FFF_FFFF); // Root Directory (cluster 2 EOC)
+    write_entry(&mut image, 3, 4);           // Cluster 3 -> Cluster 4 (README.TXT)
+    write_entry(&mut image, 4, 0x0FFF_FFFF); // Cluster 4 (README.TXT EOC)
+    write_entry(&mut image, 5, 0x0FFF_FFFF); // Cluster 5 (DOCS dir EOC)
+    write_entry(&mut image, 6, 0x0FFF_FFFF); // Cluster 6 (KERNEL.LOG EOC)
+
+    // Data region starts at sector 96 (cluster 2)
+    let root_sec_offset = 96 * FAT32_SECTOR_SIZE;
+
+    // Entry 1: README.TXT (cluster 3, 545 bytes)
+    let readme_entry = Fat32DirEntry {
+        name: String::from("readme.txt"),
+        raw_name: encode_8_3_name("README.TXT"),
+        attributes: ATTR_ARCHIVE,
+        first_cluster: 3,
+        file_size: 544,
+    };
+    image[root_sec_offset..root_sec_offset + 32].copy_from_slice(&readme_entry.serialize());
+
+    // Entry 2: DOCS (cluster 5, directory)
+    let docs_entry = Fat32DirEntry {
+        name: String::from("docs"),
+        raw_name: encode_8_3_name("DOCS"),
+        attributes: ATTR_DIRECTORY,
+        first_cluster: 5,
+        file_size: 0,
+    };
+    image[root_sec_offset + 32..root_sec_offset + 64].copy_from_slice(&docs_entry.serialize());
+
+    // --- Cluster 3 (Sector 97): README.TXT first 512 bytes ---
+    let c3_offset = 97 * FAT32_SECTOR_SIZE;
+    let header_msg = b"KntonOS FAT32 Persistent File System Driver.\nSpecification: Microsoft FAT32 Extended BPB Architecture.\nCluster Chaining & 512-Byte VirtIO Block Integration Active.\n";
+    image[c3_offset..c3_offset + header_msg.len()].copy_from_slice(header_msg);
+    for i in header_msg.len()..512 {
+        image[c3_offset + i] = b'=';
+    }
+
+    // --- Cluster 4 (Sector 98): README.TXT remaining 33 bytes ---
+    let c4_offset = 98 * FAT32_SECTOR_SIZE;
+    let tail_msg = b" Successfully mounted on /disk.\n";
+    image[c4_offset..c4_offset + tail_msg.len()].copy_from_slice(tail_msg);
+
+    // --- Cluster 5 (Sector 99): DOCS Subdirectory Entries ---
+    let c5_offset = 99 * FAT32_SECTOR_SIZE;
+    let dot_entry = Fat32DirEntry {
+        name: String::from("."),
+        raw_name: encode_8_3_name("."),
+        attributes: ATTR_DIRECTORY,
+        first_cluster: 5,
+        file_size: 0,
+    };
+    image[c5_offset..c5_offset + 32].copy_from_slice(&dot_entry.serialize());
+
+    let dotdot_entry = Fat32DirEntry {
+        name: String::from(".."),
+        raw_name: encode_8_3_name(".."),
+        attributes: ATTR_DIRECTORY,
+        first_cluster: 0,
+        file_size: 0,
+    };
+    image[c5_offset + 32..c5_offset + 64].copy_from_slice(&dotdot_entry.serialize());
+
+    let log_msg = b"KntonOS kernel boot log ok\n";
+    let log_entry = Fat32DirEntry {
+        name: String::from("kernel.log"),
+        raw_name: encode_8_3_name("KERNEL.LOG"),
+        attributes: ATTR_ARCHIVE,
+        first_cluster: 6,
+        file_size: log_msg.len() as u32,
+    };
+    image[c5_offset + 64..c5_offset + 96].copy_from_slice(&log_entry.serialize());
+
+    // --- Cluster 6 (Sector 100): KERNEL.LOG data ---
+    let c6_offset = 100 * FAT32_SECTOR_SIZE;
+    image[c6_offset..c6_offset + log_msg.len()].copy_from_slice(log_msg);
+
+    image
+}
+
+/// Comprehensive self-test suite for FAT32 BPB parser, cluster chain traversal,
+/// directory hierarchy parsing, and VirtIO block mount integration.
+pub fn test_fat32_subsystem() -> bool {
+    crate::serial_write_str("[KNT-FS-TEST] Testing FAT32 filesystem driver & VirtIO block mount...\r\n");
+
+    let synth_img = build_synthetic_fat32_image();
+
+    // 1. In-memory block device verification
+    let mem_dev = Arc::new(MemoryBlockDevice::new(synth_img.clone()));
+    let fs = match Fat32FileSystem::new(mem_dev.clone()) {
+        Ok(f) => Arc::new(f),
+        Err(_) => {
+            crate::serial_write_str("[KNT-PANIC] Failed to parse synthetic FAT32 BPB!\r\n");
+            return false;
+        }
+    };
+
+    let bpb = fs.bpb();
+    if bpb.bytes_per_sector != 512 || bpb.sectors_per_cluster != 1 || bpb.first_data_sector() != 96 {
+        crate::serial_write_str("[KNT-PANIC] FAT32 BPB geometry verification failed!\r\n");
+        return false;
+    }
+
+    // 2. Verify cluster chain traversal: cluster 3 -> [3, 4]
+    match traverse_cluster_chain(bpb, mem_dev.as_ref(), 3) {
+        Ok(chain) => {
+            if chain != alloc::vec![3, 4] {
+                crate::serial_write_str("[KNT-PANIC] FAT32 cluster chain traversal mismatch!\r\n");
+                return false;
+            }
+        }
+        Err(_) => {
+            crate::serial_write_str("[KNT-PANIC] FAT32 cluster chain traversal failed!\r\n");
+            return false;
+        }
+    }
+
+    // 3. Mount synthetic FAT32 image directly to VirtIO block driver storage
+    {
+        let mut blk_lock = crate::drivers::virtio::BLOCK_DEVICE.lock();
+        if let Some(blk) = blk_lock.as_mut() {
+            for s in 0..128 {
+                let offset = s * FAT32_SECTOR_SIZE;
+                if offset + FAT32_SECTOR_SIZE <= synth_img.len() {
+                    let _ = blk.write_sectors(s as u64, &synth_img[offset..offset + FAT32_SECTOR_SIZE]);
+                }
+            }
+        }
+    }
+
+    // 4. Mount VirtIO block device onto VFS at "/disk"
+    let virtio_dev = Arc::new(VirtioBlockDeviceAdapter);
+    let virtio_fs = match Fat32FileSystem::new(virtio_dev) {
+        Ok(vfs_fs) => Arc::new(vfs_fs),
+        Err(_) => {
+            crate::serial_write_str("[KNT-PANIC] Failed to mount FAT32 from VirtIO block device!\r\n");
+            return false;
+        }
+    };
+
+    crate::fs::VFS.lock().mount("/disk", virtio_fs);
+    crate::serial_write_str("  * VirtIO Block FAT32 volume mounted at /disk\r\n");
+
+    let vfs = crate::fs::VFS.lock();
+
+    // 5. Verify reading "/disk/readme.txt"
+    match vfs.read_file("/disk/readme.txt") {
+        Ok(data) => {
+            if !data.starts_with(b"KntonOS FAT32 Persistent File System Driver.") {
+                crate::serial_write_str("[KNT-PANIC] /disk/readme.txt header content mismatch!\r\n");
+                return false;
+            }
+            if !data.ends_with(b"Successfully mounted on /disk.\n") {
+                crate::serial_write_str("[KNT-PANIC] /disk/readme.txt multi-cluster tail mismatch!\r\n");
+                return false;
+            }
+            if data.len() != 544 {
+                crate::serial_write_str("[KNT-PANIC] /disk/readme.txt size mismatch!\r\n");
+                return false;
+            }
+        }
+        Err(_) => {
+            crate::serial_write_str("[KNT-PANIC] Failed to open /disk/readme.txt through VFS!\r\n");
+            return false;
+        }
+    }
+
+    // 6. Verify reading nested file "/disk/docs/kernel.log"
+    match vfs.read_file("/disk/docs/kernel.log") {
+        Ok(data) => {
+            if data != b"KntonOS kernel boot log ok\n" {
+                crate::serial_write_str("[KNT-PANIC] /disk/docs/kernel.log content mismatch!\r\n");
+                return false;
+            }
+        }
+        Err(_) => {
+            crate::serial_write_str("[KNT-PANIC] Failed to open /disk/docs/kernel.log through VFS!\r\n");
+            return false;
+        }
+    }
+
+    // 7. Verify directory listing on root of "/disk"
+    match vfs.open("/disk") {
+        Ok(disk_root) => match disk_root.readdir() {
+            Ok(entries) => {
+                let has_readme = entries.iter().any(|e| e.name == "readme.txt");
+                let has_docs = entries.iter().any(|e| e.name == "docs");
+                if !has_readme || !has_docs {
+                    crate::serial_write_str("[KNT-PANIC] /disk directory listing missing expected entries!\r\n");
+                    return false;
+                }
+            }
+            Err(_) => {
+                crate::serial_write_str("[KNT-PANIC] Failed to readdir on /disk!\r\n");
+                return false;
+            }
+        },
+        Err(_) => {
+            crate::serial_write_str("[KNT-PANIC] Failed to open /disk root inode!\r\n");
+            return false;
+        }
+    }
+
+    // 8. Verify write_at transaction on "/disk/docs/kernel.log"
+    match vfs.open("/disk/docs/kernel.log") {
+        Ok(log_inode) => {
+            let update_text = b"UPDATE: VirtIO OK\n";
+            match log_inode.write_at(0, update_text) {
+                Ok(written) => {
+                    if written != update_text.len() {
+                        crate::serial_write_str("[KNT-PANIC] Partial write on /disk/docs/kernel.log!\r\n");
+                        return false;
+                    }
+                }
+                Err(_) => {
+                    crate::serial_write_str("[KNT-PANIC] Failed to write to /disk/docs/kernel.log!\r\n");
+                    return false;
+                }
+            }
+        }
+        Err(_) => {
+            crate::serial_write_str("[KNT-PANIC] Failed to open /disk/docs/kernel.log for writing!\r\n");
+            return false;
+        }
+    }
+
+    // 9. Re-read and confirm write persistence
+    match vfs.read_file("/disk/docs/kernel.log") {
+        Ok(data) => {
+            if !data.starts_with(b"UPDATE: VirtIO OK\n") {
+                crate::serial_write_str("[KNT-PANIC] Persistence verification failed on /disk/docs/kernel.log!\r\n");
+                return false;
+            }
+        }
+        Err(_) => {
+            crate::serial_write_str("[KNT-PANIC] Failed to re-read /disk/docs/kernel.log after write!\r\n");
+            return false;
+        }
+    }
+
+    // 10. Print required test sentinel
+    crate::serial_write_str("[KNT-FS-FAT32-PASS] FAT32 cluster traversal, directory parsing, and VirtIO /disk mount verified\r\n");
+    true
+}

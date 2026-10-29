@@ -19,7 +19,7 @@ pub use path::Path;
 pub use initramfs::Initramfs;
 pub use fat32::{
     BiosParameterBlock32, BlockDevice, Fat32DirEntry, Fat32FileSystem, Fat32Inode,
-    MemoryBlockDevice, VirtioBlockDeviceAdapter,
+    MemoryBlockDevice, VirtioBlockDeviceAdapter, test_fat32_subsystem,
 };
 
 use crate::memory::spinlock::Spinlock;
