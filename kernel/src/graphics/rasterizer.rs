@@ -121,6 +121,9 @@ impl Rasterizer3D {
     /// Rasterizes a 3D screen-space triangle into a 32-bit BGRA linear framebuffer with 16-bit depth testing.
     /// Returns the number of fragments successfully shaded and written.
     pub fn draw_triangle(&mut self, tri: &Triangle3D, framebuffer: &mut [u8]) -> usize {
+        if self.width == 0 || self.height == 0 {
+            return 0;
+        }
         let p0 = tri.vertices[0].position;
         let p1 = tri.vertices[1].position;
         let p2 = tri.vertices[2].position;
@@ -155,10 +158,19 @@ impl Rasterizer3D {
         let x2 = to_fixed_28_4(p2.x);
         let y2 = to_fixed_28_4(p2.y);
 
-        // Top-left tie-breaking rule bias offsets
-        let bias0 = if is_top_left(x1, y1, x2, y2) { 0 } else { -1 };
-        let bias1 = if is_top_left(x2, y2, x0, y0) { 0 } else { -1 };
-        let bias2 = if is_top_left(x0, y0, x1, y1) { 0 } else { -1 };
+        // Normalize fixed-point winding before applying the half-open edge rule.
+        let fixed_area = edge_func(x0, y0, x1, y1, x2, y2);
+        if fixed_area == 0 {
+            return 0;
+        }
+        let winding = if fixed_area > 0 { 1 } else { -1 };
+        let top_left = |ax, ay, bx, by| {
+            if winding > 0 { is_top_left(ax, ay, bx, by) }
+            else { is_top_left(bx, by, ax, ay) }
+        };
+        let bias0 = if top_left(x1, y1, x2, y2) { 0 } else { -1 };
+        let bias1 = if top_left(x2, y2, x0, y0) { 0 } else { -1 };
+        let bias2 = if top_left(x0, y0, x1, y1) { 0 } else { -1 };
 
         let mut drawn_pixels = 0;
 
@@ -174,12 +186,12 @@ impl Rasterizer3D {
                 let sample_x = to_fixed_28_4(px as f32) + 8;
 
                 // Evaluate fixed-point edge functions
-                let w0 = edge_func(x1, y1, x2, y2, sample_x, sample_y) + bias0;
-                let w1 = edge_func(x2, y2, x0, y0, sample_x, sample_y) + bias1;
-                let w2 = edge_func(x0, y0, x1, y1, sample_x, sample_y) + bias2;
+                let w0 = winding * edge_func(x1, y1, x2, y2, sample_x, sample_y) + bias0;
+                let w1 = winding * edge_func(x2, y2, x0, y0, sample_x, sample_y) + bias1;
+                let w2 = winding * edge_func(x0, y0, x1, y1, sample_x, sample_y) + bias2;
 
                 // Inside test: all edge weights must have consistent sign
-                if (w0 >= 0 && w1 >= 0 && w2 >= 0) || (w0 <= 0 && w1 <= 0 && w2 <= 0) {
+                if w0 >= 0 && w1 >= 0 && w2 >= 0 {
                     let fx = px as f32 + 0.5;
                     let fy = py as f32 + 0.5;
 
@@ -230,6 +242,7 @@ impl Rasterizer3D {
 
 /// Verification unit test ensuring fixed-point sub-pixel rasterization and 16-bit depth testing.
 pub fn test_rasterizer_and_depth_buffering() -> bool {
+    test_shared_edges_and_empty_targets();
     let mut rasterizer = Rasterizer3D::new(100, 100);
     let mut fb = alloc::vec![0u8; 100 * 100 * 4];
 
@@ -347,4 +360,48 @@ pub fn test_rasterizer_and_depth_buffering() -> bool {
     assert!(fb[idx_near_blue] > fb[idx_near_blue + 2]); // B > R
 
     true
+}
+
+/// Checks half-open coverage independently of depth-test draw ordering.
+fn test_shared_edges_and_empty_targets() {
+    use super::types::{Vec4, Vertex3D};
+    let vertex = |x, y, color| Vertex3D::new(Vec4::new(x, y, 0.5, 1.0), color, Vec3::zero());
+    let a = Triangle3D::new(vertex(0.0, 0.0, Color4::red()), vertex(2.0, 0.0, Color4::red()), vertex(0.0, 2.0, Color4::red()));
+    let b = Triangle3D::new(vertex(2.0, 0.0, Color4::blue()), vertex(2.0, 2.0, Color4::blue()), vertex(0.0, 2.0, Color4::blue()));
+    for reverse_a in [false, true] {
+        for reverse_b in [false, true] {
+            let mut triangles = [a, b];
+            if reverse_a { triangles[0].vertices.swap(1, 2); }
+            if reverse_b { triangles[1].vertices.swap(1, 2); }
+            let mut masks = [[0u8; 16]; 2];
+            for i in 0..2 {
+                Rasterizer3D::new(2, 2).draw_triangle(&triangles[i], &mut masks[i]);
+            }
+            for pixel in 0..4 {
+                let owners = (masks[0][pixel * 4 + 3] != 0) as u8
+                    + (masks[1][pixel * 4 + 3] != 0) as u8;
+                assert_eq!(owners, 1, "Each square sample must have exactly one owner");
+            }
+            let mut forward = [0u8; 16];
+            let mut backward = [0u8; 16];
+            let mut rasterizer = Rasterizer3D::new(2, 2);
+            for triangle in &triangles { rasterizer.draw_triangle(triangle, &mut forward); }
+            rasterizer.clear_depth();
+            for triangle in triangles.iter().rev() { rasterizer.draw_triangle(triangle, &mut backward); }
+            assert_eq!(forward, backward, "Shared-edge colors must not depend on draw order");
+        }
+    }
+    for (width, height) in [(0, 0), (0, 2), (2, 0)] {
+        let mut rasterizer = Rasterizer3D::new(width, height);
+        assert_eq!(rasterizer.draw_triangle(&a, &mut []), 0);
+        assert_eq!(rasterizer.rasterized_pixel_count, 0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn coverage_and_depth_regressions() {
+        assert!(super::test_rasterizer_and_depth_buffering());
+    }
 }
