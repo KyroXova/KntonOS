@@ -7,6 +7,7 @@ pub mod memory;
 pub mod display;
 pub mod pe;
 pub mod fs;
+pub mod process;
 pub mod syscall;
 
 pub use memory::ALLOCATOR;
@@ -87,6 +88,12 @@ pub extern "C" fn kmain() -> ! {
     fs::init();
     if !fs::test_vfs_subsystem() {
         serial_write_str("[KNT-PANIC] VFS subsystem self-test failed!\r\n");
+    }
+
+    // Initialize Process & Thread Scheduler subsystem
+    process::init();
+    if !process::test_process_subsystem() {
+        serial_write_str("[KNT-PANIC] Process subsystem self-test failed!\r\n");
     }
 
     // Initialize Userland Syscall Dispatch Engine
