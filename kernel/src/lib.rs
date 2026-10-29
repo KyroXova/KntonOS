@@ -1,5 +1,7 @@
 #![no_std]
 
+pub mod arch;
+
 // 16550A UART COM1 port
 pub const COM1_PORT: u16 = 0x3F8;
 
@@ -60,6 +62,10 @@ pub fn serial_write_str(s: &str) {
 pub extern "C" fn kmain() -> ! {
     serial_init();
     serial_write_str("\r\n[KNT-KERNEL-INIT] KntonOS micro-kernel bootstrap reached\r\n");
+
+    // Initialize low-level CPU infrastructure (GDT, TSS, IDT, Syscall MSRs)
+    arch::init();
+
     serial_write_str("[KNT-BOOT-SUCCESS] Native UEFI-to-kernel boot verified\r\n");
 
     loop {
