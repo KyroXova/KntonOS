@@ -242,6 +242,135 @@ impl<'a> ParsedElf64<'a> {
     }
 }
 
+/// Information about a successfully loaded ELF64 image mapped into virtual memory.
+#[derive(Debug, Clone)]
+pub struct LoadedElfImage {
+    pub entry_point: u64,
+    pub base_address: u64,
+    pub image_size: usize,
+    pub segment_count: usize,
+    pub allocated_frames: Vec<crate::memory::pmm::PhysAddr>,
+}
+
+pub struct ElfLoader;
+
+impl ElfLoader {
+    /// Maps all PT_LOAD segments of an ELF64 binary into the given page table,
+    /// allocating physical memory frames and zero-filling BSS regions.
+    pub unsafe fn load(
+        elf: &ParsedElf64,
+        ptm: &mut crate::memory::vmm::PageTableManager,
+    ) -> Result<LoadedElfImage, ElfError> {
+        use crate::memory::pmm::PAGE_SIZE;
+        use crate::memory::vmm::{PageTableFlags, VirtAddr};
+        use crate::memory::PMM;
+
+        let mut pmm_guard = PMM.lock();
+        let mut allocated_frames = Vec::new();
+        let mut total_image_size = 0;
+        let mut min_vaddr = u64::MAX;
+        let mut max_vaddr = 0u64;
+        let mut segment_count = 0;
+
+        // Temporarily clear CR0.WP to allow writing page tables in UEFI
+        let cr0: u64;
+        core::arch::asm!("mov {}, cr0", out(reg) cr0, options(nomem, nostack, preserves_flags));
+        core::arch::asm!("mov cr0, {}", in(reg) (cr0 & !(1 << 16)), options(nomem, nostack, preserves_flags));
+
+        for phdr in elf.load_segments() {
+            if phdr.p_memsz == 0 {
+                continue;
+            }
+
+            let seg_vaddr = phdr.p_vaddr as usize;
+            let seg_filesz = phdr.p_filesz as usize;
+            let seg_memsz = phdr.p_memsz as usize;
+            let seg_offset = phdr.p_offset as usize;
+
+            if phdr.p_vaddr < min_vaddr {
+                min_vaddr = phdr.p_vaddr;
+            }
+            if phdr.p_vaddr + phdr.p_memsz > max_vaddr {
+                max_vaddr = phdr.p_vaddr + phdr.p_memsz;
+            }
+
+            // Determine page attributes from ELF program header flags
+            let mut page_flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
+            if (phdr.p_flags & PF_W) != 0 {
+                page_flags |= PageTableFlags::WRITABLE;
+            }
+            if (phdr.p_flags & PF_X) == 0 {
+                page_flags |= PageTableFlags::NO_EXECUTE;
+            }
+
+            let start_page = seg_vaddr & !(PAGE_SIZE - 1);
+            let end_page = (seg_vaddr + seg_memsz + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+            let page_count = (end_page - start_page) / PAGE_SIZE;
+
+            for page_idx in 0..page_count {
+                let vaddr = VirtAddr::new(start_page + page_idx * PAGE_SIZE);
+
+                // Allocate physical frame
+                let frame = match pmm_guard.allocate_frame() {
+                    Some(f) => f,
+                    None => {
+                        core::arch::asm!("mov cr0, {}", in(reg) cr0, options(nomem, nostack, preserves_flags));
+                        return Err(ElfError::SegmentBoundsOverflow);
+                    }
+                };
+
+                let phys_addr = frame.start_address();
+                allocated_frames.push(phys_addr);
+
+                // Map page into the process virtual address space
+                if ptm.translate(vaddr).is_none() {
+                    let _ = ptm.map_page(vaddr, phys_addr, page_flags, &mut *pmm_guard);
+                }
+
+                // Zero-fill entire physical page frame (covers BSS and alignment padding)
+                let frame_ptr = phys_addr.0 as *mut u8;
+                core::ptr::write_bytes(frame_ptr, 0, PAGE_SIZE);
+
+                // Copy segment file data into this page
+                let page_vaddr = vaddr.0;
+                let page_end_vaddr = page_vaddr + PAGE_SIZE;
+                let seg_file_end = seg_vaddr + seg_filesz;
+
+                let copy_start = core::cmp::max(page_vaddr, seg_vaddr);
+                let copy_end = core::cmp::min(page_end_vaddr, seg_file_end);
+
+                if copy_start < copy_end {
+                    let dest_offset = copy_start - page_vaddr;
+                    let src_offset = seg_offset + (copy_start - seg_vaddr);
+                    let copy_len = copy_end - copy_start;
+
+                    if src_offset + copy_len <= elf.raw_bytes.len() {
+                        core::ptr::copy_nonoverlapping(
+                            elf.raw_bytes.as_ptr().add(src_offset),
+                            frame_ptr.add(dest_offset),
+                            copy_len,
+                        );
+                    }
+                }
+            }
+
+            segment_count += 1;
+            total_image_size += seg_memsz;
+        }
+
+        // Restore CR0
+        core::arch::asm!("mov cr0, {}", in(reg) cr0, options(nomem, nostack, preserves_flags));
+
+        Ok(LoadedElfImage {
+            entry_point: elf.entry_point,
+            base_address: if min_vaddr == u64::MAX { 0 } else { min_vaddr },
+            image_size: total_image_size,
+            segment_count,
+            allocated_frames,
+        })
+    }
+}
+
 /// Standalone verification self-test for ELF64 header parser.
 pub fn test_elf_parser() -> bool {
     crate::serial_write_str("[KNT-ELF-PARSER-TEST] Testing ELF64 header and program header table parser...\r\n");
@@ -314,5 +443,81 @@ pub fn test_elf_parser() -> bool {
     }
 
     crate::serial_write_str("[KNT-ELF-PARSER-PASS] ELF64 header validation and program header parsing verified\r\n");
+    true
+}
+
+/// Standalone verification self-test for ELF segment loading and BSS zero-filling.
+pub fn test_elf_segment_mapping() -> bool {
+    crate::serial_write_str("[KNT-ELF-SEGMENT-TEST] Testing ELF64 segment mapping and BSS zero-fill...\r\n");
+
+    let mut mock_elf = [0u8; 256];
+    mock_elf[0..4].copy_from_slice(&ELF_MAGIC);
+    mock_elf[EI_CLASS] = ELF_CLASS_64;
+    mock_elf[EI_DATA] = ELF_DATA_2LSB;
+    mock_elf[EI_VERSION] = EV_CURRENT;
+    mock_elf[EI_OSABI] = ELF_OSABI_SYSV;
+
+    let ehdr_ptr = mock_elf.as_mut_ptr() as *mut Elf64Ehdr;
+    unsafe {
+        (*ehdr_ptr).e_type = ET_EXEC;
+        (*ehdr_ptr).e_machine = EM_X86_64;
+        (*ehdr_ptr).e_version = 1;
+        (*ehdr_ptr).e_entry = 0x0040_0000;
+        (*ehdr_ptr).e_phoff = 64;
+        (*ehdr_ptr).e_ehsize = 64;
+        (*ehdr_ptr).e_phentsize = 56;
+        (*ehdr_ptr).e_phnum = 1;
+    }
+
+    // Segment with 64 bytes in file, but 4096 bytes in memory (BSS = 4032 bytes)
+    let phdr_ptr = unsafe { mock_elf.as_mut_ptr().add(64) as *mut Elf64Phdr };
+    unsafe {
+        (*phdr_ptr).p_type = PT_LOAD;
+        (*phdr_ptr).p_flags = PF_R | PF_W | PF_X;
+        (*phdr_ptr).p_offset = 128;
+        (*phdr_ptr).p_vaddr = 0x0040_0000;
+        (*phdr_ptr).p_filesz = 64;
+        (*phdr_ptr).p_memsz = 4096;
+        (*phdr_ptr).p_align = 4096;
+    }
+
+    // Fill file data at offset 128..192
+    for i in 0..64 {
+        mock_elf[128 + i] = 0xAA;
+    }
+
+    let parsed = ParsedElf64::parse(&mock_elf).expect("Mock ELF parse failed");
+
+    // Load into a temporary test page table
+    let cr3: u64;
+    unsafe {
+        core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags));
+        let root_pml4 = (cr3 & !0xFFF) as *mut crate::memory::vmm::PageTable;
+        let mut ptm = crate::memory::vmm::PageTableManager::new(root_pml4);
+
+        let loaded = ElfLoader::load(&parsed, &mut ptm).expect("ELF segment load failed");
+
+        if loaded.segment_count != 1 || loaded.allocated_frames.is_empty() {
+            crate::serial_write_str("[KNT-PANIC] Loaded ELF image segment count or frame list invalid!\r\n");
+            return false;
+        }
+
+        // Verify physical frame contents: first 64 bytes are 0xAA, remainder are 0x00 (BSS)
+        let frame_ptr = loaded.allocated_frames[0].0 as *const u8;
+        for i in 0..64 {
+            if *frame_ptr.add(i) != 0xAA {
+                crate::serial_write_str("[KNT-PANIC] Loaded ELF segment file data mismatch!\r\n");
+                return false;
+            }
+        }
+        for i in 64..4096 {
+            if *frame_ptr.add(i) != 0x00 {
+                crate::serial_write_str("[KNT-PANIC] BSS region was not zero-filled!\r\n");
+                return false;
+            }
+        }
+    }
+
+    crate::serial_write_str("[KNT-ELF-SEGMENT-PASS] ELF segment mapping and BSS zero-fill verified\r\n");
     true
 }
