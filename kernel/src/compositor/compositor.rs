@@ -21,6 +21,7 @@ pub struct SceneCompositor {
     pub windows: Vec<Window>,
     pub cursor: CursorState,
     pub damage: DamageRegion,
+    pub last_mouse_down: bool,
     next_window_id: u32,
 }
 
@@ -38,6 +39,7 @@ impl SceneCompositor {
             windows: Vec::new(),
             cursor: CursorState::new(width / 2, height / 2),
             damage: DamageRegion::new(),
+            last_mouse_down: false,
             next_window_id: 1,
         };
 
@@ -196,6 +198,49 @@ impl SceneCompositor {
 
         self.cursor.buttons = buttons;
         self.move_cursor(new_x, new_y);
+        self.dispatch_mouse_input(new_x, new_y, buttons);
+    }
+
+    /// Dispatch mouse coordinates and buttons to active windows and widgets.
+    pub fn dispatch_mouse_input(&mut self, mx: usize, my: usize, buttons: u8) {
+        let is_down = (buttons & 0x01) != 0;
+        let was_down = self.last_mouse_down;
+        self.last_mouse_down = is_down;
+
+        let mut close_target_id: Option<u32> = None;
+        let mut dirty_regions = alloc::vec::Vec::new();
+
+        for win in self.windows.iter_mut().rev() {
+            let (dirty, close_req, min_req, max_req) = win.dispatch_mouse(mx, my, is_down, was_down);
+            if let Some(d) = dirty {
+                dirty_regions.push(d);
+            }
+            if close_req {
+                close_target_id = Some(win.id);
+                break;
+            }
+            if min_req {
+                win.is_minimized = true;
+                dirty_regions.push(win.frame_bounds());
+                break;
+            }
+            if max_req {
+                win.is_maximized = !win.is_maximized;
+                dirty_regions.push(win.frame_bounds());
+                break;
+            }
+            if win.frame_bounds().contains_point(mx, my) {
+                break;
+            }
+        }
+
+        for d in dirty_regions {
+            self.damage_rect(d);
+        }
+
+        if let Some(id) = close_target_id {
+            self.close_window(id);
+        }
     }
 
     /// Render wallpaper and taskbar within a damaged rectangle.
