@@ -5,6 +5,7 @@
 
 pub mod ring;
 pub mod futex;
+pub mod section;
 
 pub use futex::{
     futex_wait, futex_wake, futex_wake_tid, test_futex_engine, FutexBucket, FutexError, FutexKey,
@@ -14,3 +15,4 @@ pub use ring::{
     test_spsc_ring, PacketHeader, RingBufferError, SharedMemoryRing, SharedRingHeader,
     SpscRingBuffer, CACHELINE_SIZE, PACKET_HEADER_SIZE, PACKET_MAGIC,
 };
+pub use section::{SectionManager, SharedSection, SECTION_MANAGER};

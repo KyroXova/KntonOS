@@ -8,7 +8,12 @@ pub mod table;
 pub mod validate;
 
 pub use handlers::{NT_CONSOLE_HANDLE, NT_CURRENT_PROCESS};
-pub use table::{dispatch, syscall_name, total_dispatches, NT_ALLOCATE_VIRTUAL_MEMORY, NT_READ_FILE, NT_TERMINATE_PROCESS, NT_TEST_SYS, NT_WRITE_FILE, NT_YIELD_EXECUTION};
+pub use table::{
+    dispatch, syscall_name, total_dispatches, NT_ALERT_THREAD_BY_THREAD_ID,
+    NT_ALLOCATE_VIRTUAL_MEMORY, NT_CREATE_SECTION, NT_MAP_VIEW_OF_SECTION, NT_READ_FILE,
+    NT_TERMINATE_PROCESS, NT_TEST_SYS, NT_WAIT_FOR_ALERT_BY_THREAD_ID, NT_WRITE_FILE,
+    NT_YIELD_EXECUTION,
+};
 pub use validate::*;
 
 /// Initializes the system call subsystem.
