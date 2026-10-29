@@ -5,6 +5,7 @@
 //! - HKDF (RFC 5869) key derivation functions (Extract & Expand)
 //! - AES-128-GCM (NIST SP 800-38D) authenticated encryption and GHASH authenticator
 //! - Hardware RNG (RDRAND/RDSEED) detection, entropy extractor, and ChaCha20 cipher state structures
+//! - ChaCha20 256-bit CSPRNG stream generator and kernel entropy pool
 
 pub mod aes_gcm;
 pub mod chacha20;
@@ -22,8 +23,10 @@ pub use chacha20::{
 };
 pub use hkdf::{hkdf_expand, hkdf_extract, verify_hkdf};
 pub use rng::{
-    cpuid, rdrand64, rdseed64, rdtsc, verify_entropy_extractor, verify_hw_rng_detection,
-    EntropySource, HardwareEntropyExtractor, HardwareRngCapabilities,
+    cpuid, get_random_bytes, get_random_u32, get_random_u64, init_kernel_rng, rdrand64, rdseed64,
+    rdtsc, verify_chacha20_csprng, verify_entropy_extractor, verify_hw_rng_detection,
+    ChaCha20Csprng, EntropySource, HardwareEntropyExtractor, HardwareRngCapabilities,
+    KernelEntropyPool, KERNEL_RNG,
 };
 pub use sha256::{
     hmac_sha256, verify_sha256, Sha256, SHA256_BLOCK_SIZE, SHA256_DIGEST_SIZE,
@@ -37,4 +40,5 @@ pub fn verify_crypto_primitives() -> bool {
         && verify_chacha20_structures()
         && verify_hw_rng_detection()
         && verify_entropy_extractor()
+        && verify_chacha20_csprng()
 }

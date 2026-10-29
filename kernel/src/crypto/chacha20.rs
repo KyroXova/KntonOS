@@ -1,7 +1,7 @@
 //! ChaCha20 Stream Cipher State and Quarter-Round Permutations (RFC 7539).
 //!
-//! Provides the 512-bit (16 x 32-bit word) ChaCha20 state matrix, quarter-round
-//! ARX (Add-Rotate-Xor) operations, and block formatting.
+//! Provides the 512-bit (16 x 32-bit word) ChaCha20 state matrix, 20-round ARX
+//! (Add-Rotate-Xor) block function, and keystream generator.
 
 pub const CHACHA20_KEY_SIZE: usize = 32;       // 256-bit key
 pub const CHACHA20_NONCE_SIZE: usize = 12;     // 96-bit nonce
@@ -105,7 +105,74 @@ impl ChaCha20State {
         *b = (*b ^ *c).rotate_left(7);
     }
 
-    /// Serializes 16 words into a 64-byte little-endian block.
+    /// Executes the standard RFC 7539 ChaCha20 20-round block function.
+    /// Performs 10 double-rounds (column rounds then diagonal rounds), adds the
+    /// initial working state, and produces a 64-byte keystream block.
+    pub fn block_function(&self) -> [u8; CHACHA20_BLOCK_SIZE] {
+        let mut working = self.state;
+
+        for _ in 0..10 {
+            // Column Rounds
+            Self::quarter_round_indexed(&mut working, 0, 4, 8, 12);
+            Self::quarter_round_indexed(&mut working, 1, 5, 9, 13);
+            Self::quarter_round_indexed(&mut working, 2, 6, 10, 14);
+            Self::quarter_round_indexed(&mut working, 3, 7, 11, 15);
+
+            // Diagonal Rounds
+            Self::quarter_round_indexed(&mut working, 0, 5, 10, 15);
+            Self::quarter_round_indexed(&mut working, 1, 6, 11, 12);
+            Self::quarter_round_indexed(&mut working, 2, 7, 8, 13);
+            Self::quarter_round_indexed(&mut working, 3, 4, 9, 14);
+        }
+
+        // Add initial state and serialize to 64 bytes
+        let mut out = [0u8; CHACHA20_BLOCK_SIZE];
+        for i in 0..16 {
+            let sum = working[i].wrapping_add(self.state[i]);
+            let le = sum.to_le_bytes();
+            let offset = i * 4;
+            out[offset..offset + 4].copy_from_slice(&le);
+        }
+        out
+    }
+
+    /// Helper for quarter-round indexing on a mutable state array.
+    #[inline(always)]
+    fn quarter_round_indexed(state: &mut [u32; 16], a: usize, b: usize, c: usize, d: usize) {
+        state[a] = state[a].wrapping_add(state[b]);
+        state[d] = (state[d] ^ state[a]).rotate_left(16);
+
+        state[c] = state[c].wrapping_add(state[d]);
+        state[b] = (state[b] ^ state[c]).rotate_left(12);
+
+        state[a] = state[a].wrapping_add(state[b]);
+        state[d] = (state[d] ^ state[a]).rotate_left(8);
+
+        state[c] = state[c].wrapping_add(state[d]);
+        state[b] = (state[b] ^ state[c]).rotate_left(7);
+    }
+
+    /// Generates next 64-byte keystream block and increments block counter.
+    pub fn generate_block(&mut self) -> [u8; CHACHA20_BLOCK_SIZE] {
+        let block = self.block_function();
+        self.state[12] = self.state[12].wrapping_add(1);
+        block
+    }
+
+    /// Encrypts or decrypts a buffer in-place by XORing with the generated keystream.
+    pub fn apply_keystream(&mut self, data: &mut [u8]) {
+        let mut offset = 0;
+        while offset < data.len() {
+            let block = self.generate_block();
+            let chunk_len = core::cmp::min(CHACHA20_BLOCK_SIZE, data.len() - offset);
+            for i in 0..chunk_len {
+                data[offset + i] ^= block[i];
+            }
+            offset += chunk_len;
+        }
+    }
+
+    /// Serializes current raw 16 words into a 64-byte little-endian block.
     pub fn to_bytes(&self) -> [u8; CHACHA20_BLOCK_SIZE] {
         let mut bytes = [0u8; CHACHA20_BLOCK_SIZE];
         for (i, &word) in self.state.iter().enumerate() {
@@ -152,6 +219,24 @@ pub fn verify_chacha20_structures() -> bool {
 
     let bytes = chacha.to_bytes();
     if bytes.len() != CHACHA20_BLOCK_SIZE {
+        return false;
+    }
+
+    // 4. Verify RFC 7539 Section 2.3.2 ChaCha20 Block Function Test Vector
+    let mut rfc_key = [0u8; CHACHA20_KEY_SIZE];
+    for i in 0..32 {
+        rfc_key[i] = i as u8;
+    }
+    let rfc_nonce = [0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x4a, 0x00, 0x00, 0x00, 0x00];
+    let rfc_state = ChaCha20State::new(&rfc_key, &rfc_nonce, 1);
+    let block = rfc_state.block_function();
+
+    // First 4 bytes expected: 0x10, 0xf1, 0xe7, 0xe4
+    if block[0] != 0x10 || block[1] != 0xf1 || block[2] != 0xe7 || block[3] != 0xe4 {
+        return false;
+    }
+    // Last 4 bytes expected: 0xa2, 0x50, 0x3c, 0x4e
+    if block[60] != 0xa2 || block[61] != 0x50 || block[62] != 0x3c || block[63] != 0x4e {
         return false;
     }
 

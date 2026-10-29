@@ -1,8 +1,14 @@
 //! Hardware Random Number Generation (RDRAND / RDSEED) and Entropy Extractor.
 //!
 //! Provides x86_64 CPUID feature interrogation, hardware digital random number
-//! extraction (RDRAND and RDSEED instructions), and high-resolution RDTSC jitter
-//! fallback mixing for entropy-constrained execution environments.
+//! extraction (RDRAND and RDSEED instructions), high-resolution RDTSC jitter
+//! fallback mixing, and ChaCha20-based Cryptographically Secure Pseudorandom
+//! Number Generator (CSPRNG) kernel entropy pool.
+
+use crate::crypto::chacha20::{
+    ChaCha20State, CHACHA20_BLOCK_SIZE, CHACHA20_KEY_SIZE, CHACHA20_NONCE_SIZE,
+};
+use crate::memory::spinlock::Spinlock;
 
 /// Hardware RNG capability flags detected via CPUID.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -217,6 +223,195 @@ impl HardwareEntropyExtractor {
     }
 }
 
+pub const ENTROPY_POOL_SIZE: usize = 64;
+
+/// Kernel Cryptographic Entropy Pool.
+#[derive(Debug, Clone)]
+pub struct KernelEntropyPool {
+    pool: [u8; ENTROPY_POOL_SIZE],
+    pool_index: usize,
+    extractor: HardwareEntropyExtractor,
+}
+
+impl KernelEntropyPool {
+    pub fn new() -> Self {
+        let mut pool = Self {
+            pool: [0u8; ENTROPY_POOL_SIZE],
+            pool_index: 0,
+            extractor: HardwareEntropyExtractor::new(),
+        };
+        pool.harvest_hardware_entropy();
+        pool
+    }
+
+    /// Mixes external entropy into the circular entropy pool buffer.
+    pub fn add_entropy(&mut self, data: &[u8]) {
+        for &byte in data {
+            self.pool[self.pool_index] ^= byte.rotate_left(3);
+            self.pool_index = (self.pool_index + 1) % ENTROPY_POOL_SIZE;
+        }
+    }
+
+    /// Harvests 32 bytes from hardware RNG / jitter and mixes into the pool.
+    pub fn harvest_hardware_entropy(&mut self) -> EntropySource {
+        let mut seed = [0u8; 32];
+        let src = self.extractor.extract_seed(&mut seed);
+        self.add_entropy(&seed);
+        src
+    }
+
+    /// Extracts a fresh 32-byte seed derived from the entropy pool and hardware extractor.
+    pub fn extract_seed(&mut self, out_seed: &mut [u8; 32]) {
+        self.harvest_hardware_entropy();
+        for i in 0..32 {
+            out_seed[i] = self.pool[i] ^ self.pool[i + 32].rotate_left(1);
+        }
+    }
+}
+
+pub const DEFAULT_RESEED_INTERVAL: usize = 1024 * 1024; // 1 MiB
+
+/// ChaCha20-based Cryptographically Secure Pseudorandom Number Generator (CSPRNG).
+#[derive(Debug, Clone)]
+pub struct ChaCha20Csprng {
+    state: ChaCha20State,
+    buffer: [u8; CHACHA20_BLOCK_SIZE],
+    buffer_index: usize,
+    bytes_generated: usize,
+    reseed_interval: usize,
+    pool: KernelEntropyPool,
+    nonce_counter: u64,
+}
+
+impl ChaCha20Csprng {
+    /// Initializes CSPRNG with hardware entropy and generates the first keystream block.
+    pub fn new() -> Self {
+        let mut pool = KernelEntropyPool::new();
+        let mut initial_key = [0u8; CHACHA20_KEY_SIZE];
+        pool.extract_seed(&mut initial_key);
+
+        let initial_nonce = [0xAA, 0x55, 0x33, 0x11, 0x77, 0x88, 0x99, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
+        let state = ChaCha20State::new(&initial_key, &initial_nonce, 0);
+
+        let mut csprng = Self {
+            state,
+            buffer: [0u8; CHACHA20_BLOCK_SIZE],
+            buffer_index: CHACHA20_BLOCK_SIZE, // Forces immediate block generation on first read
+            bytes_generated: 0,
+            reseed_interval: DEFAULT_RESEED_INTERVAL,
+            pool,
+            nonce_counter: 1,
+        };
+
+        csprng.refresh_buffer();
+        csprng
+    }
+
+    /// Refreshes the internal 64-byte keystream buffer.
+    fn refresh_buffer(&mut self) {
+        self.buffer = self.state.generate_block();
+        self.buffer_index = 0;
+    }
+
+    /// Reseeds the ChaCha20 key using fresh entropy from the kernel pool.
+    pub fn reseed(&mut self) {
+        let mut fresh_entropy = [0u8; CHACHA20_KEY_SIZE];
+        self.pool.extract_seed(&mut fresh_entropy);
+
+        // Mix fresh entropy with next 32 bytes of ChaCha20 keystream for forward secrecy
+        let keystream = self.state.generate_block();
+        let mut new_key = [0u8; CHACHA20_KEY_SIZE];
+        for i in 0..CHACHA20_KEY_SIZE {
+            new_key[i] = fresh_entropy[i] ^ keystream[i];
+        }
+
+        self.nonce_counter = self.nonce_counter.wrapping_add(1);
+        let mut nonce = [0u8; CHACHA20_NONCE_SIZE];
+        let nc_bytes = self.nonce_counter.to_le_bytes();
+        nonce[0..8].copy_from_slice(&nc_bytes);
+        nonce[8..12].copy_from_slice(&[0x13, 0x37, 0xC0, 0xDE]);
+
+        self.state = ChaCha20State::new(&new_key, &nonce, 0);
+        self.bytes_generated = 0;
+        self.refresh_buffer();
+    }
+
+    /// Fills the destination buffer with cryptographically secure random bytes.
+    pub fn fill_bytes(&mut self, dest: &mut [u8]) {
+        let mut written = 0;
+        while written < dest.len() {
+            // Check reseed boundary
+            if self.bytes_generated >= self.reseed_interval {
+                self.reseed();
+            }
+
+            if self.buffer_index >= CHACHA20_BLOCK_SIZE {
+                self.refresh_buffer();
+            }
+
+            let available = CHACHA20_BLOCK_SIZE - self.buffer_index;
+            let needed = dest.len() - written;
+            let to_copy = core::cmp::min(available, needed);
+
+            dest[written..written + to_copy]
+                .copy_from_slice(&self.buffer[self.buffer_index..self.buffer_index + to_copy]);
+
+            self.buffer_index += to_copy;
+            written += to_copy;
+            self.bytes_generated += to_copy;
+        }
+    }
+
+    /// Generates next random 32-bit unsigned integer.
+    pub fn next_u32(&mut self) -> u32 {
+        let mut buf = [0u8; 4];
+        self.fill_bytes(&mut buf);
+        u32::from_le_bytes(buf)
+    }
+
+    /// Generates next random 64-bit unsigned integer.
+    pub fn next_u64(&mut self) -> u64 {
+        let mut buf = [0u8; 8];
+        self.fill_bytes(&mut buf);
+        u64::from_le_bytes(buf)
+    }
+}
+
+/// Global thread-safe kernel CSPRNG instance.
+pub static KERNEL_RNG: Spinlock<Option<ChaCha20Csprng>> = Spinlock::new(None);
+
+/// Initializes the global kernel random number generator.
+pub fn init_kernel_rng() {
+    let csprng = ChaCha20Csprng::new();
+    *KERNEL_RNG.lock() = Some(csprng);
+}
+
+/// Fills destination slice with cryptographically secure pseudorandom bytes.
+pub fn get_random_bytes(dest: &mut [u8]) {
+    let mut lock = KERNEL_RNG.lock();
+    if let Some(rng) = lock.as_mut() {
+        rng.fill_bytes(dest);
+    } else {
+        let mut rng = ChaCha20Csprng::new();
+        rng.fill_bytes(dest);
+        *lock = Some(rng);
+    }
+}
+
+/// Generates a random 64-bit unsigned integer from the global CSPRNG.
+pub fn get_random_u64() -> u64 {
+    let mut buf = [0u8; 8];
+    get_random_bytes(&mut buf);
+    u64::from_le_bytes(buf)
+}
+
+/// Generates a random 32-bit unsigned integer from the global CSPRNG.
+pub fn get_random_u32() -> u32 {
+    let mut buf = [0u8; 4];
+    get_random_bytes(&mut buf);
+    u32::from_le_bytes(buf)
+}
+
 /// Self-test verifying CPUID interrogation and hardware capability parsing.
 pub fn verify_hw_rng_detection() -> bool {
     let caps = HardwareRngCapabilities::detect();
@@ -235,20 +430,16 @@ pub fn verify_hw_rng_detection() -> bool {
 pub fn verify_entropy_extractor() -> bool {
     let mut extractor = HardwareEntropyExtractor::new();
 
-    // 1. Verify 64-bit entropy extraction
     let (w1, src1) = extractor.extract_u64();
     let (w2, _) = extractor.extract_u64();
 
-    // Entropy words must not be equal
     if w1 == w2 || (w1 == 0 && w2 == 0) {
         return false;
     }
 
-    // 2. Verify 32-byte seed extraction
     let mut seed = [0u8; 32];
     let seed_src = extractor.extract_seed(&mut seed);
 
-    // Verify seed has non-zero bytes and variance
     let all_zero = seed.iter().all(|&b| b == 0);
     let all_same = seed.iter().all(|&b| b == seed[0]);
     if all_zero || all_same {
@@ -256,5 +447,40 @@ pub fn verify_entropy_extractor() -> bool {
     }
 
     let _ = (src1, seed_src);
+    true
+}
+
+/// Self-test verifying ChaCha20 CSPRNG stream generation, uniqueness, and reseeding.
+pub fn verify_chacha20_csprng() -> bool {
+    let mut rng = ChaCha20Csprng::new();
+
+    // 1. Verify two consecutive 32-byte chunks are distinct
+    let mut buf1 = [0u8; 32];
+    let mut buf2 = [0u8; 32];
+    rng.fill_bytes(&mut buf1);
+    rng.fill_bytes(&mut buf2);
+
+    if buf1 == buf2 {
+        return false;
+    }
+    if buf1.iter().all(|&b| b == 0) || buf2.iter().all(|&b| b == 0) {
+        return false;
+    }
+
+    // 2. Verify reseed logic
+    rng.reseed();
+    let mut buf3 = [0u8; 32];
+    rng.fill_bytes(&mut buf3);
+    if buf3 == buf1 || buf3 == buf2 {
+        return false;
+    }
+
+    // 3. Verify scalar generators
+    let u1 = rng.next_u64();
+    let u2 = rng.next_u64();
+    if u1 == u2 || (u1 == 0 && u2 == 0) {
+        return false;
+    }
+
     true
 }
