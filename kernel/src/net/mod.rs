@@ -8,6 +8,7 @@
 //! - TCP (RFC 793): Connection-oriented stream sockets, state machine, and 3-way handshake
 
 pub mod arp;
+pub mod dhcp;
 pub mod dns;
 pub mod http;
 pub mod icmp;
@@ -16,6 +17,14 @@ pub mod tcp;
 pub mod udp;
 
 pub use arp::{ArpCache, ArpPacket, ARP_OP_REPLY, ARP_OP_REQUEST};
+pub use dhcp::{
+    verify_dhcp_state_machine, verify_dhcp_wire_protocol, DhcpClient, DhcpError, DhcpLease,
+    DhcpOption, DhcpPacket, DhcpState, BOOTREPLY, BOOTREQUEST, DHCPACK, DHCPDECLINE,
+    DHCPDISCOVER, DHCPINFORM, DHCPNAK, DHCPOFFER, DHCPRELEASE, DHCPREQUEST, DHCP_CLIENT_PORT,
+    DHCP_MAGIC_COOKIE, DHCP_OPT_DNS_SERVER, DHCP_OPT_END, DHCP_OPT_LEASE_TIME,
+    DHCP_OPT_MESSAGE_TYPE, DHCP_OPT_PAD, DHCP_OPT_PARAM_REQUEST_LIST, DHCP_OPT_REQUESTED_IP,
+    DHCP_OPT_ROUTER, DHCP_OPT_SERVER_ID, DHCP_OPT_SUBNET_MASK, DHCP_SERVER_PORT,
+};
 pub use dns::{
     build_dns_query, encode_domain_name, parse_dns_response, read_domain_name,
     verify_dns_wire_protocol, DnsAnswer, DnsError, DnsHeader, DnsQuestion, DNS_CLASS_IN,
@@ -54,6 +63,7 @@ pub struct NetworkStack {
     pub udp_sockets: UdpSocketRegistry,
     pub tcp_sockets: Vec<TcpSocket>,
     pub dns_cache: Vec<(String, [u8; 4])>,
+    pub dhcp_lease: Option<DhcpLease>,
     pub rx_packets: u64,
     pub tx_packets: u64,
 }
@@ -70,9 +80,58 @@ impl NetworkStack {
             udp_sockets: UdpSocketRegistry::new(),
             tcp_sockets: Vec::new(),
             dns_cache: Vec::new(),
+            dhcp_lease: None,
             rx_packets: 0,
             tx_packets: 0,
         }
+    }
+
+    /// Applies an acquired DHCP lease to configure local network parameters.
+    pub fn apply_dhcp_lease(&mut self, lease: DhcpLease) {
+        self.local_ip = lease.ip;
+        self.netmask = lease.netmask;
+        self.gateway = lease.router;
+        if let Some(&first_dns) = lease.dns_servers.first() {
+            self.dns_server = first_dns;
+        }
+        self.dhcp_lease = Some(lease);
+    }
+
+    /// Automatically configures the network stack endpoints via DHCP client.
+    pub fn configure_from_dhcp(&mut self) -> Result<(), &'static str> {
+        let mut dhcp = DhcpClient::new(self.local_mac);
+        let _ = self.udp_sockets.bind(DHCP_CLIENT_PORT);
+
+        let discover = dhcp.build_discover();
+        let _discover_bytes = discover.serialize();
+
+        // Check if an offer datagram has been queued in the client UDP socket
+        if let Some(offer_dgram) = self.udp_sockets.poll(DHCP_CLIENT_PORT) {
+            let offer = DhcpPacket::parse(&offer_dgram.payload).map_err(|_| "Malformed DHCPOFFER")?;
+            let request = dhcp.handle_offer(&offer).map_err(|_| "Failed to process DHCPOFFER")?;
+            let _req_bytes = request.serialize();
+
+            // Check if ACK datagram has been queued
+            if let Some(ack_dgram) = self.udp_sockets.poll(DHCP_CLIENT_PORT) {
+                let ack = DhcpPacket::parse(&ack_dgram.payload).map_err(|_| "Malformed DHCPACK")?;
+                let lease = dhcp.handle_ack(&ack).map_err(|_| "Failed to process DHCPACK")?;
+                self.apply_dhcp_lease(lease);
+                return Ok(());
+            }
+        }
+
+        // If a lease was previously acquired
+        if let Some(ref lease) = self.dhcp_lease {
+            self.local_ip = lease.ip;
+            self.netmask = lease.netmask;
+            self.gateway = lease.router;
+            if let Some(&first_dns) = lease.dns_servers.first() {
+                self.dns_server = first_dns;
+            }
+            return Ok(());
+        }
+
+        Err("No DHCP lease acquired")
     }
 
     /// Registers a domain name to IPv4 mapping in the local DNS cache.
@@ -157,9 +216,15 @@ impl NetworkStack {
             // --- IPv4 (0x0800) ---
             0x0800 => {
                 if let Ok(ip_packet) = Ipv4Packet::parse(payload) {
-                    // Verify packet is destined for our IP or broadcast
+                    // Verify packet is destined for our IP, broadcast, or DHCP client port
+                    let is_dhcp_port = ip_packet.header.protocol == IP_PROTO_UDP
+                        && ip_packet.payload.len() >= 4
+                        && u16::from_be_bytes([ip_packet.payload[2], ip_packet.payload[3]]) == DHCP_CLIENT_PORT;
+
                     if ip_packet.header.dst_ip == self.local_ip
                         || ip_packet.header.dst_ip == [255, 255, 255, 255]
+                        || ip_packet.header.dst_ip == [0, 0, 0, 0]
+                        || is_dhcp_port
                     {
                         match ip_packet.header.protocol {
                             // ICMP Protocol (1)
@@ -379,9 +444,14 @@ pub fn http_get(url: &str) -> Result<HttpResponse, &'static str> {
     Err("Target host/port unreachable")
 }
 
+/// Automatically configures global network stack endpoints using DHCP lease client.
+pub fn configure_from_dhcp() -> Result<(), &'static str> {
+    NET_STACK.lock().configure_from_dhcp()
+}
+
 /// Initializes the embedded network stack.
 pub fn init() {
-    crate::serial_write_str("[KNT-NET-INIT] Initializing embedded network protocol stack (ARP, IPv4, ICMP, UDP, TCP, DNS, HTTP)...\r\n");
+    crate::serial_write_str("[KNT-NET-INIT] Initializing embedded network protocol stack (ARP, IPv4, ICMP, UDP, TCP, DNS, HTTP, DHCP)...\r\n");
     crate::serial_write_str("[KNT-NET] Local IP configured: 192.168.1.100 / Netmask: 255.255.255.0\r\n");
 }
 
@@ -675,6 +745,99 @@ pub fn test_network_stack() -> bool {
         }
 
         crate::serial_write_str("[KNT-NET-HTTP-PASS] DNS resolution (RFC 1035) and HTTP/1.1 GET micro-client verified\r\n");
+    }
+
+    // --- TEST 6: DHCP IPv4 Lease Client & Network Auto-Configuration ---
+    {
+        if !verify_dhcp_wire_protocol() {
+            crate::serial_write_str("[KNT-PANIC] DHCP wire protocol verification failed!\r\n");
+            return false;
+        }
+
+        if !verify_dhcp_state_machine() {
+            crate::serial_write_str("[KNT-PANIC] DHCP state machine verification failed!\r\n");
+            return false;
+        }
+
+        let mut stack = NET_STACK.lock();
+
+        let client_mac = stack.local_mac;
+        let xid = 0x3903F326 ^ (client_mac[4] as u32) | ((client_mac[5] as u32) << 8);
+
+        // Build mock DHCPOFFER packet
+        let mut offer = DhcpPacket::new_client_packet(xid, client_mac);
+        offer.op = BOOTREPLY;
+        offer.yiaddr = [192, 168, 1, 188];
+        offer.siaddr = [192, 168, 1, 1];
+        offer.add_option(DHCP_OPT_MESSAGE_TYPE, &[DHCPOFFER]);
+        offer.add_option(DHCP_OPT_SERVER_ID, &[192, 168, 1, 1]);
+        offer.add_option(DHCP_OPT_SUBNET_MASK, &[255, 255, 255, 0]);
+        offer.add_option(DHCP_OPT_ROUTER, &[192, 168, 1, 1]);
+        offer.add_option(DHCP_OPT_DNS_SERVER, &[192, 168, 1, 254]);
+        offer.add_option(DHCP_OPT_LEASE_TIME, &86400u32.to_be_bytes());
+
+        let offer_wire = offer.serialize();
+        let offer_udp = UdpHeader::new(DHCP_SERVER_PORT, DHCP_CLIENT_PORT, offer_wire.len());
+        let mut offer_packet = Vec::new();
+        offer_packet.extend_from_slice(&offer_udp.serialize());
+        offer_packet.extend_from_slice(&offer_wire);
+
+        let offer_ip = Ipv4Header::new([192, 168, 1, 1], [255, 255, 255, 255], IP_PROTO_UDP, offer_packet.len());
+        let mut offer_frame = Vec::new();
+        offer_frame.extend_from_slice(&client_mac);
+        offer_frame.extend_from_slice(&[0x00, 0x50, 0x56, 0xAA, 0xBB, 0xCC]);
+        offer_frame.extend_from_slice(&[0x08, 0x00]);
+        offer_frame.extend_from_slice(&offer_ip.serialize());
+        offer_frame.extend_from_slice(&offer_packet);
+
+        // Build mock DHCPACK packet
+        let mut ack = DhcpPacket::new_client_packet(xid, client_mac);
+        ack.op = BOOTREPLY;
+        ack.yiaddr = [192, 168, 1, 188];
+        ack.siaddr = [192, 168, 1, 1];
+        ack.add_option(DHCP_OPT_MESSAGE_TYPE, &[DHCPACK]);
+        ack.add_option(DHCP_OPT_SERVER_ID, &[192, 168, 1, 1]);
+        ack.add_option(DHCP_OPT_SUBNET_MASK, &[255, 255, 255, 0]);
+        ack.add_option(DHCP_OPT_ROUTER, &[192, 168, 1, 1]);
+        ack.add_option(DHCP_OPT_DNS_SERVER, &[192, 168, 1, 254]);
+        ack.add_option(DHCP_OPT_LEASE_TIME, &86400u32.to_be_bytes());
+
+        let ack_wire = ack.serialize();
+        let ack_udp = UdpHeader::new(DHCP_SERVER_PORT, DHCP_CLIENT_PORT, ack_wire.len());
+        let mut ack_packet = Vec::new();
+        ack_packet.extend_from_slice(&ack_udp.serialize());
+        ack_packet.extend_from_slice(&ack_wire);
+
+        let ack_ip = Ipv4Header::new([192, 168, 1, 1], [255, 255, 255, 255], IP_PROTO_UDP, ack_packet.len());
+        let mut ack_frame = Vec::new();
+        ack_frame.extend_from_slice(&client_mac);
+        ack_frame.extend_from_slice(&[0x00, 0x50, 0x56, 0xAA, 0xBB, 0xCC]);
+        ack_frame.extend_from_slice(&[0x08, 0x00]);
+        ack_frame.extend_from_slice(&ack_ip.serialize());
+        ack_frame.extend_from_slice(&ack_packet);
+
+        // Bind client port and feed offer & ack frames into stack
+        let _ = stack.udp_sockets.bind(DHCP_CLIENT_PORT);
+        stack.process_frame(&offer_frame);
+        stack.process_frame(&ack_frame);
+
+        // Execute auto-configuration
+        if stack.configure_from_dhcp().is_err() {
+            crate::serial_write_str("[KNT-PANIC] DHCP configure_from_dhcp failed to acquire lease!\r\n");
+            return false;
+        }
+
+        if stack.local_ip != [192, 168, 1, 188]
+            || stack.netmask != [255, 255, 255, 0]
+            || stack.gateway != [192, 168, 1, 1]
+            || stack.dns_server != [192, 168, 1, 254]
+            || stack.dhcp_lease.is_none()
+        {
+            crate::serial_write_str("[KNT-PANIC] Network stack parameters not updated from DHCP lease!\r\n");
+            return false;
+        }
+
+        crate::serial_write_str("[KNT-NET-DHCP-PASS] DHCP 4-way DORA lease exchange and network auto-configuration verified\r\n");
     }
 
     crate::serial_write_str("[KNT-NET-TESTS-PASS] All embedded network protocol stack checks passed\r\n");
