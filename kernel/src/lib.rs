@@ -7,6 +7,7 @@ pub mod memory;
 pub mod display;
 pub mod pe;
 pub mod fs;
+pub mod syscall;
 
 pub use memory::ALLOCATOR;
 
