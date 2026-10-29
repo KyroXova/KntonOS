@@ -179,6 +179,12 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] USB HID subsystem self-test failed!\r\n");
     }
 
+    // Initialize and verify ELF64 Executable Loader Subsystem
+    loader::init();
+    if !loader::test_loader_subsystem() {
+        serial_write_str("[KNT-PANIC] ELF64 loader subsystem self-test failed!\r\n");
+    }
+
     // Spawn and execute initial Win32 PE64 userland process (/bin/init.exe)
     if !pe::run_init_process() {
         serial_write_str("[KNT-PANIC] Initial Win32 user process execution failed!\r\n");

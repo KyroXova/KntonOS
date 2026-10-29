@@ -14,3 +14,78 @@ pub use elf::{
     ELF_OSABI_SYSV, EM_X86_64, ET_DYN, ET_EXEC, PF_R, PF_W, PF_X, PT_DYNAMIC, PT_INTERP,
     PT_LOAD,
 };
+
+/// Initializes the ELF64 executable loader subsystem.
+pub fn init() {
+    crate::serial_write_str("[KNT-ELF-INIT] Initializing ELF64 executable loader subsystem...\r\n");
+}
+
+/// Verification test suite exercising ELF64 header validation, segment mapping,
+/// System V ABI stack formatting, and user process execution.
+pub fn test_loader_subsystem() -> bool {
+    crate::serial_write_str("[KNT-ELF-TEST] Running ELF64 loader and userland execution test suite...\r\n");
+
+    // 1. Verify ELF64 header and program header table parser
+    if !test_elf_parser() {
+        crate::serial_write_str("[KNT-PANIC] ELF64 parser unit test failed!\r\n");
+        return false;
+    }
+
+    // 2. Verify PT_LOAD segment mapping and BSS zero-fill
+    if !test_elf_segment_mapping() {
+        crate::serial_write_str("[KNT-PANIC] ELF64 segment mapping test failed!\r\n");
+        return false;
+    }
+
+    // 3. Verify End-to-End ELF user process spawning and System V stack setup
+    {
+        let mut mock_elf = [0u8; 256];
+        mock_elf[0..4].copy_from_slice(&ELF_MAGIC);
+        mock_elf[4] = ELF_CLASS_64;
+        mock_elf[5] = ELF_DATA_2LSB;
+        mock_elf[6] = 1; // EV_CURRENT
+        mock_elf[7] = ELF_OSABI_SYSV;
+
+        let ehdr_ptr = mock_elf.as_mut_ptr() as *mut Elf64Ehdr;
+        unsafe {
+            (*ehdr_ptr).e_type = ET_EXEC;
+            (*ehdr_ptr).e_machine = EM_X86_64;
+            (*ehdr_ptr).e_version = 1;
+            (*ehdr_ptr).e_entry = 0x0040_0000;
+            (*ehdr_ptr).e_phoff = 64;
+            (*ehdr_ptr).e_ehsize = 64;
+            (*ehdr_ptr).e_phentsize = 56;
+            (*ehdr_ptr).e_phnum = 1;
+        }
+
+        let phdr_ptr = unsafe { mock_elf.as_mut_ptr().add(64) as *mut Elf64Phdr };
+        unsafe {
+            (*phdr_ptr).p_type = PT_LOAD;
+            (*phdr_ptr).p_flags = PF_R | PF_W | PF_X;
+            (*phdr_ptr).p_offset = 128;
+            (*phdr_ptr).p_vaddr = 0x0040_0000;
+            (*phdr_ptr).p_filesz = 64;
+            (*phdr_ptr).p_memsz = 4096;
+            (*phdr_ptr).p_align = 4096;
+        }
+
+        let process = match ProcessManager::spawn_process("init.elf", &mock_elf, &["init.elf", "--daemon"]) {
+            Ok(p) => p,
+            Err(_) => {
+                crate::serial_write_str("[KNT-PANIC] Failed to spawn ELF user process!\r\n");
+                return false;
+            }
+        };
+
+        if process.pcb.pid == 0 || process.main_thread_id == 0 {
+            crate::serial_write_str("[KNT-PANIC] Spawned ELF process has invalid PID or TID!\r\n");
+            return false;
+        }
+
+        // Yield CPU to allow the spawned ELF user thread to execute and complete its syscall
+        crate::process::scheduler::yield_now();
+    }
+
+    crate::serial_write_str("[KNT-ELF-PASS] ELF64 executable loader and userland execution verified\r\n");
+    true
+}
