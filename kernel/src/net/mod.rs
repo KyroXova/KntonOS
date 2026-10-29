@@ -14,6 +14,7 @@ pub mod http;
 pub mod icmp;
 pub mod ipv4;
 pub mod poll;
+pub mod server;
 pub mod socket;
 pub mod tcp;
 pub mod udp;
@@ -40,6 +41,9 @@ pub use ipv4::{compute_checksum, Ipv4Header, Ipv4Packet, IP_PROTO_ICMP, IP_PROTO
 pub use poll::{
     poll, select, verify_poll_multiplexer, PollFd, POLLERR, POLLHUP, POLLIN, POLLNVAL,
     POLLOUT, POLLPRI,
+};
+pub use server::{
+    verify_http_server_routing, HttpServer, RouteHandler, ServerRequest, ServerResponse,
 };
 pub use socket::{
     accept, bind, close, connect, listen, recv, recvfrom, send, sendto, set_nonblocking, socket,
