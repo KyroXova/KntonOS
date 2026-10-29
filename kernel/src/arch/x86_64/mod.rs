@@ -6,8 +6,18 @@ pub mod acpi;
 pub mod apic;
 pub mod timer;
 pub mod smp;
+pub mod power;
 
 pub use smp::{test_smp_and_timer_subsystem, SMP};
+pub use power::{
+    cpu_idle, cpu_relax, get_cpu_throttling, inw, outw, parse_dsdt_sleep_state,
+    set_cpu_throttling, test_cpu_throttling, test_fadt_parser_and_power_structures,
+    test_power_subsystem, test_sleep_and_reset_engine, CpuThrottleState, FadtInfo,
+    GenericAddressStructure, PowerError, PowerManager, PowerState, SleepTypeConfig,
+    CPU_THROTTLE, DSDT_SIGNATURE, FADT_SIGNATURE, GAS_ADDR_SPACE_PCI_CFG,
+    GAS_ADDR_SPACE_SYS_IO, GAS_ADDR_SPACE_SYS_MEM, PM1_BM_RLD, PM1_GBL_RLS, PM1_SCI_EN,
+    PM1_SLP_EN, PM1_SLP_TYP_MASK, PORT_CF9_RESET, PORT_KBD_RESET, POWER_MANAGER,
+};
 
 use crate::serial_write_str;
 
@@ -38,4 +48,8 @@ pub fn init() {
 
 pub fn init_smp() {
     smp::SMP.lock().init();
+}
+
+pub fn init_power_management() {
+    power::init();
 }

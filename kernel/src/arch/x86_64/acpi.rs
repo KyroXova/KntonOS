@@ -253,7 +253,7 @@ impl AcpiParser {
         fallback
     }
 
-    unsafe fn find_table_rsdt(rsdt: *const AcpiHeader, sig: &[u8; 4]) -> Option<*const AcpiHeader> {
+    pub unsafe fn find_table_rsdt(rsdt: *const AcpiHeader, sig: &[u8; 4]) -> Option<*const AcpiHeader> {
         if !Self::validate_checksum(rsdt as *const u8, (*rsdt).length as usize) {
             return None;
         }
@@ -269,7 +269,7 @@ impl AcpiParser {
         None
     }
 
-    unsafe fn find_table_xsdt(xsdt: *const AcpiHeader, sig: &[u8; 4]) -> Option<*const AcpiHeader> {
+    pub unsafe fn find_table_xsdt(xsdt: *const AcpiHeader, sig: &[u8; 4]) -> Option<*const AcpiHeader> {
         if !Self::validate_checksum(xsdt as *const u8, (*xsdt).length as usize) {
             return None;
         }
