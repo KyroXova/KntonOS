@@ -6,7 +6,7 @@
 //! - Pre-allocated DMA receive buffer pools and zero-copy packet dispatch
 
 use super::pci::PciDevice;
-use super::virtqueue::{Virtqueue, VIRTQ_DESC_F_WRITE};
+use super::virtqueue::{Virtqueue, VIRTQ_DESC_F_NEXT, VIRTQ_DESC_F_WRITE};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
@@ -54,6 +54,19 @@ impl VirtioNetHeader {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VirtioNetError {
+    PacketTooLarge,
+    OutOfDescriptors,
+    IoError,
+}
+
+/// Received network packet payload extracted from virtqueue buffer.
+#[derive(Debug, Clone)]
+pub struct ReceivedPacket {
+    pub data: Vec<u8>,
+}
+
 /// VirtIO Network Device Instance managing RX and TX virtqueues.
 pub struct VirtioNetDevice {
     pub pci: Option<PciDevice>,
@@ -63,6 +76,8 @@ pub struct VirtioNetDevice {
     pub rx_buffers: Box<[Box<[u8; NET_BUFFER_SIZE]>]>,
     // In-memory loopback queue for simulated bare-metal and headless testing
     pub mock_loopback_queue: Vec<Vec<u8>>,
+    pub packets_transmitted: u64,
+    pub packets_received: u64,
 }
 
 impl VirtioNetDevice {
@@ -80,6 +95,8 @@ impl VirtioNetDevice {
             tx_queue: Virtqueue::new(queue_size),
             rx_buffers: rx_buf_vec.into_boxed_slice(),
             mock_loopback_queue: Vec::new(),
+            packets_transmitted: 0,
+            packets_received: 0,
         };
 
         dev.populate_rx_buffers();
@@ -102,5 +119,83 @@ impl VirtioNetDevice {
                 self.rx_queue.submit_chain(desc_idx);
             }
         }
+    }
+
+    /// Transmits an Ethernet packet over the TX Virtqueue.
+    pub fn transmit_packet(&mut self, payload: &[u8]) -> Result<(), VirtioNetError> {
+        if payload.len() > ETH_FRAME_LEN {
+            return Err(VirtioNetError::PacketTooLarge);
+        }
+
+        let d0 = self.tx_queue.alloc_descriptor().ok_or(VirtioNetError::OutOfDescriptors)?;
+        let d1 = self.tx_queue.alloc_descriptor().ok_or(VirtioNetError::OutOfDescriptors)?;
+
+        let mut header = VirtioNetHeader::new();
+
+        // Descriptor 0: 12-byte VirtioNetHeader
+        self.tx_queue.set_descriptor(
+            d0,
+            core::ptr::addr_of_mut!(header) as usize as u64,
+            core::mem::size_of::<VirtioNetHeader>() as u32,
+            VIRTQ_DESC_F_NEXT,
+            d1,
+        );
+
+        // Descriptor 1: Packet payload
+        self.tx_queue.set_descriptor(
+            d1,
+            payload.as_ptr() as usize as u64,
+            payload.len() as u32,
+            0,
+            0,
+        );
+
+        // Submit to TX Available Ring
+        self.tx_queue.submit_chain(d0);
+        self.packets_transmitted += 1;
+
+        // In mock / loopback test mode: transfer packet into receive loopback queue
+        let mut loopback_frame = Vec::with_capacity(payload.len());
+        loopback_frame.extend_from_slice(payload);
+        self.mock_loopback_queue.push(loopback_frame);
+
+        // Mock completion in TX used ring and reclaim descriptors
+        self.tx_queue.mock_device_complete(d0 as u32, 0);
+        let _ = self.tx_queue.poll_used();
+        self.tx_queue.free_descriptor_chain(d0);
+
+        Ok(())
+    }
+
+    /// Polls RX virtqueue and returns any received network packets.
+    pub fn poll_received_packets(&mut self) -> Vec<ReceivedPacket> {
+        let mut received = Vec::new();
+
+        // Drain any packets from mock loopback queue
+        while !self.mock_loopback_queue.is_empty() {
+            let pkt_data = self.mock_loopback_queue.remove(0);
+            self.packets_received += 1;
+            received.push(ReceivedPacket { data: pkt_data });
+        }
+
+        // Check hardware used ring if attached
+        while let Some(elem) = self.rx_queue.poll_used() {
+            let desc_idx = elem.id as usize;
+            if desc_idx < self.rx_buffers.len() {
+                let hdr_size = core::mem::size_of::<VirtioNetHeader>();
+                if elem.len as usize > hdr_size {
+                    let data_len = elem.len as usize - hdr_size;
+                    let buf = &self.rx_buffers[desc_idx];
+                    let mut pkt = Vec::with_capacity(data_len);
+                    pkt.extend_from_slice(&buf[hdr_size..hdr_size + data_len]);
+                    self.packets_received += 1;
+                    received.push(ReceivedPacket { data: pkt });
+                }
+            }
+            // Replenish descriptor back to Available Ring
+            self.rx_queue.submit_chain(elem.id as u16);
+        }
+
+        received
     }
 }
