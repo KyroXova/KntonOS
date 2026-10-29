@@ -18,7 +18,7 @@ These branches are managed by their respective developers with granular commit l
 | Contributor identity | Branch | Local workspace | Status |
 | --- | --- | --- | --- |
 | Ada Chen | `workspace/ada-chen` | `E:\Git Lab's\kntonOS-ada-chen` | Active (TASK-KNT-039) |
-| Jules Martin | `workspace/jules-martin` | `E:\Git Lab's\kntonOS-jules-martin` | Active (TASK-KNT-037) |
+| Jules Martin | `workspace/jules-martin` | `E:\Git Lab's\kntonOS-jules-martin` | Idle (TASK-KNT-037 complete) |
 | Priya Nair | `workspace/priya-nair` | `E:\Git Lab's\kntonOS-priya-nair` | Active (TASK-KNT-038) |
 
 ## Task index
@@ -61,12 +61,11 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-034 | Desktop Taskbar, Clock Widget, Application Launcher, & System Tray | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-034-taskbar.md) |
 | TASK-KNT-035 | ACPI Power Management Subsystem (FADT/DSDT S3/S5, CPU Throttling, Reset & Shutdown) | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-035-power.md) |
 | TASK-KNT-036 | Real-Time Audio Subsystem (Intel HDA / AC97 Codec Driver & PCM Audio Streamer) | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-036-audio.md) |
-| TASK-KNT-037 | VirtIO GPU 2D/3D Hardware Acceleration & Scanout Display Driver | Claimed | TASK-KNT-013 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-037-virtio-gpu.md) |
+| TASK-KNT-037 | VirtIO GPU 2D/3D Hardware Acceleration & Scanout Display Driver | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-037-virtio-gpu.md) |
 | TASK-KNT-038 | VFS Unified Inode Cache, Lock Manager, & ACL Access Controls | Claimed | TASK-KNT-009 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-038-vfs-acl.md) |
 | TASK-KNT-039 | Hardware RNG (RDRAND/RDSEED) & ChaCha20 Cryptographic Entropy Pool | Claimed | TASK-KNT-033 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-039-csprng.md) |
 
 ## Active reservations
 
-- `kernel/src/drivers/gpu/`: reserved by Jules Martin for TASK-KNT-037.
 - `kernel/src/fs/acl.rs`, `kernel/src/fs/cache.rs`: reserved by Priya Nair for TASK-KNT-038.
 - `kernel/src/crypto/rng.rs`, `kernel/src/crypto/chacha20.rs`: reserved by Ada Chen for TASK-KNT-039.
