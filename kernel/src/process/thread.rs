@@ -1,0 +1,127 @@
+//! Thread Control Block (TCB), ThreadState, Priority, and Thread Lifecycle management.
+
+use alloc::string::String;
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_TID: AtomicU64 = AtomicU64::new(1);
+
+pub const DEFAULT_STACK_SIZE: usize = 16384; // 16 KiB
+pub const DEFAULT_TIME_QUANTUM: usize = 10;   // 10 scheduler ticks per quantum
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThreadState {
+    Ready,
+    Running,
+    Blocked,
+    Terminated,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Priority {
+    Idle = 0,
+    Low = 1,
+    Normal = 2,
+    High = 3,
+    Realtime = 4,
+}
+
+pub struct ThreadControlBlock {
+    pub tid: u64,
+    pub pid: u64,
+    pub name: String,
+    pub state: ThreadState,
+    pub priority: Priority,
+    pub rsp: u64,
+    pub stack: Vec<u8>,
+    pub quantum_remaining: usize,
+    pub total_ticks: u64,
+}
+
+impl ThreadControlBlock {
+    /// Creates a newly initialized kernel thread ready to execute `entry`.
+    pub fn new_kernel_thread(pid: u64, name: &str, priority: Priority, entry: fn()) -> Self {
+        let tid = NEXT_TID.fetch_add(1, Ordering::Relaxed);
+        let mut stack = Vec::with_capacity(DEFAULT_STACK_SIZE);
+        stack.resize(DEFAULT_STACK_SIZE, 0);
+
+        // Align stack top to 16 bytes
+        let stack_top = (stack.as_ptr() as u64 + DEFAULT_STACK_SIZE as u64) & !0x0F;
+
+        // Initialize stack frame for `switch_context`
+        // Memory layout pushed from top to bottom:
+        // [stack_top - 8]:  thread_bootstrap entry return address
+        // [stack_top - 16]: rbp (0)
+        // [stack_top - 24]: rbx (0)
+        // [stack_top - 32]: r12 (entry function pointer)
+        // [stack_top - 40]: r13 (0)
+        // [stack_top - 48]: r14 (0)
+        // [stack_top - 56]: r15 (0)
+        // [stack_top - 64]: rflags (0x202 = Interrupts Enabled)
+        let rsp = stack_top - 64;
+
+        unsafe {
+            let p = rsp as *mut u64;
+            *p.add(7) = thread_bootstrap as *const () as usize as u64; // Return address
+            *p.add(6) = 0;                                 // RBP
+            *p.add(5) = 0;                                 // RBX
+            *p.add(4) = entry as usize as u64;            // R12 (thread entry func)
+            *p.add(3) = 0;                                 // R13
+            *p.add(2) = 0;                                 // R14
+            *p.add(1) = 0;                                 // R15
+            *p.add(0) = 0x202;                             // RFLAGS (IF enabled)
+        }
+
+        Self {
+            tid,
+            pid,
+            name: String::from(name),
+            state: ThreadState::Ready,
+            priority,
+            rsp,
+            stack,
+            quantum_remaining: DEFAULT_TIME_QUANTUM,
+            total_ticks: 0,
+        }
+    }
+
+    /// Creates an existing/idle thread representation for the boot context.
+    pub fn new_idle_thread(pid: u64, name: &str) -> Self {
+        let tid = NEXT_TID.fetch_add(1, Ordering::Relaxed);
+        Self {
+            tid,
+            pid,
+            name: String::from(name),
+            state: ThreadState::Running,
+            priority: Priority::Idle,
+            rsp: 0,
+            stack: Vec::new(),
+            quantum_remaining: DEFAULT_TIME_QUANTUM,
+            total_ticks: 0,
+        }
+    }
+}
+
+/// Trampoline that executes a newly switched thread's entry function.
+/// R12 contains the function pointer stored during stack initialization.
+#[unsafe(naked)]
+unsafe extern "C" fn thread_bootstrap() {
+    core::arch::naked_asm!(
+        "call r12",
+        // When thread function finishes, terminate the thread
+        "call {exit}",
+        "ud2",
+        exit = sym thread_exit_handler,
+    );
+}
+
+#[no_mangle]
+extern "C" fn thread_exit_handler() {
+    crate::serial_write_str("[KNT-PROC] Thread execution completed. Terminating.\r\n");
+    // Handled by scheduler termination routine
+    loop {
+        unsafe {
+            core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
+        }
+    }
+}
