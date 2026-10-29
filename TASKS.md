@@ -33,12 +33,11 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-006 | Native UEFI/QEMU boot proof | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-006-native-boot-proof.md) |
 | TASK-KNT-007 | Kernel Memory Management Subsystem (PMM, VMM, Heap Allocator) | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-007-memory-subsystem.md) |
 | TASK-KNT-008 | Kernel CPU Infrastructure (GDT, TSS, IDT, Exceptions & Syscall MSRs) | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-008-cpu-descriptors-and-interrupts.md) |
-| TASK-KNT-009 | Virtual File System (VFS) and Memory-Mapped Initramfs | Claimed | TASK-KNT-007 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-009-vfs-and-ramdisk.md) |
+| TASK-KNT-009 | Virtual File System (VFS) and Memory-Mapped Initramfs | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-009-vfs-and-ramdisk.md) |
 | TASK-KNT-010 | Preemptive Process and Thread Scheduler (TCB, PCB, Context Switch) | Claimed | TASK-KNT-008 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-010-process-scheduler.md) |
 | TASK-KNT-011 | Userland Execution & Syscall Dispatch Engine | Claimed | TASK-KNT-008, TASK-KNT-009 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-011-syscall-dispatch.md) |
 
 ## Active reservations
 
-- `kernel/src/fs/`: reserved by Priya Nair for TASK-KNT-009.
 - `kernel/src/process/`: reserved by Jules Martin for TASK-KNT-010.
 - `kernel/src/syscall/`: reserved by Ada Chen for TASK-KNT-011.
