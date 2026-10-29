@@ -316,9 +316,12 @@ impl SignalDeliveryEngine {
         let ctx_size = core::mem::size_of::<SigContext>() as u64;
         let sigctx_vaddr = (base_rsp - ctx_size) & !0x0F;
 
-        // Write to user stack if in user space range
-        if sigctx_vaddr >= 0x0000_0000_0001_0000 && sigctx_vaddr < 0x0000_7FFF_FFFF_0000 {
-            unsafe {
+        // Write to user stack if page is present in active virtual address space
+        let cr3: u64;
+        unsafe {
+            core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags));
+            let ptm = crate::memory::vmm::PageTableManager::new((cr3 & !0xFFF) as *mut crate::memory::vmm::PageTable);
+            if ptm.translate(crate::memory::vmm::VirtAddr(sigctx_vaddr as usize)).is_some() {
                 let dst = sigctx_vaddr as *mut SigContext;
                 *dst = sigctx;
                 let ret_slot = (sigctx_vaddr - 8) as *mut u64;
@@ -532,10 +535,12 @@ pub fn test_signal_delivery_engine() -> bool {
     };
     assert!(pcb.signals.set(SIGINT, custom_action).is_ok());
 
-    // Initial simulated userland context
+    // Initial simulated userland context with mapped stack buffer
+    let mut mock_stack = [0u8; 2048];
+    let mock_rsp = (mock_stack.as_mut_ptr() as u64 + 2048) & !0x0F;
     let mut user_ctx = SigContext {
         rip: 0x0040_0050,
-        rsp: 0x0000_7FFF_FFFF_0000,
+        rsp: mock_rsp,
         rax: 0xCAFE_BABE,
         rflags: 0x202,
         ..Default::default()
@@ -551,7 +556,7 @@ pub fn test_signal_delivery_engine() -> bool {
     // Verify user context was modified to enter handler
     assert_eq!(user_ctx.rip, 0x0040_5000);
     assert_eq!(user_ctx.rdi, SIGINT as u64);
-    assert!(user_ctx.rsp < 0x0000_7FFF_FFFF_0000);
+    assert!(user_ctx.rsp < mock_rsp);
     // Verify SIGINT and sa_mask (SIGQUIT) are blocked
     assert!((thread.signal_mask & (1 << SIGINT)) != 0);
     assert!((thread.signal_mask & (1 << SIGQUIT)) != 0);
@@ -562,7 +567,7 @@ pub fn test_signal_delivery_engine() -> bool {
     assert!(SignalDeliveryEngine::restore_sigcontext(&mut thread, &mut user_ctx, None).is_ok());
     assert_eq!(user_ctx.rip, 0x0040_0050);
     assert_eq!(user_ctx.rax, 0xCAFE_BABE);
-    assert_eq!(user_ctx.rsp, 0x0000_7FFF_FFFF_0000);
+    assert_eq!(user_ctx.rsp, mock_rsp);
     assert_eq!(thread.signal_mask, 0);
 
     // 4. Test signal mask blocking
@@ -590,5 +595,165 @@ pub fn test_signal_delivery_engine() -> bool {
     assert_eq!(user_ctx.rip, 0x0040_6000);
     assert_eq!(user_ctx.rdi, SIGUSR1 as u64);
 
+    true
+}
+
+/// Verification test exercising sys_sigaction, sys_kill, sys_sigprocmask, and sys_sigreturn loopback.
+pub fn test_signal_syscall_loopback() -> bool {
+    let act_buf = (crate::syscall::USER_SPACE_START + 0x5000) as *mut SigAction;
+    let oldact_buf = (crate::syscall::USER_SPACE_START + 0x5080) as *mut SigAction;
+    let check_buf = (crate::syscall::USER_SPACE_START + 0x5100) as *mut SigAction;
+
+    // 1. sys_sigaction: register custom action for SIGINT
+    unsafe {
+        *act_buf = SigAction {
+            sa_handler: 0x0040_7000,
+            sa_mask: 1 << SIGQUIT,
+            sa_flags: SA_RESTART,
+            sa_restorer: 0x0040_8000,
+        };
+        *oldact_buf = SigAction::default();
+    }
+
+    let set_res = crate::syscall::dispatch(
+        crate::syscall::NT_SIGACTION,
+        SIGINT as u64,
+        act_buf as u64,
+        oldact_buf as u64,
+        0,
+    );
+    if set_res != crate::syscall::STATUS_SUCCESS {
+        return false;
+    }
+
+    // Retrieve old disposition and verify
+    let get_res = crate::syscall::dispatch(
+        crate::syscall::NT_SIGACTION,
+        SIGINT as u64,
+        0,
+        check_buf as u64,
+        0,
+    );
+    if get_res != crate::syscall::STATUS_SUCCESS {
+        return false;
+    }
+    unsafe {
+        if (*check_buf).sa_handler != 0x0040_7000 || (*check_buf).sa_flags != SA_RESTART {
+            return false;
+        }
+    }
+
+    // 2. sys_sigprocmask: block SIGUSR2
+    let mask_buf = (crate::syscall::USER_SPACE_START + 0x5180) as *mut u64;
+    let oldmask_buf = (crate::syscall::USER_SPACE_START + 0x5200) as *mut u64;
+    unsafe {
+        *mask_buf = 1u64 << SIGUSR2;
+    }
+    let mask_res = crate::syscall::dispatch(
+        crate::syscall::NT_SIGPROCMASK,
+        SIG_BLOCK as u64,
+        mask_buf as u64,
+        oldmask_buf as u64,
+        0,
+    );
+    if mask_res != crate::syscall::STATUS_SUCCESS {
+        return false;
+    }
+
+    // 3. sys_kill: send SIGUSR2 to current process
+    let kill_res = crate::syscall::dispatch(
+        crate::syscall::NT_KILL,
+        0, // current process
+        SIGUSR2 as u64,
+        0,
+        0,
+    );
+    if kill_res != crate::syscall::STATUS_SUCCESS {
+        return false;
+    }
+
+    // Verify current thread received pending SIGUSR2
+    let has_pending = {
+        let guard = crate::process::SCHEDULER.lock();
+        if let Some(ref sched) = *guard {
+            if let Some(ref curr) = sched.current {
+                (curr.pending_signals & (1 << SIGUSR2)) != 0
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    };
+    if !has_pending {
+        return false;
+    }
+
+    // 4. sys_sigreturn: setup mock saved context and restore
+    {
+        let mut guard = crate::process::SCHEDULER.lock();
+        if let Some(ref mut sched) = *guard {
+            if let Some(ref mut curr) = sched.current {
+                curr.saved_sigcontext = Some(SigContext {
+                    rip: 0x0040_0099,
+                    rsp: 0x0000_7FFF_EEEE_0000,
+                    oldmask: 0,
+                    ..Default::default()
+                });
+            }
+        }
+    }
+
+    let sigret_res = crate::syscall::dispatch(crate::syscall::NT_SIGRETURN, 0, 0, 0, 0);
+    if sigret_res != crate::syscall::STATUS_SUCCESS {
+        return false;
+    }
+
+    let (restored_rsp, restored_mask) = {
+        let guard = crate::process::SCHEDULER.lock();
+        if let Some(ref sched) = *guard {
+            if let Some(ref curr) = sched.current {
+                (curr.rsp, curr.signal_mask)
+            } else {
+                (0, 0)
+            }
+        } else {
+            (0, 0)
+        }
+    };
+    if restored_rsp != 0x0000_7FFF_EEEE_0000 || restored_mask != 0 {
+        return false;
+    }
+
+    true
+}
+
+/// Comprehensive verification test suite for POSIX signal delivery, mask blocking,
+/// sigaction dispatch, and sigreturn context loopback.
+pub fn test_signals_subsystem() -> bool {
+    crate::serial_write_str("[KNT-SIGNALS-TEST] Running POSIX signal handling & dispatch verification suite...\r\n");
+
+    // 1. Unit test signal definitions and mask logic
+    if !test_signal_definitions() {
+        crate::serial_write_str("[KNT-PANIC] Signal definitions and mask unit test failed!\r\n");
+        return false;
+    }
+    crate::serial_write_str("[KNT-SIGNALS-DEFS-PASS] POSIX signal numbers, sigset_t bitmasks, and uncatchable rules verified\r\n");
+
+    // 2. Unit test signal delivery engine, stack frame trampoline, and context restoration
+    if !test_signal_delivery_engine() {
+        crate::serial_write_str("[KNT-PANIC] Signal delivery engine unit test failed!\r\n");
+        return false;
+    }
+    crate::serial_write_str("[KNT-SIGNALS-ENGINE-PASS] Stack frame construction, userland trampoline, and sigcontext restoration verified\r\n");
+
+    // 3. Syscall dispatch loopback test (sigaction, kill, sigprocmask, sigreturn)
+    if !test_signal_syscall_loopback() {
+        crate::serial_write_str("[KNT-PANIC] Signal syscall dispatch loopback test failed!\r\n");
+        return false;
+    }
+    crate::serial_write_str("[KNT-SIGNALS-SYSCALL-PASS] sys_sigaction, sys_kill, sys_sigprocmask, and sys_sigreturn verified\r\n");
+
+    crate::serial_write_str("[KNT-SIGNALS-PASS] POSIX signal handling and process exception dispatch verified\r\n");
     true
 }
