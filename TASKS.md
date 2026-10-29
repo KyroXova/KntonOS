@@ -31,7 +31,10 @@ These branches are intentionally unclaimed and clean. A workspace provides isola
 | TASK-KNT-004 | First-demo resource and performance acceptance plan | Review | Revision 2 submitted | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-004-performance-plan.md) |
 | TASK-KNT-005 | UEFI toolchain and QEMU validation-fixture research | Done | None | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-005-toolchain-fixtures.md) |
 | TASK-KNT-006 | Native UEFI/QEMU boot proof | Done | Verified via cargo check | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-006-native-boot-proof.md) |
+| TASK-KNT-007 | Kernel Memory Management Subsystem (PMM, VMM, Heap Allocator) | Claimed | TASK-KNT-006 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-007-memory-subsystem.md) |
+| TASK-KNT-008 | Kernel CPU Infrastructure (GDT, TSS, IDT, Exceptions & Syscall MSRs) | Claimed | TASK-KNT-006 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-008-cpu-descriptors-and-interrupts.md) |
 
 ## Active reservations
 
-None. TASK-KNT-006 merged into `main` and verified. All workspaces free for subsequent sprint tasks.
+- `kernel/src/memory/`: reserved by Ada Chen for TASK-KNT-007.
+- `kernel/src/arch/x86_64/`: reserved by Jules Martin for TASK-KNT-008.
