@@ -10,6 +10,7 @@ pub mod cursor;
 pub mod dirty;
 pub mod window;
 pub mod compositor;
+pub mod taskbar;
 
 use crate::display::color::Color;
 use crate::display::framebuffer::{FramebufferInfo, LinearFramebuffer};
@@ -22,6 +23,7 @@ pub use cursor::{cursor_sprite_pixel, CursorState, CURSOR_HEIGHT, CURSOR_WIDTH};
 pub use dirty::{DamageRegion, Rect};
 pub use window::{Window, BORDER_WIDTH, BUTTON_WIDTH, TITLEBAR_HEIGHT};
 pub use compositor::{SceneCompositor, DEFAULT_TASKBAR_HEIGHT};
+pub use taskbar::{DesktopTaskbar, TaskbarItem, TaskbarClickAction, TASKBAR_HEIGHT, TASKBAR_TOP_BORDER_HIGHLIGHT};
 
 /// Global compositor manager instance.
 pub static COMPOSITOR: Spinlock<Option<SceneCompositor>> = Spinlock::new(None);
