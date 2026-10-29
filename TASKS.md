@@ -17,7 +17,7 @@ These branches are managed by their respective developers with granular commit l
 
 | Contributor identity | Branch | Local workspace | Status |
 | --- | --- | --- | --- |
-| Ada Chen | `workspace/ada-chen` | `E:\Git Lab's\kntonOS-ada-chen` | Active (TASK-KNT-027) |
+| Ada Chen | `workspace/ada-chen` | `E:\Git Lab's\kntonOS-ada-chen` | Active (TASK-KNT-030) |
 | Jules Martin | `workspace/jules-martin` | `E:\Git Lab's\kntonOS-jules-martin` | Active (TASK-KNT-029) |
 | Priya Nair | `workspace/priya-nair` | `E:\Git Lab's\kntonOS-priya-nair` | Active (TASK-KNT-028) |
 
@@ -54,9 +54,10 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-027 | BSD / WinSock Sockets Abstraction Layer & Event Readiness Polling | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-027-socket-layer.md) |
 | TASK-KNT-028 | VT Shell Pipelines, I/O Redirection, and Process Job Control | Claimed | TASK-KNT-016 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-028-shell-pipelines.md) |
 | TASK-KNT-029 | POSIX Signal Handling & Process Exception Dispatch Engine | Claimed | TASK-KNT-026 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-029-signals.md) |
+| TASK-KNT-030 | Embedded HTTP/1.1 Micro-Server & Kernel REST Telemetry API | Claimed | TASK-KNT-027 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-030-http-server.md) |
 
 ## Active reservations
 
-- `kernel/src/net/socket.rs`, `kernel/src/net/poll.rs`: reserved by Ada Chen for TASK-KNT-027.
+- `kernel/src/net/server.rs`: reserved by Ada Chen for TASK-KNT-030.
 - `kernel/src/process/signals.rs`: reserved by Jules Martin for TASK-KNT-029.
 - `kernel/src/shell/pipeline.rs`, `kernel/src/shell/jobs.rs`: reserved by Priya Nair for TASK-KNT-028.
