@@ -558,7 +558,7 @@ pub fn verify_ahci_fis_and_commands() -> bool {
     if read_dma.command != ATA_CMD_READ_DMA_EXT {
         return false;
     }
-    if read_dma.lba0 != 0xAB || read_dma.lba1 != 0x89 || read_dma.lba2 != 0x45 || read_dma.lba3 != 0x67 {
+    if read_dma.lba0 != 0xAB || read_dma.lba1 != 0x89 || read_dma.lba2 != 0x67 || read_dma.lba3 != 0x45 {
         return false;
     }
     if read_dma.count_low != 64 || read_dma.count_high != 0 {
