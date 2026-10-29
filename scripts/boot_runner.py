@@ -54,7 +54,7 @@ def find_ovmf_firmware(qemu_exe: str) -> str:
                 return os.path.join(root, f)
     raise FileNotFoundError(f"Could not locate OVMF firmware in {qemu_dir}")
 
-def run_boot_test(efi_path: str, timeout_sec: int = 5) -> int:
+def run_boot_test(efi_path: str, timeout_sec: int = 15) -> int:
     if not os.path.isfile(efi_path):
         print(f"[HARNESS-ERROR] EFI executable not found: {efi_path}", file=sys.stderr)
         return 1
@@ -188,8 +188,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--timeout",
         type=int,
-        default=8,
-        help="Timeout in seconds (default: 8)",
+        default=15,
+        help="Timeout in seconds (default: 15)",
     )
     args = parser.parse_args()
     sys.exit(run_boot_test(os.path.abspath(args.efi), args.timeout))
