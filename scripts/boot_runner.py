@@ -17,6 +17,7 @@ import queue
 
 SENTINEL_SUCCESS = re.compile(r"\[KNT-BOOT-SUCCESS\]")
 SENTINEL_PANIC = re.compile(r"\[KNT-PANIC\]")
+SENTINEL_TEST_FAILURE = re.compile(r"\[KNT-TEST-FAIL\]")
 SENTINEL_UEFI = re.compile(r"\[KNT-UEFI-START\]")
 SENTINEL_KERNEL = re.compile(r"\[KNT-KERNEL-INIT\]")
 
@@ -105,6 +106,7 @@ def run_boot_test(efi_path: str, timeout_sec: int = 15) -> int:
     kernel_initialized = False
     boot_success = False
     panic_detected = False
+    test_failed = False
 
     q = queue.Queue()
     def enqueue_output(out, queue_obj):
@@ -143,6 +145,8 @@ def run_boot_test(efi_path: str, timeout_sec: int = 15) -> int:
                     kernel_initialized = True
                 if SENTINEL_PANIC.search(line):
                     panic_detected = True
+                if SENTINEL_TEST_FAILURE.search(line):
+                    test_failed = True
                 if SENTINEL_SUCCESS.search(line):
                     boot_success = True
                     # Let it run briefly to ensure clean halt
@@ -163,6 +167,12 @@ def run_boot_test(efi_path: str, timeout_sec: int = 15) -> int:
 
     if panic_detected:
         print("[HARNESS] RESULT: FAILED (Kernel panic detected)", file=sys.stderr)
+        return 1
+    if test_failed:
+        print("[HARNESS] RESULT: FAILED (Kernel self-test failure detected)", file=sys.stderr)
+        return 1
+    if not uefi_started or not kernel_initialized:
+        print("[HARNESS] RESULT: FAILED (Missing UEFI or kernel initialization sentinel)", file=sys.stderr)
         return 1
     if not boot_success:
         print("[HARNESS] RESULT: FAILED (Did not reach [KNT-BOOT-SUCCESS])", file=sys.stderr)
