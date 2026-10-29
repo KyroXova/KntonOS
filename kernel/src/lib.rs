@@ -1,5 +1,8 @@
 #![no_std]
 
+pub mod display;
+pub mod pe;
+
 // 16550A UART COM1 port
 pub const COM1_PORT: u16 = 0x3F8;
 
@@ -61,6 +64,7 @@ pub extern "C" fn kmain() -> ! {
     serial_init();
     serial_write_str("\r\n[KNT-KERNEL-INIT] KntonOS micro-kernel bootstrap reached\r\n");
     serial_write_str("[KNT-BOOT-SUCCESS] Native UEFI-to-kernel boot verified\r\n");
+    serial_write_str("[KNT-SUBSYSTEM] Display & Win32 PE64 loader modules active\r\n");
 
     loop {
         unsafe {
