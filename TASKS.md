@@ -19,7 +19,7 @@ These branches are managed by their respective developers with granular commit l
 | --- | --- | --- | --- |
 | Ada Chen | `workspace/ada-chen` | `E:\Git Lab's\kntonOS-ada-chen` | Active (TASK-KNT-027) |
 | Jules Martin | `workspace/jules-martin` | `E:\Git Lab's\kntonOS-jules-martin` | Active (TASK-KNT-026) |
-| Priya Nair | `workspace/priya-nair` | `E:\Git Lab's\kntonOS-priya-nair` | Active (TASK-KNT-025) |
+| Priya Nair | `workspace/priya-nair` | `E:\Git Lab's\kntonOS-priya-nair` | Active (TASK-KNT-028) |
 
 ## Task index
 
@@ -52,9 +52,10 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-025 | Desktop GUI Controls & Acrylic Backdrop Surface Renderer | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-025-gui-controls.md) |
 | TASK-KNT-026 | ELF64 Executable Loader & Userland Execution Subsystem | Claimed | TASK-KNT-014 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-026-elf64-loader.md) |
 | TASK-KNT-027 | BSD / WinSock Sockets Abstraction Layer & Event Readiness Polling | Claimed | TASK-KNT-024 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-027-socket-layer.md) |
+| TASK-KNT-028 | VT Shell Pipelines, I/O Redirection, and Process Job Control | Claimed | TASK-KNT-016 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-028-shell-pipelines.md) |
 
 ## Active reservations
 
 - `kernel/src/net/socket.rs`, `kernel/src/net/poll.rs`: reserved by Ada Chen for TASK-KNT-027.
-- `kernel/src/compositor/`: reserved by Priya Nair for TASK-KNT-025.
 - `kernel/src/loader/elf.rs`: reserved by Jules Martin for TASK-KNT-026.
+- `kernel/src/shell/pipeline.rs`, `kernel/src/shell/jobs.rs`: reserved by Priya Nair for TASK-KNT-028.
