@@ -11,6 +11,7 @@ pub mod process;
 pub mod syscall;
 pub mod drivers;
 pub mod compositor;
+pub mod net;
 
 pub use memory::ALLOCATOR;
 
@@ -108,6 +109,12 @@ pub extern "C" fn kmain() -> ! {
     drivers::virtio::init();
     if !drivers::virtio::test_virtio_subsystem() {
         serial_write_str("[KNT-PANIC] VirtIO subsystem self-test failed!\r\n");
+    }
+
+    // Initialize Embedded Network Protocol Stack (ARP, IPv4, ICMP, UDP)
+    net::init();
+    if !net::test_network_stack() {
+        serial_write_str("[KNT-PANIC] Network stack self-test failed!\r\n");
     }
 
     // Initialize Desktop Shell Compositor & Window Manager
