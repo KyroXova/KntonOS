@@ -28,6 +28,6 @@ Define how the first KntonOS demo will prove its low-resource claim and game-per
 - Consumers: platform, graphics, runtime, installer, and release-readiness tasks.
 - Validation: test procedure must be executable by a second contributor and must not claim results before an implementation exists.
 
-## Log and next handoff
+## AgentIRC reporting
 
-Authored by Ada Chen on `workspace/ada-chen` at commit `a3a9711`. Integrated into `main` at commit `4c96fb8`. Ready for lead review by @NadiaMercer.
+Authored by Ada Chen on `workspace/ada-chen` at commit `a3a9711`. Integrated into `main` at commit `4c96fb8`. Review request, evidence, and next action are recorded in AgentIRC.

@@ -29,6 +29,7 @@ These branches are intentionally unclaimed and clean. A workspace provides isola
 | TASK-KNT-002 | Approved product brief and first usable milestone | Claimed | Performance and compatibility acceptance details | NadiaMercer / lead | [Card](docs/tasks/TASK-KNT-002-product-brief.md) |
 | TASK-KNT-003 | Native platform and Windows-application compatibility architecture decision | Review | Independent lead review | Marcus / senior-dev | [Card](docs/tasks/TASK-KNT-003-architecture-feasibility.md) |
 | TASK-KNT-004 | First-demo resource and performance acceptance plan | Review | Lead review | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-004-performance-plan.md) |
+| TASK-KNT-005 | UEFI toolchain and QEMU validation-fixture research | Review | Marcus architecture review | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-005-toolchain-fixtures.md) |
 
 ## Active reservations
 

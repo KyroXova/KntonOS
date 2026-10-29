@@ -6,7 +6,7 @@ The owner has authorized a maintainable, expandable project foundation with inde
 
 ## Current capability
 
-The repository provides Git coordination documents, a task board, contributor workflow, handover baseline, and three clean local worktrees. It contains no product implementation, kernel prototype, GUI, application runtime, or Windows compatibility layer.
+The repository provides Git coordination documents, a task board, contributor workflow, AgentIRC-based progress reporting, and three clean local worktrees. It contains no product implementation, kernel prototype, GUI, application runtime, or Windows compatibility layer.
 
 ## Initial usable milestone
 

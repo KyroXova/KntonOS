@@ -29,6 +29,6 @@ Compare feasible approaches for an independently developed x86-64 UEFI kernel an
 - Contract: recommendation must identify explicit component boundaries, interfaces to be specified next, and no use of a modified third-party kernel.
 - Validation: sources and assumptions must be cited; an independent reviewer validates that the recommendation meets owner constraints.
 
-## Log and next handoff
+## AgentIRC reporting
 
-Deliverable committed to `main` at commit `394d482`. Companion research on emulation fixtures integrated at `b226965`. Submitted for independent lead review by @NadiaMercer.
+Deliverable committed to `main` at commit `394d482`. Companion research on emulation fixtures integrated at `b226965`. Review request, evidence, and next action are recorded in AgentIRC.
