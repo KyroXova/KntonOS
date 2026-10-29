@@ -10,6 +10,8 @@ pub mod cursor;
 pub mod dirty;
 pub mod window;
 pub mod compositor;
+pub mod taskbar;
+pub mod launcher;
 
 use crate::display::color::Color;
 use crate::display::framebuffer::{FramebufferInfo, LinearFramebuffer};
@@ -22,6 +24,14 @@ pub use cursor::{cursor_sprite_pixel, CursorState, CURSOR_HEIGHT, CURSOR_WIDTH};
 pub use dirty::{DamageRegion, Rect};
 pub use window::{Window, BORDER_WIDTH, BUTTON_WIDTH, TITLEBAR_HEIGHT};
 pub use compositor::{SceneCompositor, DEFAULT_TASKBAR_HEIGHT};
+pub use taskbar::{
+    DesktopTaskbar, NetworkStatus, PowerStatus, SystemTray, TaskbarClickAction, TaskbarItem,
+    VolumeStatus, TASKBAR_HEIGHT, TASKBAR_TOP_BORDER_HIGHLIGHT, read_cmos_rtc,
+};
+pub use launcher::{
+    StartMenuLauncher, LauncherAppEntry, LauncherAppId, LauncherClickAction,
+    LAUNCHER_HEIGHT, LAUNCHER_WIDTH,
+};
 
 /// Global compositor manager instance.
 pub static COMPOSITOR: Spinlock<Option<SceneCompositor>> = Spinlock::new(None);
@@ -201,10 +211,10 @@ pub fn test_compositor_subsystem() -> bool {
             return false;
         }
 
-        // Verify taskbar rendered at bottom
-        let taskbar_y = 240 - DEFAULT_TASKBAR_HEIGHT + 10;
-        let tb_pixel = fb_memory[taskbar_y * 320 + 10];
-        if tb_pixel != Color::WIN11_TASKBAR.to_u32_rgb() {
+        // Verify taskbar rendered at bottom (acrylic frosted glass over wallpaper)
+        let taskbar_y = 240 - comp.taskbar_height + 10;
+        let tb_pixel = fb_memory[taskbar_y * 320 + 2];
+        if tb_pixel == Color::WIN11_BG.to_u32_rgb() {
             serial_write_str("[KNT-PANIC] Compositor taskbar background pixel mismatch!\r\n");
             return false;
         }
@@ -243,6 +253,10 @@ pub fn test_compositor_subsystem() -> bool {
     serial_write_str("[KNT-COMPOSITOR-TESTS-PASS] All compositor subsystem checks passed\r\n");
 
     if !test_gui_controls_and_acrylic() {
+        return false;
+    }
+
+    if !test_taskbar_and_launcher() {
         return false;
     }
 
@@ -410,5 +424,155 @@ pub fn test_gui_controls_and_acrylic() -> bool {
     }
 
     serial_write_str("[KNT-GUI-WIDGET-PASS] All desktop GUI controls and acrylic surface checks passed\r\n");
+    true
+}
+
+
+/// Verification test suite for Desktop Taskbar, Digital Clock Widget, Application Launcher, and System Tray.
+pub fn test_taskbar_and_launcher() -> bool {
+    serial_write_str("[KNT-TASKBAR-TEST] Running Desktop Taskbar, Clock & App Launcher verification suite...\r\n");
+
+    // 1. Taskbar layout, height, and top border highlight
+    let mut taskbar = DesktopTaskbar::new(TASKBAR_HEIGHT);
+    if taskbar.height != 32 {
+        serial_write_str("[KNT-PANIC] Taskbar height is not 32px!\r\n");
+        return false;
+    }
+    let tb_bounds = taskbar.bounds(320, 240);
+    if tb_bounds != Rect::new(0, 208, 320, 32) {
+        serial_write_str("[KNT-PANIC] Taskbar bounds rectangle mismatch!\r\n");
+        return false;
+    }
+    if taskbar.top_border_color != TASKBAR_TOP_BORDER_HIGHLIGHT {
+        serial_write_str("[KNT-PANIC] Taskbar top border highlight mismatch!\r\n");
+        return false;
+    }
+    serial_write_str("  * Bottom desktop taskbar layout and top border highlight verified\r\n");
+
+    // 2. Window taskbar items addition, active indicator, and click routing
+    let mut win1 = Window::new(1, alloc::string::String::from("Terminal"), 20, 20, 100, 100);
+    win1.is_focused = true;
+    let mut win2 = Window::new(2, alloc::string::String::from("Editor"), 40, 40, 100, 100);
+    win2.is_minimized = true;
+
+    taskbar.update_windows(&[win1, win2], 320, 240);
+    if taskbar.items.len() != 2 {
+        serial_write_str("[KNT-PANIC] Taskbar item count mismatch!\r\n");
+        return false;
+    }
+    if taskbar.items[0].title != "Terminal" || !taskbar.items[0].is_active || taskbar.items[0].is_minimized {
+        serial_write_str("[KNT-PANIC] Taskbar item 0 attributes mismatch!\r\n");
+        return false;
+    }
+    if taskbar.items[1].title != "Editor" || !taskbar.items[1].is_minimized {
+        serial_write_str("[KNT-PANIC] Taskbar item 1 minimized state mismatch!\r\n");
+        return false;
+    }
+
+    // Click item 0
+    let click_item0 = taskbar.handle_mouse_click(taskbar.items[0].bounds.x + 4, taskbar.items[0].bounds.y + 4);
+    if click_item0 != Some(TaskbarClickAction::SelectWindow(1)) {
+        serial_write_str("[KNT-PANIC] Taskbar item click routing failed!\r\n");
+        return false;
+    }
+
+    // Click Start button
+    let click_start = taskbar.handle_mouse_click(taskbar.start_button_bounds.x + 2, taskbar.start_button_bounds.y + 2);
+    if click_start != Some(TaskbarClickAction::ToggleStartMenu) {
+        serial_write_str("[KNT-PANIC] Start button click routing failed!\r\n");
+        return false;
+    }
+    serial_write_str("  * Dynamic window task buttons and active/minimized states verified\r\n");
+
+    // 3. Digital Clock Widget & System Tray
+    let mut tray = SystemTray::new();
+    tray.set_time(23, 59, 59);
+    if tray.format_time() != "23:59:59" {
+        serial_write_str("[KNT-PANIC] Digital clock initial format mismatch!\r\n");
+        return false;
+    }
+    tray.tick_second();
+    if tray.format_time() != "00:00:00" {
+        serial_write_str("[KNT-PANIC] Digital clock midnight rollover failed!\r\n");
+        return false;
+    }
+
+    // Verify CMOS RTC reading
+    let (h, m, s) = read_cmos_rtc();
+    if h >= 24 || m >= 60 || s >= 60 {
+        serial_write_str("[KNT-PANIC] CMOS RTC read returned invalid time bounds!\r\n");
+        return false;
+    }
+    tray.set_time(h, m, s);
+
+    // Verify Tray indicator states
+    tray.network = NetworkStatus::Active;
+    tray.volume = VolumeStatus::Medium;
+    tray.power = PowerStatus::Charging(85);
+    if tray.network != NetworkStatus::Active || tray.volume != VolumeStatus::Medium {
+        serial_write_str("[KNT-PANIC] System tray status indicator mutation failed!\r\n");
+        return false;
+    }
+    serial_write_str("  * RTC digital clock widget and system tray indicators verified\r\n");
+
+    // 4. Start Menu Application Launcher
+    let mut launcher = StartMenuLauncher::new();
+    if launcher.is_open {
+        serial_write_str("[KNT-PANIC] Initial launcher state should be closed!\r\n");
+        return false;
+    }
+    launcher.toggle();
+    if !launcher.is_open {
+        serial_write_str("[KNT-PANIC] Launcher toggle open failed!\r\n");
+        return false;
+    }
+    let lb = launcher.bounds(800, 600);
+    if lb.width != LAUNCHER_WIDTH || lb.height != LAUNCHER_HEIGHT {
+        serial_write_str("[KNT-PANIC] Launcher panel dimensions mismatch!\r\n");
+        return false;
+    }
+    if launcher.entries.len() != 4 {
+        serial_write_str("[KNT-PANIC] Launcher app entries count mismatch!\r\n");
+        return false;
+    }
+
+    let lb_small = launcher.bounds(320, 240);
+    launcher.populate_default_entries(lb_small.x, lb_small.y);
+
+    // Click on Terminal entry
+    let term_bounds = launcher.entries[0].bounds;
+    let act = launcher.handle_mouse_click(term_bounds.x + 4, term_bounds.y + 4, 320, 240);
+    if act != Some(LauncherClickAction::LaunchApp(LauncherAppId::Terminal)) || launcher.is_open {
+        serial_write_str("[KNT-PANIC] Launcher app launch click failed!\r\n");
+        return false;
+    }
+
+    // Click outside to dismiss
+    launcher.open();
+    let act_outside = launcher.handle_mouse_click(300, 10, 320, 240);
+    if act_outside != Some(LauncherClickAction::Dismiss) || launcher.is_open {
+        serial_write_str("[KNT-PANIC] Launcher dismiss click-outside failed!\r\n");
+        return false;
+    }
+    serial_write_str("  * Start menu application launcher toggle, dispatch, and dismiss verified\r\n");
+
+    // 5. In-buffer taskbar and launcher acrylic rendering test
+    let mut test_buf = alloc::vec![Color::WIN11_BG; 320 * 240];
+    taskbar.render(&mut test_buf, 320, 240, None);
+    let top_border_px = test_buf[208 * 320 + 50];
+    if top_border_px == Color::WIN11_BG {
+        serial_write_str("[KNT-PANIC] Taskbar top border highlight was not rendered!\r\n");
+        return false;
+    }
+
+    launcher.open();
+    launcher.render(&mut test_buf, 320, 240, None);
+    let center_launcher = test_buf[(lb_small.y + 20) * 320 + (lb_small.x + 20)];
+    if center_launcher == Color::WIN11_BG {
+        serial_write_str("[KNT-PANIC] Launcher acrylic surface was not rendered!\r\n");
+        return false;
+    }
+
+    serial_write_str("[KNT-DESKTOP-TASKBAR-PASS] Desktop taskbar, RTC clock widget, app launcher, and system tray verified\r\n");
     true
 }
