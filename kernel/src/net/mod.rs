@@ -13,6 +13,7 @@ pub mod dns;
 pub mod http;
 pub mod icmp;
 pub mod ipv4;
+pub mod socket;
 pub mod tcp;
 pub mod udp;
 
@@ -35,6 +36,10 @@ pub use http::{
 };
 pub use icmp::{IcmpEchoMessage, ICMP_TYPE_ECHO_REPLY, ICMP_TYPE_ECHO_REQUEST};
 pub use ipv4::{compute_checksum, Ipv4Header, Ipv4Packet, IP_PROTO_ICMP, IP_PROTO_UDP};
+pub use socket::{
+    verify_socket_table, Socket, SocketDomain, SocketError, SocketHandle, SocketProtocol,
+    SocketState, SocketTable, SocketType, GLOBAL_SOCKET_TABLE, INVALID_SOCKET,
+};
 pub use tcp::{
     compute_tcp_checksum, TcpError, TcpHeader, TcpSocket, TcpState, TCP_FLAG_ACK, TCP_FLAG_FIN,
     TCP_FLAG_PSH, TCP_FLAG_RST, TCP_FLAG_SYN,
