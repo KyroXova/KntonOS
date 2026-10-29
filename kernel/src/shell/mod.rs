@@ -2,6 +2,7 @@
 
 pub mod commands;
 pub mod input;
+pub mod jobs;
 pub mod pipe;
 pub mod pipeline;
 pub mod terminal;
@@ -13,6 +14,7 @@ use crate::serial_write_str;
 
 pub use commands::execute_command;
 pub use input::{KeyAction, KeyBuffer, KeyboardDecoder, KeyEvent, ModifierState, poll_ps2_hardware};
+pub use jobs::{cmd_bg, cmd_fg, cmd_jobs, cmd_kill, register_job, JobStatus, JobTable, ShellJob, JOB_TABLE};
 pub use pipe::AnonymousPipe;
 pub use pipeline::{
     ExecutionMode, ParseError, ParsedPipeline, PipelineParser, PipelineStage, RedirectionSource,
