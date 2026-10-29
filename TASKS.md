@@ -42,8 +42,10 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-015 | VirtIO Network Device Driver (virtio-net) & Packet Ring Buffer | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-015-virtio-net.md) |
 | TASK-KNT-016 | Interactive Virtual Terminal (VT) Shell & Key-Event Engine | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-016-terminal-shell.md) |
 | TASK-KNT-017 | Embedded Network Protocol Stack (ARP, IPv4, ICMP, UDP) | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-017-network-stack.md) |
-| TASK-KNT-018 | SMP Multi-Core Discovery and Local APIC Timer Subsystem | Claimed | TASK-KNT-008 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-018-smp-apic.md) |
+| TASK-KNT-018 | SMP Multi-Core Discovery and Local APIC Timer Subsystem | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-018-smp-apic.md) |
+| TASK-KNT-019 | Transmission Control Protocol (TCP) State Machine and Stream Sockets | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-019-tcp-stack.md) |
+| TASK-KNT-020 | PCI Device Subsystem and USB xHCI Host Controller Discovery | Claimed | TASK-KNT-013 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-020-pci-xhci.md) |
 
 ## Active reservations
 
-- `kernel/src/arch/x86_64/`: reserved by Jules Martin for TASK-KNT-018.
+- `kernel/src/drivers/`: reserved by Priya Nair for TASK-KNT-020.
