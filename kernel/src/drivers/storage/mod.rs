@@ -6,7 +6,8 @@
 pub mod ahci;
 
 pub use ahci::{
-    verify_ahci_fis_and_commands, verify_ahci_structures, FisRegH2D, HbaCapabilities,
+    verify_ahci_fis_and_commands, verify_ahci_port_engine, verify_ahci_structures, AhciBlockDevice,
+    AhciController, AhciError, AhciPort, AtaIdentifyData, FisRegH2D, HbaCapabilities,
     HbaCommandHeader, HbaCommandTable, HbaPortRegisters, HbaPrdtEntry, HbaReceivedFis,
     SataDeviceType, AHCI_PORT_BASE, AHCI_PORT_STRIDE, AHCI_REG_BOHC, AHCI_REG_CAP, AHCI_REG_CAP2,
     AHCI_REG_CCC_CTL, AHCI_REG_CCC_PORTS, AHCI_REG_EM_CTL, AHCI_REG_EM_LOC, AHCI_REG_GHC,

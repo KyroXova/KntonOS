@@ -1,8 +1,10 @@
-//! AHCI SATA Specification 1.3.1 Memory Registers & Host Controller Structures.
+//!  AHCI SATA Specification 1.3.1 Memory Registers & Host Controller Structures.
 //!
 //! Provides the memory-mapped register definitions for the Advanced Host Controller
 //! Interface (AHCI), including Generic Host Control (GHC), Port Control registers,
 //! Command Headers, Command Tables, PRDT scatter-gather lists, and SATA FIS structures.
+
+use crate::drivers::pci_scanner::PciDevice;
 
 pub const PCI_CLASS_MASS_STORAGE: u8 = 0x01;
 pub const PCI_SUBCLASS_SATA: u8 = 0x06;
@@ -565,6 +567,363 @@ pub fn verify_ahci_fis_and_commands() -> bool {
 
     let write_dma = FisRegH2D::new_write_dma_ext(0x42, 1);
     if write_dma.command != ATA_CMD_WRITE_DMA_EXT || write_dma.lba0 != 0x42 {
+        return false;
+    }
+
+    true
+}
+
+
+/// Error variants for AHCI SATA operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AhciError {
+    NotAhciDevice,
+    MissingBar5,
+    ResetTimeout,
+    PortTimeout,
+    NoFreeSlot,
+    DeviceError,
+    BufferMisaligned,
+    InvalidSectorCount,
+    DeviceNotPresent,
+}
+
+/// Decoded ATA IDENTIFY DEVICE (0xEC) data buffer (512 bytes).
+#[derive(Debug, Clone, Copy)]
+pub struct AtaIdentifyData {
+    pub serial_number: [u8; 20],
+    pub firmware_revision: [u8; 8],
+    pub model_number: [u8; 40],
+    pub lba48_supported: bool,
+    pub sector_count: u64,
+}
+
+impl AtaIdentifyData {
+    pub fn parse(raw: &[u8; 512]) -> Self {
+        let mut words = [0u16; 256];
+        for i in 0..256 {
+            words[i] = u16::from_le_bytes([raw[i * 2], raw[i * 2 + 1]]);
+        }
+
+        let mut serial_number = [b' '; 20];
+        Self::copy_swapped_string(&words[10..20], &mut serial_number);
+
+        let mut firmware_revision = [b' '; 8];
+        Self::copy_swapped_string(&words[23..27], &mut firmware_revision);
+
+        let mut model_number = [b' '; 40];
+        Self::copy_swapped_string(&words[27..47], &mut model_number);
+
+        let lba48_supported = (words[83] & (1 << 10)) != 0;
+
+        let sector_count = if lba48_supported {
+            (words[100] as u64)
+                | ((words[101] as u64) << 16)
+                | ((words[102] as u64) << 32)
+                | ((words[103] as u64) << 48)
+        } else {
+            (words[60] as u64) | ((words[61] as u64) << 16)
+        };
+
+        Self {
+            serial_number,
+            firmware_revision,
+            model_number,
+            lba48_supported,
+            sector_count,
+        }
+    }
+
+    fn copy_swapped_string(words: &[u16], out: &mut [u8]) {
+        for (i, &w) in words.iter().enumerate() {
+            if i * 2 + 1 < out.len() {
+                out[i * 2] = (w >> 8) as u8;
+                out[i * 2 + 1] = (w & 0xFF) as u8;
+            }
+        }
+    }
+
+    #[inline(always)]
+    pub fn capacity_bytes(&self) -> u64 {
+        self.sector_count.saturating_mul(512)
+    }
+}
+
+/// AHCI Port Driver abstraction.
+#[derive(Debug, Clone)]
+pub struct AhciPort {
+    pub port_index: u8,
+    pub device_type: SataDeviceType,
+    pub port_mmio: usize,
+    pub cmd_list_phys: u64,
+    pub fis_phys: u64,
+    pub cmd_table_phys: u64,
+    pub identify: Option<AtaIdentifyData>,
+    pub sector_count: u64,
+    pub sector_size: u32,
+}
+
+impl AhciPort {
+    pub fn new(port_index: u8, port_mmio: usize) -> Self {
+        Self {
+            port_index,
+            device_type: SataDeviceType::None,
+            port_mmio,
+            cmd_list_phys: 0,
+            fis_phys: 0,
+            cmd_table_phys: 0,
+            identify: None,
+            sector_count: 0,
+            sector_size: 512,
+        }
+    }
+
+    pub fn set_dma_buffers(&mut self, cmd_list_phys: u64, fis_phys: u64, cmd_table_phys: u64) {
+        self.cmd_list_phys = cmd_list_phys;
+        self.fis_phys = fis_phys;
+        self.cmd_table_phys = cmd_table_phys;
+    }
+
+    /// Finds first available command slot (from 0 to 31) where CI and SACT bits are clear.
+    pub fn find_cmd_slot(&self, ci: u32, sact: u32) -> Option<u8> {
+        let slots = ci | sact;
+        for i in 0..MAX_COMMAND_SLOTS as u8 {
+            if (slots & (1 << i)) == 0 {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    /// Prepares command header and table for ATA IDENTIFY DEVICE command.
+    pub fn build_identify_command(
+        &self,
+        cmd_header: &mut HbaCommandHeader,
+        cmd_table: &mut HbaCommandTable,
+        buffer_phys: u64,
+    ) {
+        *cmd_header = HbaCommandHeader::new(self.cmd_table_phys, 1, false, 5);
+        cmd_table.prdt_entries[0] = HbaPrdtEntry::new(buffer_phys, 512, true);
+        let fis = FisRegH2D::new_identify();
+        cmd_table.set_cfis(&fis);
+    }
+
+    /// Prepares command header and table for ATA READ DMA EXT (48-bit LBA) command.
+    pub fn build_read_dma_command(
+        &self,
+        cmd_header: &mut HbaCommandHeader,
+        cmd_table: &mut HbaCommandTable,
+        buffer_phys: u64,
+        lba: u64,
+        sector_count: u16,
+    ) {
+        *cmd_header = HbaCommandHeader::new(self.cmd_table_phys, 1, false, 5);
+        let total_bytes = (sector_count as u32) * self.sector_size;
+        cmd_table.prdt_entries[0] = HbaPrdtEntry::new(buffer_phys, total_bytes, true);
+        let fis = FisRegH2D::new_read_dma_ext(lba, sector_count);
+        cmd_table.set_cfis(&fis);
+    }
+
+    /// Prepares command header and table for ATA WRITE DMA EXT (48-bit LBA) command.
+    pub fn build_write_dma_command(
+        &self,
+        cmd_header: &mut HbaCommandHeader,
+        cmd_table: &mut HbaCommandTable,
+        buffer_phys: u64,
+        lba: u64,
+        sector_count: u16,
+    ) {
+        *cmd_header = HbaCommandHeader::new(self.cmd_table_phys, 1, true, 5);
+        let total_bytes = (sector_count as u32) * self.sector_size;
+        cmd_table.prdt_entries[0] = HbaPrdtEntry::new(buffer_phys, total_bytes, true);
+        let fis = FisRegH2D::new_write_dma_ext(lba, sector_count);
+        cmd_table.set_cfis(&fis);
+    }
+}
+
+/// AHCI Host Bus Adapter Controller Instance.
+pub struct AhciController {
+    pub pci_bus: u8,
+    pub pci_slot: u8,
+    pub pci_func: u8,
+    pub vendor_id: u16,
+    pub device_id: u16,
+    pub abar: u64,
+    pub abar_size: u64,
+    pub caps: HbaCapabilities,
+    pub ports_implemented: u32,
+    pub ports: [Option<AhciPort>; MAX_PORTS],
+}
+
+impl AhciController {
+    pub fn new(abar: u64, abar_size: u64) -> Self {
+        const NONE_PORT: Option<AhciPort> = None;
+        Self {
+            pci_bus: 0,
+            pci_slot: 0,
+            pci_func: 0,
+            vendor_id: 0,
+            device_id: 0,
+            abar,
+            abar_size,
+            caps: HbaCapabilities {
+                max_ports: 32,
+                max_command_slots: 32,
+                supports_64bit: true,
+                supports_ncq: true,
+                supports_ahci_only: true,
+                interface_speed: 3,
+            },
+            ports_implemented: 0,
+            ports: [NONE_PORT; MAX_PORTS],
+        }
+    }
+
+    pub fn from_pci(dev: &PciDevice) -> Result<Self, AhciError> {
+        if dev.class_code != PCI_CLASS_MASS_STORAGE || dev.subclass != PCI_SUBCLASS_SATA {
+            return Err(AhciError::NotAhciDevice);
+        }
+
+        let bar5 = dev.get_bar(5).ok_or(AhciError::MissingBar5)?;
+        if bar5.address == 0 {
+            return Err(AhciError::MissingBar5);
+        }
+
+        let mut controller = Self::new(bar5.address, bar5.size);
+        controller.pci_bus = dev.bus;
+        controller.pci_slot = dev.slot;
+        controller.pci_func = dev.function;
+        controller.vendor_id = dev.vendor_id;
+        controller.device_id = dev.device_id;
+
+        Ok(controller)
+    }
+
+    pub fn port_offset(&self, index: usize) -> usize {
+        AHCI_PORT_BASE + (index * AHCI_PORT_STRIDE)
+    }
+
+    pub fn primary_disk_port(&self) -> Option<u8> {
+        for i in 0..MAX_PORTS {
+            if let Some(port) = &self.ports[i] {
+                if port.device_type == SataDeviceType::Sata {
+                    return Some(i as u8);
+                }
+            }
+        }
+        None
+    }
+}
+
+/// Block Storage Device abstraction for AHCI SATA Disks.
+#[derive(Debug, Clone)]
+pub struct AhciBlockDevice {
+    pub port_index: u8,
+    pub sector_count: u64,
+    pub sector_size: u32,
+    pub model: [u8; 40],
+    pub serial: [u8; 20],
+}
+
+impl AhciBlockDevice {
+    pub fn new(port_index: u8, identify: &AtaIdentifyData) -> Self {
+        Self {
+            port_index,
+            sector_count: identify.sector_count,
+            sector_size: 512,
+            model: identify.model_number,
+            serial: identify.serial_number,
+        }
+    }
+
+    #[inline(always)]
+    pub fn capacity_bytes(&self) -> u64 {
+        self.sector_count.saturating_mul(self.sector_size as u64)
+    }
+
+    #[inline(always)]
+    pub fn sector_count(&self) -> u64 {
+        self.sector_count
+    }
+}
+
+/// Self-test verifying ATA IDENTIFY parsing, command slot selection, and DMA command generation.
+pub fn verify_ahci_port_engine() -> bool {
+    // 1. Verify ATA IDENTIFY parsing
+    let mut raw_identify = [0u8; 512];
+    // Word 83 bit 10 set: 48-bit LBA supported
+    raw_identify[83 * 2] = 0x00;
+    raw_identify[83 * 2 + 1] = 0x04; // 1 << 10 = 0x0400 (high byte = 0x04)
+
+    // Words 100..103: 2,097,152 sectors (1 GiB) -> 0x0020_0000
+    // Word 100: 0x0000, Word 101: 0x0020
+    raw_identify[100 * 2] = 0x00;
+    raw_identify[100 * 2 + 1] = 0x00;
+    raw_identify[101 * 2] = 0x20;
+    raw_identify[101 * 2 + 1] = 0x00;
+
+    let identify = AtaIdentifyData::parse(&raw_identify);
+    if !identify.lba48_supported {
+        return false;
+    }
+    if identify.sector_count != 2_097_152 {
+        return false;
+    }
+    if identify.capacity_bytes() != 1_073_741_824 {
+        return false;
+    }
+
+    // 2. Verify Port slot allocation
+    let mut port = AhciPort::new(0, 0x100);
+    port.set_dma_buffers(0x1_0000, 0x2_0000, 0x3_0000);
+
+    // Slots 0, 1, 2 busy -> slot 3 free
+    let slot = port.find_cmd_slot(0b0101, 0b0010);
+    if slot != Some(3) {
+        return false;
+    }
+
+    // 3. Verify IDENTIFY Command construction
+    let mut header = HbaCommandHeader::new(0, 0, false, 0);
+    let mut table = HbaCommandTable::new();
+    port.build_identify_command(&mut header, &mut table, 0x5_0000);
+    if header.command_table_address() != 0x3_0000 || header.prdtl != 1 {
+        return false;
+    }
+    if table.prdt_entries[0].data_address() != 0x5_0000 || table.prdt_entries[0].byte_count() != 512 {
+        return false;
+    }
+    if table.cfis[0] != FIS_TYPE_REG_H2D || table.cfis[2] != ATA_CMD_IDENTIFY {
+        return false;
+    }
+
+    // 4. Verify READ DMA EXT command construction
+    port.build_read_dma_command(&mut header, &mut table, 0x6_0000, 0x1000, 8);
+    if header.is_write() {
+        return false;
+    }
+    if table.prdt_entries[0].byte_count() != 4096 {
+        return false;
+    }
+    if table.cfis[2] != ATA_CMD_READ_DMA_EXT || table.cfis[7] != FisRegH2D::DEV_LBA_MODE {
+        return false;
+    }
+
+    // 5. Verify WRITE DMA EXT command construction
+    port.build_write_dma_command(&mut header, &mut table, 0x7_0000, 0x2000, 2);
+    if !header.is_write() {
+        return false;
+    }
+    if table.prdt_entries[0].byte_count() != 1024 {
+        return false;
+    }
+    if table.cfis[2] != ATA_CMD_WRITE_DMA_EXT {
+        return false;
+    }
+
+    // 6. Verify Block Device abstraction
+    let block_dev = AhciBlockDevice::new(0, &identify);
+    if block_dev.capacity_bytes() != 1_073_741_824 || block_dev.sector_count() != 2_097_152 {
         return false;
     }
 
