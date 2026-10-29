@@ -6,7 +6,10 @@ pub mod scheduler;
 pub use context::{switch_context, Context};
 pub use thread::{Priority, ThreadControlBlock, ThreadState};
 pub use process::{FileDescriptor, ProcessControlBlock, ProcessState};
-pub use scheduler::{init, spawn, yield_now, timer_tick, SCHEDULER};
+pub use scheduler::{
+    block_current_thread, current_thread_id, init, spawn, timer_tick, wake_thread, yield_now,
+    SCHEDULER,
+};
 
 use crate::serial_write_str;
 use core::sync::atomic::{AtomicBool, Ordering};
