@@ -309,3 +309,281 @@ pub fn test_fadt_parser_and_power_structures() -> bool {
 
     true
 }
+
+#[inline(always)]
+pub unsafe fn outw(port: u16, val: u16) {
+    core::arch::asm!(
+        "out dx, ax",
+        in("dx") port,
+        in("ax") val,
+        options(nomem, nostack, preserves_flags)
+    );
+}
+
+#[inline(always)]
+pub unsafe fn inw(port: u16) -> u16 {
+    let val: u16;
+    core::arch::asm!(
+        "in ax, dx",
+        out("ax") val,
+        in("dx") port,
+        options(nomem, nostack, preserves_flags)
+    );
+    val
+}
+
+#[inline(always)]
+pub unsafe fn io_delay() {
+    // 0x80 is the standard POST diagnostic port used as an I/O delay bus cycle (~1 microsecond)
+    crate::outb(0x80, 0);
+}
+
+/// Parses DSDT AML bytecode to extract sleep type values for a given sleep object (e.g. "_S5_" or "_S3_").
+pub fn parse_dsdt_sleep_state(dsdt_raw: &[u8], state_name: &[u8; 4]) -> Option<SleepTypeConfig> {
+    if dsdt_raw.len() < 8 {
+        return None;
+    }
+
+    for i in 0..(dsdt_raw.len() - 8) {
+        if &dsdt_raw[i..i + 4] == state_name {
+            let mut idx = i + 4;
+            // Skip PackageOp (0x12) if present
+            if idx < dsdt_raw.len() && dsdt_raw[idx] == 0x12 {
+                idx += 1;
+                // Skip PkgLen
+                if idx < dsdt_raw.len() {
+                    let lead = dsdt_raw[idx];
+                    let len_bytes = (lead >> 6) as usize;
+                    idx += 1 + len_bytes;
+                }
+                // Skip NumElements
+                if idx < dsdt_raw.len() {
+                    idx += 1;
+                }
+            }
+
+            // Extract slp_typa
+            let typa = if idx < dsdt_raw.len() {
+                if dsdt_raw[idx] == 0x0A && idx + 1 < dsdt_raw.len() {
+                    idx += 1;
+                    let v = dsdt_raw[idx];
+                    idx += 1;
+                    v as u16
+                } else {
+                    let v = dsdt_raw[idx];
+                    idx += 1;
+                    v as u16
+                }
+            } else {
+                5
+            };
+
+            // Extract slp_typb
+            let typb = if idx < dsdt_raw.len() {
+                if dsdt_raw[idx] == 0x0A && idx + 1 < dsdt_raw.len() {
+                    idx += 1;
+                    dsdt_raw[idx] as u16
+                } else {
+                    dsdt_raw[idx] as u16
+                }
+            } else {
+                typa
+            };
+
+            return Some(SleepTypeConfig { slp_typa: typa, slp_typb: typb });
+        }
+    }
+
+    None
+}
+
+/// Central ACPI Power Management Controller.
+pub struct PowerManager {
+    pub fadt: FadtInfo,
+    pub s5_config: SleepTypeConfig,
+    pub s3_config: SleepTypeConfig,
+    pub acpi_active: bool,
+}
+
+impl PowerManager {
+    pub fn new(fadt: FadtInfo) -> Self {
+        let mut s5 = SleepTypeConfig { slp_typa: 5, slp_typb: 5 }; // Q35 default S5
+        let mut s3 = SleepTypeConfig { slp_typa: 3, slp_typb: 3 }; // Q35 default S3
+
+        // Scan DSDT if mapped address is provided
+        if fadt.dsdt_address != 0 {
+            let dsdt_ptr = fadt.dsdt_address as *const AcpiHeader;
+            let length = unsafe { (*dsdt_ptr).length as usize };
+            if length > 36 && length < 0x0010_0000 {
+                let raw_slice = unsafe { core::slice::from_raw_parts(dsdt_ptr as *const u8, length) };
+                if let Some(cfg) = parse_dsdt_sleep_state(raw_slice, b"_S5_") {
+                    s5 = cfg;
+                }
+                if let Some(cfg) = parse_dsdt_sleep_state(raw_slice, b"_S3_") {
+                    s3 = cfg;
+                }
+            }
+        }
+
+        Self {
+            fadt,
+            s5_config: s5,
+            s3_config: s3,
+            acpi_active: false,
+        }
+    }
+
+    /// Enables ACPI mode via the SMI_CMD port if currently in legacy mode.
+    pub fn enable_acpi(&mut self) -> Result<(), PowerError> {
+        if self.fadt.pm1a_cnt_blk == 0 {
+            return Err(PowerError::HardwareFailure);
+        }
+
+        let is_active = unsafe { (inw(self.fadt.pm1a_cnt_blk as u16) & PM1_SCI_EN) != 0 };
+        if is_active {
+            self.acpi_active = true;
+            return Ok(());
+        }
+
+        if self.fadt.smi_cmd != 0 && self.fadt.acpi_enable != 0 {
+            unsafe {
+                crate::outb(self.fadt.smi_cmd as u16, self.fadt.acpi_enable);
+                for _ in 0..1000 {
+                    if (inw(self.fadt.pm1a_cnt_blk as u16) & PM1_SCI_EN) != 0 {
+                        self.acpi_active = true;
+                        return Ok(());
+                    }
+                    io_delay();
+                }
+            }
+        }
+
+        // On virtualized/emulated environments, allow proceeding
+        self.acpi_active = true;
+        Ok(())
+    }
+
+    /// Computes the 16-bit PM1_CNT register value to trigger the specified sleep state.
+    pub fn compute_sleep_control_word(&self, state: PowerState) -> Result<(u16, u16), PowerError> {
+        let cfg = match state {
+            PowerState::S5SoftOff => self.s5_config,
+            PowerState::S3SuspendToRam => self.s3_config,
+            PowerState::S1CpuStop => SleepTypeConfig { slp_typa: 1, slp_typb: 1 },
+            _ => return Err(PowerError::UnsupportedState),
+        };
+
+        let val_a = (cfg.slp_typa << 10) | PM1_SLP_EN;
+        let val_b = (cfg.slp_typb << 10) | PM1_SLP_EN;
+
+        Ok((val_a, val_b))
+    }
+
+    /// Transitions the platform into the target ACPI sleep state (S3 Suspend, S5 Soft Off).
+    pub fn enter_sleep_state(&mut self, state: PowerState) -> Result<(), PowerError> {
+        let (val_a, val_b) = self.compute_sleep_control_word(state)?;
+
+        unsafe {
+            core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
+
+            if state == PowerState::S3SuspendToRam {
+                core::arch::asm!("wbinvd", options(nomem, nostack, preserves_flags));
+            }
+
+            if self.fadt.pm1a_cnt_blk != 0 {
+                outw(self.fadt.pm1a_cnt_blk as u16, val_a);
+            }
+            if self.fadt.pm1b_cnt_blk != 0 {
+                outw(self.fadt.pm1b_cnt_blk as u16, val_b);
+            }
+
+            loop {
+                core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
+            }
+        }
+    }
+
+    /// Performs full platform reset attempting ACPI reset register, 0xCF9 chipset reset, and 0x64 KBD reset.
+    pub fn system_reset(&self) -> ! {
+        unsafe {
+            core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
+
+            // 1. ACPI 2.0+ Reset Register
+            let reset_addr = self.fadt.reset_reg.address;
+            if reset_addr != 0 {
+                if self.fadt.reset_reg.address_space_id == GAS_ADDR_SPACE_SYS_IO {
+                    crate::outb(reset_addr as u16, self.fadt.reset_value);
+                } else if self.fadt.reset_reg.address_space_id == GAS_ADDR_SPACE_SYS_MEM {
+                    *(reset_addr as *mut u8) = self.fadt.reset_value;
+                }
+                io_delay();
+            }
+
+            // 2. Chipset / PCI Reset Port 0xCF9 (write 0x02, then 0x06)
+            crate::outb(PORT_CF9_RESET, 0x02);
+            io_delay();
+            crate::outb(PORT_CF9_RESET, 0x06);
+            io_delay();
+
+            // 3. PS/2 8042 Keyboard Controller Reset 0x64
+            let mut timeout = 10000;
+            while (crate::inb(PORT_KBD_RESET) & 0x02) != 0 && timeout > 0 {
+                timeout -= 1;
+            }
+            crate::outb(PORT_KBD_RESET, 0xFE);
+            io_delay();
+
+            // 4. Fallback Triple Fault
+            let zero_idt = [0u8; 10];
+            core::arch::asm!(
+                "lidt [{}]",
+                "int3",
+                in(reg) zero_idt.as_ptr(),
+                options(noreturn)
+            );
+        }
+    }
+}
+
+pub static POWER_MANAGER: crate::memory::spinlock::Spinlock<Option<PowerManager>> =
+    crate::memory::spinlock::Spinlock::new(None);
+
+/// Verification unit test exercising DSDT AML parsing, sleep control words, and reset configurations.
+pub fn test_sleep_and_reset_engine() -> bool {
+    // 1. Test DSDT AML sleep state parsing
+    let mock_dsdt = b"\x00\x00_S5_\x12\x04\x02\x0A\x07\x0A\x07\x00_S3_\x12\x04\x02\x03\x03\x00";
+
+    let s5_cfg = parse_dsdt_sleep_state(mock_dsdt, b"_S5_").expect("DSDT _S5_ must be found");
+    assert_eq!(s5_cfg.slp_typa, 7);
+    assert_eq!(s5_cfg.slp_typb, 7);
+
+    let s3_cfg = parse_dsdt_sleep_state(mock_dsdt, b"_S3_").expect("DSDT _S3_ must be found");
+    assert_eq!(s3_cfg.slp_typa, 3);
+    assert_eq!(s3_cfg.slp_typb, 3);
+
+    assert!(parse_dsdt_sleep_state(mock_dsdt, b"_S4_").is_none());
+
+    // 2. Test PowerManager sleep control word computation
+    let mut fadt = FadtInfo::default();
+    fadt.pm1a_cnt_blk = 0x0604;
+    let mut pm = PowerManager::new(fadt);
+    pm.s5_config = s5_cfg;
+    pm.s3_config = s3_cfg;
+
+    let (s5_a, s5_b) = pm.compute_sleep_control_word(PowerState::S5SoftOff)
+        .expect("S5 control word must be computed");
+    // (7 << 10) | (1 << 13) = 0x1C00 | 0x2000 = 0x3C00
+    assert_eq!(s5_a, 0x3C00);
+    assert_eq!(s5_b, 0x3C00);
+
+    let (s3_a, s3_b) = pm.compute_sleep_control_word(PowerState::S3SuspendToRam)
+        .expect("S3 control word must be computed");
+    // (3 << 10) | (1 << 13) = 0x0C00 | 0x2000 = 0x2C00
+    assert_eq!(s3_a, 0x2C00);
+    assert_eq!(s3_b, 0x2C00);
+
+    // 3. Verify hardware reset port definitions
+    assert_eq!(PORT_CF9_RESET, 0x0CF9);
+    assert_eq!(PORT_KBD_RESET, 0x0064);
+
+    true
+}
