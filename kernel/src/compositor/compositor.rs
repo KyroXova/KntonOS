@@ -8,6 +8,8 @@ use crate::display::framebuffer::LinearFramebuffer;
 use super::cursor::CursorState;
 use super::dirty::{DamageRegion, Rect};
 use super::window::Window;
+use super::taskbar::{DesktopTaskbar, TaskbarClickAction, TASKBAR_HEIGHT};
+use super::launcher::{StartMenuLauncher, LauncherClickAction, LauncherAppId};
 
 pub const DEFAULT_TASKBAR_HEIGHT: usize = 48;
 
@@ -22,6 +24,8 @@ pub struct SceneCompositor {
     pub cursor: CursorState,
     pub damage: DamageRegion,
     pub last_mouse_down: bool,
+    pub taskbar: DesktopTaskbar,
+    pub launcher: StartMenuLauncher,
     next_window_id: u32,
 }
 
@@ -34,12 +38,14 @@ impl SceneCompositor {
         let mut comp = Self {
             width,
             height,
-            taskbar_height: DEFAULT_TASKBAR_HEIGHT,
+            taskbar_height: TASKBAR_HEIGHT,
             backbuffer,
             windows: Vec::new(),
             cursor: CursorState::new(width / 2, height / 2),
             damage: DamageRegion::new(),
             last_mouse_down: false,
+            taskbar: DesktopTaskbar::new(TASKBAR_HEIGHT),
+            launcher: StartMenuLauncher::new(),
             next_window_id: 1,
         };
 
@@ -107,7 +113,9 @@ impl SceneCompositor {
 
         let bounds = win.frame_bounds();
         self.windows.push(win);
+        self.taskbar.update_windows(&self.windows, self.width, self.height);
         self.damage_rect(bounds);
+        self.damage_rect(self.taskbar.bounds(self.width, self.height));
 
         id
     }
@@ -135,7 +143,9 @@ impl SceneCompositor {
             for (idx, w) in self.windows.iter_mut().enumerate() {
                 w.z_order = idx;
             }
+            self.taskbar.update_windows(&self.windows, self.width, self.height);
             self.damage_rect(bounds);
+            self.damage_rect(self.taskbar.bounds(self.width, self.height));
         }
     }
 
@@ -170,6 +180,8 @@ impl SceneCompositor {
             for (idx, w) in self.windows.iter_mut().enumerate() {
                 w.z_order = idx;
             }
+            self.taskbar.update_windows(&self.windows, self.width, self.height);
+            self.damage_rect(self.taskbar.bounds(self.width, self.height));
         }
     }
 
@@ -206,6 +218,82 @@ impl SceneCompositor {
         let is_down = (buttons & 0x01) != 0;
         let was_down = self.last_mouse_down;
         self.last_mouse_down = is_down;
+
+        if is_down && !was_down {
+            // 1. Check if Start menu launcher is open
+            if self.launcher.is_open {
+                let prev_bounds = self.launcher.bounds(self.width, self.height);
+                let action = self.launcher.handle_mouse_click(mx, my, self.width, self.height);
+                self.damage_rect(prev_bounds);
+
+                if let Some(LauncherClickAction::LaunchApp(app_id)) = action {
+                    match app_id {
+                        LauncherAppId::Terminal => {
+                            self.create_window("Terminal", 20, 20, 200, 130);
+                        }
+                        LauncherAppId::ProcessManager => {
+                            self.create_window("Process Manager", 40, 40, 210, 140);
+                        }
+                        LauncherAppId::FileExplorer => {
+                            self.create_window("File Explorer", 30, 30, 200, 130);
+                        }
+                        LauncherAppId::TelemetryMonitor => {
+                            self.create_window("Telemetry Monitor", 50, 50, 220, 150);
+                        }
+                    }
+                    return;
+                }
+            }
+
+            // 2. Check if click landed on taskbar
+            let taskbar_y = self.height.saturating_sub(self.taskbar.height);
+            if my >= taskbar_y {
+                let action = self.taskbar.handle_mouse_click(mx, my);
+                match action {
+                    Some(TaskbarClickAction::ToggleStartMenu) => {
+                        self.launcher.toggle();
+                        let lb = self.launcher.bounds(self.width, self.height);
+                        self.damage_rect(lb);
+                        return;
+                    }
+                    Some(TaskbarClickAction::SelectWindow(win_id)) => {
+                        let mut target_min = false;
+                        let mut target_restore = false;
+                        if let Some(win) = self.find_window(win_id) {
+                            if win.is_minimized {
+                                target_restore = true;
+                            } else if win.is_focused {
+                                target_min = true;
+                            } else {
+                                target_restore = true;
+                            }
+                        }
+
+                        if target_restore {
+                            if let Some(win) = self.find_window_mut(win_id) {
+                                win.is_minimized = false;
+                            }
+                            self.bring_to_front(win_id);
+                        } else if target_min {
+                            let bounds = if let Some(win) = self.find_window_mut(win_id) {
+                                win.is_minimized = true;
+                                win.is_focused = false;
+                                Some(win.frame_bounds())
+                            } else {
+                                None
+                            };
+                            if let Some(b) = bounds {
+                                self.damage_rect(b);
+                            }
+                        }
+                        self.taskbar.update_windows(&self.windows, self.width, self.height);
+                        self.damage_rect(self.taskbar.bounds(self.width, self.height));
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+        }
 
         let mut close_target_id: Option<u32> = None;
         let mut dirty_regions = alloc::vec::Vec::new();
@@ -405,9 +493,12 @@ impl SceneCompositor {
             // 1. Redraw background (wallpaper & taskbar)
             self.render_background_clipped(damage_rect);
 
-            // 2. Render windows in Z-order (back to front)
+            // 2. Render taskbar
+            self.taskbar.render(&mut self.backbuffer, self.width, self.height, Some(damage_rect));
+
+            // 3. Render windows in Z-order (back to front)
             for win in self.windows.iter() {
-                if win.frame_bounds().intersects(damage_rect) {
+                if !win.is_minimized && win.frame_bounds().intersects(damage_rect) {
                     win.render_to_buffer(
                         &mut self.backbuffer,
                         self.width,
@@ -417,7 +508,17 @@ impl SceneCompositor {
                 }
             }
 
-            // 3. Render mouse cursor on top
+            // 4. Render Start menu launcher flyout if open
+            if self.launcher.is_open && self.launcher.bounds(self.width, self.height).intersects(damage_rect) {
+                self.launcher.render(
+                    &mut self.backbuffer,
+                    self.width,
+                    self.height,
+                    Some(damage_rect),
+                );
+            }
+
+            // 5. Render mouse cursor on top
             if self.cursor.bounds().intersects(damage_rect) {
                 self.cursor.render(
                     &mut self.backbuffer,

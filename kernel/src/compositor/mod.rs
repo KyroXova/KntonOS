@@ -11,6 +11,7 @@ pub mod dirty;
 pub mod window;
 pub mod compositor;
 pub mod taskbar;
+pub mod launcher;
 
 use crate::display::color::Color;
 use crate::display::framebuffer::{FramebufferInfo, LinearFramebuffer};
@@ -26,6 +27,10 @@ pub use compositor::{SceneCompositor, DEFAULT_TASKBAR_HEIGHT};
 pub use taskbar::{
     DesktopTaskbar, NetworkStatus, PowerStatus, SystemTray, TaskbarClickAction, TaskbarItem,
     VolumeStatus, TASKBAR_HEIGHT, TASKBAR_TOP_BORDER_HIGHLIGHT, read_cmos_rtc,
+};
+pub use launcher::{
+    StartMenuLauncher, LauncherAppEntry, LauncherAppId, LauncherClickAction,
+    LAUNCHER_HEIGHT, LAUNCHER_WIDTH,
 };
 
 /// Global compositor manager instance.
