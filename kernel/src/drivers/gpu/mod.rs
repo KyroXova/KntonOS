@@ -6,10 +6,10 @@
 pub mod virtio_gpu;
 
 pub use virtio_gpu::{
-    test_gpu_command_submit_and_resource_allocation, test_virtio_gpu_packet_structures,
-    VirtioGpuCtrlHdr, VirtioGpuCursorPos, VirtioGpuDevice, VirtioGpuDisplayOne, VirtioGpuError,
-    VirtioGpuGetEdid, VirtioGpuMemEntry, VirtioGpuRect, VirtioGpuResource2D,
-    VirtioGpuResourceAttachBackingHeader, VirtioGpuResourceCreate2D,
+    test_gpu_command_submit_and_resource_allocation, test_scanout_flush_and_zero_copy_handover,
+    test_virtio_gpu_packet_structures, VirtioGpuCtrlHdr, VirtioGpuCursorPos, VirtioGpuDevice,
+    VirtioGpuDisplayOne, VirtioGpuError, VirtioGpuGetEdid, VirtioGpuMemEntry, VirtioGpuRect,
+    VirtioGpuResource2D, VirtioGpuResourceAttachBackingHeader, VirtioGpuResourceCreate2D,
     VirtioGpuResourceDetachBacking, VirtioGpuResourceFlush, VirtioGpuResourceUnref,
     VirtioGpuRespDisplayInfo, VirtioGpuRespEdid, VirtioGpuSetScanout, VirtioGpuTransferToHost2D,
     VirtioGpuUpdateCursor, PCI_DEVICE_ID_VIRTIO_GPU, VIRTIO_GPU_CMD_GET_CAPSET,

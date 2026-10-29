@@ -725,3 +725,170 @@ pub fn test_gpu_command_submit_and_resource_allocation() -> bool {
 
     true
 }
+
+use crate::display::framebuffer::{FramebufferInfo, LinearFramebuffer};
+
+impl VirtioGpuResource2D {
+    /// Zero-copy conversion of the GPU backing buffer into a LinearFramebuffer descriptor.
+    pub fn as_framebuffer_info(&self) -> FramebufferInfo {
+        FramebufferInfo {
+            base_address: self.buffer.as_ptr() as usize,
+            size: self.buffer.len(),
+            width: self.width as usize,
+            height: self.height as usize,
+            stride: self.width as usize,
+            is_bgr: self.format == VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM
+                || self.format == VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM,
+        }
+    }
+
+    /// Constructs a zero-copy LinearFramebuffer wrapping the GPU resource memory buffer directly.
+    pub unsafe fn as_linear_framebuffer(&self) -> LinearFramebuffer {
+        LinearFramebuffer::new(self.as_framebuffer_info())
+    }
+}
+
+impl VirtioGpuDevice {
+    /// Binds an attached 2D resource to a hardware display scanout (mode setting).
+    pub fn set_scanout(
+        &mut self,
+        scanout_id: u32,
+        resource_id: u32,
+        r: VirtioGpuRect,
+    ) -> Result<(), VirtioGpuError> {
+        if scanout_id as usize >= VIRTIO_GPU_MAX_SCANOUTS {
+            return Err(VirtioGpuError::ScanoutError);
+        }
+
+        {
+            let res = self.resources.iter().find(|r| r.resource_id == resource_id)
+                .ok_or(VirtioGpuError::ResourceNotFound)?;
+            if !res.attached {
+                return Err(VirtioGpuError::ScanoutError);
+            }
+        }
+
+        let cmd = VirtioGpuSetScanout::new(scanout_id, resource_id, r);
+        let mut resp = VirtioGpuCtrlHdr::new(VIRTIO_GPU_RESP_OK_NODATA);
+        self.submit_ctrl_cmd(&cmd, &mut resp)?;
+
+        if let Some(res) = self.resources.iter_mut().find(|r| r.resource_id == resource_id) {
+            res.scanout_assigned = Some(scanout_id);
+        }
+
+        self.display_width = r.width;
+        self.display_height = r.height;
+        self.active_scanout = Some((scanout_id, resource_id));
+        Ok(())
+    }
+
+    /// Disables an active display scanout.
+    pub fn disable_scanout(&mut self, scanout_id: u32) -> Result<(), VirtioGpuError> {
+        let cmd = VirtioGpuSetScanout::new(scanout_id, 0, VirtioGpuRect::default());
+        let mut resp = VirtioGpuCtrlHdr::new(VIRTIO_GPU_RESP_OK_NODATA);
+        self.submit_ctrl_cmd(&cmd, &mut resp)?;
+
+        if let Some(res) = self.resources.iter_mut().find(|r| r.scanout_assigned == Some(scanout_id)) {
+            res.scanout_assigned = None;
+        }
+
+        if let Some((active_id, _)) = self.active_scanout {
+            if active_id == scanout_id {
+                self.active_scanout = None;
+            }
+        }
+        Ok(())
+    }
+
+    /// Submits TRANSFER_TO_HOST_2D to copy modified dirty guest memory pixels into host GPU cache.
+    pub fn transfer_to_host_2d(
+        &mut self,
+        resource_id: u32,
+        r: VirtioGpuRect,
+    ) -> Result<(), VirtioGpuError> {
+        let res_width = {
+            let res = self.resources.iter().find(|r| r.resource_id == resource_id)
+                .ok_or(VirtioGpuError::ResourceNotFound)?;
+            res.width
+        };
+
+        let offset = ((r.y * res_width + r.x) * 4) as u64;
+        let cmd = VirtioGpuTransferToHost2D::new(resource_id, offset, r);
+        let mut resp = VirtioGpuCtrlHdr::new(VIRTIO_GPU_RESP_OK_NODATA);
+        self.submit_ctrl_cmd(&cmd, &mut resp)
+    }
+
+    /// Submits RESOURCE_FLUSH to blit updated host GPU surfaces to the visible screen scanout.
+    pub fn flush_resource(
+        &mut self,
+        resource_id: u32,
+        r: VirtioGpuRect,
+    ) -> Result<(), VirtioGpuError> {
+        if !self.resources.iter().any(|res| res.resource_id == resource_id) {
+            return Err(VirtioGpuError::ResourceNotFound);
+        }
+
+        let cmd = VirtioGpuResourceFlush::new(resource_id, r);
+        let mut resp = VirtioGpuCtrlHdr::new(VIRTIO_GPU_RESP_OK_NODATA);
+        self.submit_ctrl_cmd(&cmd, &mut resp)
+    }
+
+    /// Atomically transfers and flushes a dirty rectangle region to display hardware.
+    pub fn blit_and_flush(
+        &mut self,
+        resource_id: u32,
+        r: VirtioGpuRect,
+    ) -> Result<(), VirtioGpuError> {
+        self.transfer_to_host_2d(resource_id, r)?;
+        self.flush_resource(resource_id, r)
+    }
+}
+
+/// Verification unit test ensuring scanout mode setting, dirty rect flushing, and zero-copy framebuffer work.
+pub fn test_scanout_flush_and_zero_copy_handover() -> bool {
+    let mut gpu = VirtioGpuDevice::new(None, 64);
+
+    // 1. Allocate 2D resource ID 1 (640x480 B8G8R8A8_UNORM)
+    let res_id = gpu.create_resource_2d(640, 480, VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM)
+        .expect("Creation must succeed");
+    gpu.attach_resource_backing(res_id)
+        .expect("Attach must succeed");
+
+    // 2. Set scanout 0 to resource 1 (mode setting)
+    let scanout_rect = VirtioGpuRect::new(0, 0, 640, 480);
+    gpu.set_scanout(0, res_id, scanout_rect)
+        .expect("Setting scanout must succeed");
+
+    assert_eq!(gpu.active_scanout, Some((0, res_id)));
+    assert_eq!(gpu.display_width, 640);
+    assert_eq!(gpu.display_height, 480);
+
+    // 3. Test zero-copy LinearFramebuffer wrapping
+    {
+        let res = gpu.get_resource(res_id).unwrap();
+        let mut fb = unsafe { res.as_linear_framebuffer() };
+        assert_eq!(fb.width(), 640);
+        assert_eq!(fb.height(), 480);
+        assert_eq!(fb.stride(), 640);
+
+        // Draw test pattern directly into zero-copy backing buffer
+        fb.put_pixel(50, 50, crate::display::color::Color::rgb(0xFF, 0x00, 0x00));
+    }
+
+    // Verify written pixel in backing buffer
+    let res = gpu.get_resource(res_id).unwrap();
+    let offset = (50 * 640 + 50) * 4;
+    // B8G8R8A8: Color(R=0xFF, G=0, B=0) -> B=0, G=0, R=0xFF
+    assert_eq!(res.buffer[offset + 2], 0xFF); // Red channel
+
+    // 4. Transfer and flush dirty rectangle
+    let dirty_rect = VirtioGpuRect::new(40, 40, 20, 20);
+    gpu.blit_and_flush(res_id, dirty_rect)
+        .expect("Blit and flush must succeed");
+
+    // 5. Disable scanout
+    gpu.disable_scanout(0).expect("Disable scanout must succeed");
+    assert_eq!(gpu.active_scanout, None);
+
+    true
+}
