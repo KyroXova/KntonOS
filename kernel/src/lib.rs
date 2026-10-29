@@ -155,6 +155,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] VirtIO subsystem self-test failed!\r\n");
     }
 
+    // Initialize and verify FAT32 Persistent File System Driver & VirtIO Block Mount
+    if !fs::test_fat32_subsystem() {
+        serial_write_str("[KNT-PANIC] FAT32 subsystem self-test failed!\r\n");
+    }
+
     // Initialize PCI Device Subsystem & USB xHCI Host Controller Discovery
     drivers::init_pci();
     if !drivers::test_pci_subsystem() {

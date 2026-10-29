@@ -7,6 +7,7 @@ pub mod inode;
 pub mod tar;
 pub mod path;
 pub mod initramfs;
+pub mod fat32;
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -16,12 +17,17 @@ pub use inode::{DirEntry, Inode};
 pub use tar::{TarArchive, TarEntry, TAR_BLOCK_SIZE};
 pub use path::Path;
 pub use initramfs::Initramfs;
+pub use fat32::{
+    BiosParameterBlock32, BlockDevice, Fat32DirEntry, Fat32FileSystem, Fat32Inode,
+    MemoryBlockDevice, VirtioBlockDeviceAdapter, test_fat32_subsystem,
+};
 
 use crate::memory::spinlock::Spinlock;
 use crate::serial_write_str;
 
 pub struct VfsManager {
     root_fs: Option<Arc<dyn FileSystem>>,
+    mounts: alloc::collections::BTreeMap<alloc::string::String, Arc<dyn FileSystem>>,
     dynamic_files: alloc::collections::BTreeMap<alloc::string::String, Vec<u8>>,
 }
 
@@ -29,12 +35,18 @@ impl VfsManager {
     pub const fn new() -> Self {
         Self {
             root_fs: None,
+            mounts: alloc::collections::BTreeMap::new(),
             dynamic_files: alloc::collections::BTreeMap::new(),
         }
     }
 
     pub fn set_root(&mut self, fs: Arc<dyn FileSystem>) {
         self.root_fs = Some(fs);
+    }
+
+    pub fn mount(&mut self, mountpoint: &str, fs: Arc<dyn FileSystem>) {
+        let name = mountpoint.trim_matches('/');
+        self.mounts.insert(alloc::string::String::from(name), fs);
     }
 
     pub fn write_file(&mut self, path: &str, data: &[u8]) {
@@ -47,9 +59,20 @@ impl VfsManager {
     }
 
     pub fn open(&self, path: &str) -> Result<Arc<dyn Inode>, FsError> {
-        let root = self.root_fs.as_ref().ok_or(FsError::NotFound)?.root()?;
         let segments = Path::parse_segments(path)?;
 
+        if let Some(&first_seg) = segments.first() {
+            if let Some(fs) = self.mounts.get(first_seg) {
+                let mut curr = fs.root()?;
+                for &seg in &segments[1..] {
+                    let next = curr.lookup(seg)?;
+                    curr = next;
+                }
+                return Ok(curr);
+            }
+        }
+
+        let root = self.root_fs.as_ref().ok_or(FsError::NotFound)?.root()?;
         let mut curr = root;
         for seg in segments {
             let next = curr.lookup(seg)?;
