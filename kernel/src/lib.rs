@@ -7,6 +7,7 @@ pub mod memory;
 pub mod display;
 pub mod pe;
 pub mod fs;
+pub mod compositor;
 
 pub use memory::ALLOCATOR;
 

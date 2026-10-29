@@ -19,7 +19,8 @@ impl Color {
 
     pub const BLACK: Self = Self::rgb(0, 0, 0);
     pub const WHITE: Self = Self::rgb(255, 255, 255);
-    
+    pub const TRANSPARENT: Self = Self::rgba(0, 0, 0, 0);
+
     // Windows 11 Aesthetic Palette
     pub const WIN11_BG: Self = Self::rgb(28, 32, 40);         // Deep slate dark mode wallpaper
     pub const WIN11_TASKBAR: Self = Self::rgba(32, 38, 48, 230); // Mica-style translucent taskbar
@@ -40,5 +41,24 @@ impl Color {
     #[inline(always)]
     pub fn to_u32_rgb(&self) -> u32 {
         ((self.b as u32) << 16) | ((self.g as u32) << 8) | (self.r as u32)
+    }
+
+    /// Linear alpha blend `self` over `bg`.
+    #[inline(always)]
+    pub fn blend(self, bg: Color) -> Color {
+        if self.a == 255 {
+            return self;
+        }
+        if self.a == 0 {
+            return bg;
+        }
+        let alpha = self.a as u32;
+        let inv_alpha = 255 - alpha;
+        Color {
+            r: ((self.r as u32 * alpha + bg.r as u32 * inv_alpha) / 255) as u8,
+            g: ((self.g as u32 * alpha + bg.g as u32 * inv_alpha) / 255) as u8,
+            b: ((self.b as u32 * alpha + bg.b as u32 * inv_alpha) / 255) as u8,
+            a: 255,
+        }
     }
 }
