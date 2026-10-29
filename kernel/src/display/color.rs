@@ -32,6 +32,7 @@ impl Color {
     pub const WIN11_TEXT_SECONDARY: Self = Self::rgb(160, 172, 190);
     pub const WIN11_CLOSE_RED: Self = Self::rgb(232, 17, 35);
     pub const WIN11_HOVER: Self = Self::rgb(55, 64, 78);
+    pub const WIN11_PRESSED: Self = Self::rgb(70, 80, 98);
 
     #[inline(always)]
     pub fn to_u32_bgr(&self) -> u32 {

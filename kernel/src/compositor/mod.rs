@@ -4,6 +4,7 @@
 //! tracking, mouse cursor sprite overlay, Fluent window frame styling, and double-buffered
 //! multi-window scene composition.
 
+pub mod controls;
 pub mod cursor;
 pub mod dirty;
 pub mod window;
@@ -14,6 +15,7 @@ use crate::display::framebuffer::{FramebufferInfo, LinearFramebuffer};
 use crate::memory::spinlock::Spinlock;
 use crate::serial_write_str;
 
+pub use controls::{Button, ButtonState, Label, TitleBarButton, TitleBarButtonType, UiWidget};
 pub use cursor::{cursor_sprite_pixel, CursorState, CURSOR_HEIGHT, CURSOR_WIDTH};
 pub use dirty::{DamageRegion, Rect};
 pub use window::{Window, BORDER_WIDTH, BUTTON_WIDTH, TITLEBAR_HEIGHT};
