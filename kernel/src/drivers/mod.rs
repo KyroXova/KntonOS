@@ -3,6 +3,7 @@
 pub mod virtio;
 pub mod pci_db;
 pub mod pci_scanner;
+pub mod audio;
 pub mod usb;
 
 use alloc::vec::Vec;
