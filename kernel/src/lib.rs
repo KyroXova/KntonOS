@@ -16,6 +16,7 @@ pub mod net;
 pub mod shell;
 pub mod ipc;
 pub mod loader;
+pub mod graphics;
 
 pub use memory::ALLOCATOR;
 
@@ -178,6 +179,11 @@ pub extern "C" fn kmain() -> ! {
     // Initialize and verify VirtIO GPU 2D/3D Hardware Acceleration & Display Scanout Driver
     if !drivers::test_gpu_subsystem() {
         serial_write_str("[KNT-PANIC] VirtIO GPU subsystem self-test failed!\r\n");
+    }
+
+    // Initialize and verify Software 3D Graphics Pipeline & Barycentric Triangle Rasterizer
+    if !graphics::test_graphics_subsystem() {
+        serial_write_str("[KNT-PANIC] Software 3D graphics subsystem self-test failed!\r\n");
     }
 
     // Initialize Embedded Network Protocol Stack (ARP, IPv4, ICMP, UDP, TCP)
