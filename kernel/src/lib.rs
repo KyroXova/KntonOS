@@ -10,6 +10,7 @@ pub mod fs;
 pub mod process;
 pub mod syscall;
 pub mod drivers;
+pub mod compositor;
 
 pub use memory::ALLOCATOR;
 
@@ -107,6 +108,12 @@ pub extern "C" fn kmain() -> ! {
     drivers::virtio::init();
     if !drivers::virtio::test_virtio_subsystem() {
         serial_write_str("[KNT-PANIC] VirtIO subsystem self-test failed!\r\n");
+    }
+
+    // Initialize Desktop Shell Compositor & Window Manager
+    compositor::init(320, 240);
+    if !compositor::test_compositor_subsystem() {
+        serial_write_str("[KNT-PANIC] Compositor subsystem self-test failed!\r\n");
     }
 
     serial_write_str("[KNT-SUBSYSTEM] Display & Win32 PE64 loader modules active\r\n");
