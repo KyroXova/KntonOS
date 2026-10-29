@@ -7,6 +7,7 @@ pub mod inode;
 pub mod tar;
 pub mod path;
 pub mod initramfs;
+pub mod fat32;
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -16,6 +17,7 @@ pub use inode::{DirEntry, Inode};
 pub use tar::{TarArchive, TarEntry, TAR_BLOCK_SIZE};
 pub use path::Path;
 pub use initramfs::Initramfs;
+pub use fat32::BiosParameterBlock32;
 
 use crate::memory::spinlock::Spinlock;
 use crate::serial_write_str;
