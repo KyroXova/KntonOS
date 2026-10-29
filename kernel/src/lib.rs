@@ -2,9 +2,10 @@
 
 extern crate alloc;
 
+pub mod arch;
+pub mod memory;
 pub mod display;
 pub mod pe;
-pub mod memory;
 
 pub use memory::ALLOCATOR;
 
@@ -69,7 +70,10 @@ pub extern "C" fn kmain() -> ! {
     serial_init();
     serial_write_str("\r\n[KNT-KERNEL-INIT] KntonOS micro-kernel bootstrap reached\r\n");
 
-    // Initialize foundational memory management subsystems
+    // Initialize low-level CPU infrastructure (GDT, TSS, IDT, Syscall MSRs)
+    arch::init();
+
+    // Initialize foundational memory management subsystems (PMM, VMM, Heap)
     memory::init();
 
     // Execute memory subsystem verification self-test
