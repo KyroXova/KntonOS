@@ -255,6 +255,18 @@ exception_stub_no_err!(isr29, 29);
 exception_stub_err!(isr30, 30); // Security Exception (#SX)
 exception_stub_no_err!(isr31, 31);
 
+#[unsafe(naked)]
+unsafe extern "C" fn default_irq_stub() {
+    core::arch::naked_asm!(
+        "push rax",
+        "mov al, 0x20",
+        "out 0x20, al",
+        "out 0xA0, al",
+        "pop rax",
+        "iretq",
+    );
+}
+
 pub fn init() {
     unsafe {
         IDT[0].set_handler(isr0 as *const () as usize, 0);
@@ -290,6 +302,12 @@ pub fn init() {
         IDT[29].set_handler(isr29 as *const () as usize, 0);
         IDT[30].set_handler(isr30 as *const () as usize, 0);
         IDT[31].set_handler(isr31 as *const () as usize, 0);
+
+        let mut vec = 32;
+        while vec < 256 {
+            IDT[vec].set_handler(default_irq_stub as *const () as usize, 0);
+            vec += 1;
+        }
 
         let idt_desc = IdtDescriptor {
             limit: (core::mem::size_of::<[IdtEntry; 256]>() - 1) as u16,
