@@ -4,6 +4,7 @@
 //! - PCI capability enumeration and memory-mapped configuration spaces
 //! - OASIS split virtqueue DMA ring management
 //! - 512-byte block device driver for persistent storage
+//! - VirtIO network device driver (virtio-net) with packet ring buffer
 
 pub mod block;
 pub mod net;
@@ -11,7 +12,11 @@ pub mod pci;
 pub mod virtqueue;
 
 pub use block::{VirtioBlockDevice, VirtioBlkError, SECTOR_SIZE};
-pub use pci::{scan_pci, PciDevice, VIRTIO_DEV_BLOCK_MODERN, VIRTIO_DEV_BLOCK_TRANSITIONAL, VIRTIO_VENDOR_ID};
+pub use net::{ReceivedPacket, VirtioNetDevice, VirtioNetError, ETH_ALEN, ETH_FRAME_LEN};
+pub use pci::{
+    scan_pci, PciDevice, VIRTIO_DEV_BLOCK_MODERN, VIRTIO_DEV_BLOCK_TRANSITIONAL,
+    VIRTIO_DEV_NET_MODERN, VIRTIO_DEV_NET_TRANSITIONAL, VIRTIO_VENDOR_ID,
+};
 pub use virtqueue::{VirtqDesc, Virtqueue};
 
 use crate::memory::Spinlock;
@@ -19,12 +24,16 @@ use crate::memory::Spinlock;
 /// Global primary VirtIO block device singleton.
 pub static BLOCK_DEVICE: Spinlock<Option<VirtioBlockDevice>> = Spinlock::new(None);
 
+/// Global primary VirtIO network device singleton.
+pub static NET_DEVICE: Spinlock<Option<VirtioNetDevice>> = Spinlock::new(None);
+
 /// Initializes VirtIO driver subsystem and discovers attached PCI VirtIO devices.
 pub fn init() {
     crate::serial_write_str("[KNT-VIRTIO-INIT] Initializing VirtIO device drivers...\r\n");
 
     let pci_devices = scan_pci();
     let mut virtio_block_pci: Option<PciDevice> = None;
+    let mut virtio_net_pci: Option<PciDevice> = None;
 
     for dev in pci_devices {
         if dev.vendor_id == VIRTIO_VENDOR_ID {
@@ -33,27 +42,33 @@ pub fn init() {
             if dev.device_id == VIRTIO_DEV_BLOCK_TRANSITIONAL || dev.device_id == VIRTIO_DEV_BLOCK_MODERN {
                 crate::serial_write_str("[KNT-VIRTIO] Assigned VirtIO block device controller\r\n");
                 virtio_block_pci = Some(dev);
+            } else if dev.device_id == VIRTIO_DEV_NET_TRANSITIONAL || dev.device_id == VIRTIO_DEV_NET_MODERN {
+                crate::serial_write_str("[KNT-VIRTIO] Assigned VirtIO network device controller\r\n");
+                virtio_net_pci = Some(dev);
             }
         }
     }
 
     // Initialize block device singleton (using 64-entry queue)
     let mut blk = VirtioBlockDevice::new(virtio_block_pci, 64, 2048);
-    // Configure in-memory mock backing (1 MiB / 2048 sectors) for verified self-testing
     blk.enable_mock_storage(2048);
-
     *BLOCK_DEVICE.lock() = Some(blk);
     crate::serial_write_str("[KNT-VIRTIO] VirtIO block storage driver active (512-byte sectors)\r\n");
+
+    // Initialize network device singleton (using 32-entry queue, standard QEMU MAC)
+    let mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
+    let net = VirtioNetDevice::new(virtio_net_pci, 32, mac);
+    *NET_DEVICE.lock() = Some(net);
+    crate::serial_write_str("[KNT-VIRTIO] VirtIO network driver active (MAC: 52:54:00:12:34:56, MTU: 1500)\r\n");
 }
 
-/// Executes comprehensive self-test suite for VirtIO PCI, virtqueue, and block storage.
+/// Executes comprehensive self-test suite for VirtIO PCI, virtqueue, block, and network.
 pub fn test_virtio_subsystem() -> bool {
     crate::serial_write_str("[KNT-VIRTIO-TEST] Executing VirtIO driver self-test suite...\r\n");
 
     // --- TEST 1: PCI Capability & Enumeration ---
     {
         let devices = scan_pci();
-        // PCI scan must complete without triggering exceptions
         if devices.is_empty() {
             crate::serial_write_str("[KNT-VIRTIO] Standard PCI scan complete (0 devices on bus 0..3)\r\n");
         } else {
@@ -150,6 +165,52 @@ pub fn test_virtio_subsystem() -> bool {
         }
 
         crate::serial_write_str("[KNT-VIRTIO-BLOCK-PASS] 512-byte block sector read/write transactions verified\r\n");
+    }
+
+    // --- TEST 4: VirtIO Network Packet Transmit & Loopback Reception ---
+    {
+        let mut net_lock = NET_DEVICE.lock();
+        let net = net_lock.as_mut().expect("VirtIO network device not initialized");
+
+        // 4.1 Construct valid Ethernet frame
+        let mut frame = [0u8; 64];
+        // Dest MAC: Broadcast FF:FF:FF:FF:FF:FF
+        frame[0..6].copy_from_slice(&[0xFF; 6]);
+        // Src MAC: 52:54:00:12:34:56
+        frame[6..12].copy_from_slice(&net.mac_addr);
+        // EtherType: IPv4 (0x0800)
+        frame[12] = 0x08;
+        frame[13] = 0x00;
+        // Payload
+        let payload = b"KNTON-OS-VIRTIO-NET-PACKET-V1";
+        frame[14..14 + payload.len()].copy_from_slice(payload);
+
+        // Transmit frame
+        if let Err(_) = net.transmit_packet(&frame) {
+            crate::serial_write_str("[KNT-PANIC] VirtIO net transmit_packet failed!\r\n");
+            return false;
+        }
+
+        // Poll received packets
+        let packets = net.poll_received_packets();
+        if packets.len() != 1 {
+            crate::serial_write_str("[KNT-PANIC] VirtIO net did not receive loopback packet!\r\n");
+            return false;
+        }
+
+        if packets[0].data != frame {
+            crate::serial_write_str("[KNT-PANIC] VirtIO net packet payload corrupted in transit!\r\n");
+            return false;
+        }
+
+        // 4.2 MTU overflow boundary protection
+        let oversized = [0u8; ETH_FRAME_LEN + 10];
+        if net.transmit_packet(&oversized) != Err(VirtioNetError::PacketTooLarge) {
+            crate::serial_write_str("[KNT-PANIC] VirtIO net allowed transmission exceeding MTU!\r\n");
+            return false;
+        }
+
+        crate::serial_write_str("[KNT-VIRTIO-NET-PASS] VirtIO network frame transmission, loopback reception, and MTU boundary verified\r\n");
     }
 
     crate::serial_write_str("[KNT-VIRTIO-TESTS-PASS] All VirtIO driver checks passed\r\n");
