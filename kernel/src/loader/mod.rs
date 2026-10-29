@@ -4,6 +4,18 @@
 //! and process execution for standard ELF64 binaries.
 
 pub mod elf;
+pub mod dynlink;
+
+pub use dynlink::{
+    extract_string, find_symbol_in_symtab, resolve_symbol_in_libraries,
+    test_dynamic_parser_and_symbols, DynamicSectionInfo, DynLinkError, Elf64Dyn, Elf64Sym,
+    ExportedSymbol, SharedLibrary, DT_BIND_NOW, DT_DEBUG, DT_FINI, DT_FINI_ARRAY,
+    DT_FINI_ARRAYSZ, DT_FLAGS, DT_HASH, DT_INIT, DT_INIT_ARRAY, DT_INIT_ARRAYSZ, DT_JMPREL,
+    DT_NEEDED, DT_NULL, DT_PLTGOT, DT_PLTREL, DT_PLTRELSZ, DT_REL, DT_RELA, DT_RELAENT,
+    DT_RELASZ, DT_RELENT, DT_RELSZ, DT_RPATH, DT_SONAME, DT_STRSZ, DT_STRTAB, DT_SYMBOLIC,
+    DT_SYMENT, DT_SYMTAB, DT_TEXTREL, SHN_UNDEF, STB_GLOBAL, STB_LOCAL, STB_WEAK, STT_COMMON,
+    STT_FILE, STT_FUNC, STT_NOTYPE, STT_OBJECT, STT_SECTION, STT_TLS,
+};
 
 pub use elf::{
     test_elf_parser, test_elf_segment_mapping, Elf64Auxv, Elf64Ehdr, Elf64Phdr, ElfError,
