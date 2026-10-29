@@ -23,4 +23,4 @@ Capture the product's intended users, core problem, first user-visible capabilit
 
 ## Current discovery record
 
-The owner has established a new-kernel, new-GUI, low-resource, Windows `.exe`-compatible operating-system direction. The remaining architectural and release decisions are recorded in OQ-KNT-001. The lead may update this card, the scope, integration plan, and task board when those answers arrive.
+The owner has established a general-purpose, gamer-friendly native operating-system direction: its own independently developed kernel, GUI, applications, modern x86-64 UEFI target, and broad Windows `.exe`/game compatibility goal. The first demonstration must run a real game with improved performance. The remaining first-demo measurements and architecture decisions are tracked in OQ-KNT-001 and TASK-KNT-003/TASK-KNT-004.

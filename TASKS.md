@@ -6,9 +6,9 @@
 
 | Field | Current value |
 | --- | --- |
-| State | SCOPED — repository foundation and requirements planning only |
+| State | SCOPED — requirements, architecture feasibility, and resource-budget discovery only |
 | Issuer | Project owner |
-| Scope | No product feature work until an approved brief exists |
+| Scope | No product feature implementation until architecture and measurable first-demo gates are approved |
 | Last updated | 2026-10-29 |
 
 ## Contributor workspaces
@@ -26,7 +26,9 @@ These branches are intentionally unclaimed and clean. A workspace provides isola
 | ID | Capability | State | Depends on / waiting for | Owner/session | Card |
 | --- | --- | --- | --- | --- | --- |
 | TASK-KNT-001 | Coordination-ready repository foundation | Done | None | NadiaMercer / lead | [Card](docs/tasks/TASK-KNT-001-foundation.md) |
-| TASK-KNT-002 | Approved product brief and first usable milestone | Claimed | Owner decisions in OQ-KNT-001 | NadiaMercer / lead | [Card](docs/tasks/TASK-KNT-002-product-brief.md) |
+| TASK-KNT-002 | Approved product brief and first usable milestone | Claimed | Performance and compatibility acceptance details | NadiaMercer / lead | [Card](docs/tasks/TASK-KNT-002-product-brief.md) |
+| TASK-KNT-003 | Native platform and Windows-application compatibility architecture decision | Ready | None | Unclaimed | [Card](docs/tasks/TASK-KNT-003-architecture-feasibility.md) |
+| TASK-KNT-004 | First-demo resource and performance acceptance plan | Ready | None | Unclaimed | [Card](docs/tasks/TASK-KNT-004-performance-plan.md) |
 
 ## Active reservations
 
