@@ -89,6 +89,12 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] VFS subsystem self-test failed!\r\n");
     }
 
+    // Initialize Desktop Shell Compositor & Window Manager
+    compositor::init(320, 240);
+    if !compositor::test_compositor_subsystem() {
+        serial_write_str("[KNT-PANIC] Compositor subsystem self-test failed!\r\n");
+    }
+
     serial_write_str("[KNT-SUBSYSTEM] Display & Win32 PE64 loader modules active\r\n");
     serial_write_str("[KNT-BOOT-SUCCESS] Native UEFI-to-kernel boot verified\r\n");
 
