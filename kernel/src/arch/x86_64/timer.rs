@@ -59,6 +59,13 @@ impl LapicTimer {
     }
 }
 
+#[no_mangle]
+pub extern "win64" fn handle_lapic_timer_tick() {
+    LapicTimer::on_tick();
+    LocalApic::eoi();
+    crate::process::timer_tick();
+}
+
 /// Raw assembly interrupt handler stub for Vector 0x20 (Local APIC Timer).
 #[unsafe(naked)]
 pub unsafe extern "C" fn lapic_timer_isr() {
@@ -73,12 +80,10 @@ pub unsafe extern "C" fn lapic_timer_isr() {
         "push r9",
         "push r10",
         "push r11",
-        // Call Rust timer tick handler
-        "call {on_tick}",
-        // Send End of Interrupt (EOI) to Local APIC
-        "call {eoi}",
-        // Call scheduler time accounting
-        "call {sched_tick}",
+        // Allocate 32-byte Win64 shadow space on 16-byte aligned stack (112 + 32 = 144 bytes)
+        "sub rsp, 32",
+        "call {handler}",
+        "add rsp, 32",
         // Restore scratch registers
         "pop r11",
         "pop r10",
@@ -90,8 +95,6 @@ pub unsafe extern "C" fn lapic_timer_isr() {
         "pop rcx",
         "pop rax",
         "iretq",
-        on_tick = sym LapicTimer::on_tick,
-        eoi = sym LocalApic::eoi,
-        sched_tick = sym crate::process::timer_tick,
+        handler = sym handle_lapic_timer_tick,
     );
 }

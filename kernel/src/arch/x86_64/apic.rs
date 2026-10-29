@@ -4,6 +4,9 @@
 //! spurious interrupt vector assignment, and End of Interrupt (EOI) signaling.
 
 use super::syscall::{rdmsr, wrmsr};
+use crate::memory::pmm::PhysAddr;
+use crate::memory::vmm::{PageTableFlags, PageTableManager, VirtAddr};
+use crate::memory::PMM;
 use crate::serial_write_str;
 
 pub const IA32_APIC_BASE_MSR: u32 = 0x1B;
@@ -69,8 +72,40 @@ impl LocalApic {
         }
     }
 
+    /// Ensures the physical MMIO page for LAPIC (default 0xFEE0_0000) is mapped in active page tables.
+    pub fn map_lapic_mmio(base_addr: u64) {
+        unsafe {
+            // Temporarily clear CR0.WP (bit 16) to allow writing intermediate paging structures
+            let cr0: u64;
+            core::arch::asm!("mov {}, cr0", out(reg) cr0, options(nomem, nostack, preserves_flags));
+            core::arch::asm!("mov cr0, {}", in(reg) (cr0 & !(1 << 16)), options(nomem, nostack, preserves_flags));
+
+            let cr3: u64;
+            core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags));
+            let root_pml4 = (cr3 & !0xFFF) as *mut crate::memory::vmm::PageTable;
+
+            let mut ptm = PageTableManager::new(root_pml4);
+            let mut pmm = PMM.lock();
+
+            let virt = VirtAddr::new(base_addr as usize);
+            let phys = PhysAddr::new(base_addr as usize);
+            let flags = PageTableFlags::PRESENT
+                | PageTableFlags::WRITABLE
+                | PageTableFlags::WRITE_THROUGH
+                | PageTableFlags::NO_CACHE;
+
+            if ptm.translate(virt).is_none() {
+                let _ = ptm.map_page(virt, phys, flags, &mut *pmm);
+            }
+
+            core::arch::asm!("mov cr0, {}", in(reg) cr0, options(nomem, nostack, preserves_flags));
+        }
+    }
+
     /// Initializes and enables the Local APIC on the current processor core.
     pub fn init(base_addr: u64) {
+        Self::map_lapic_mmio(base_addr);
+
         unsafe {
             LAPIC_BASE_ADDR = base_addr as usize;
 

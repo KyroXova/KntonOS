@@ -9,8 +9,8 @@ pub mod pe;
 pub mod fs;
 pub mod process;
 pub mod syscall;
-pub mod drivers;
 pub mod compositor;
+pub mod drivers;
 
 pub use memory::ALLOCATOR;
 
@@ -84,6 +84,14 @@ pub extern "C" fn kmain() -> ! {
     // Execute memory subsystem verification self-test
     if !memory::test_memory_subsystem() {
         serial_write_str("[KNT-PANIC] Memory subsystem self-test failed!\r\n");
+    }
+
+    // Initialize SMP multi-core discovery and Local APIC timer
+    arch::init_smp();
+
+    // Verify SMP multi-core topology and Local APIC timer operations
+    if !arch::test_smp_and_timer_subsystem() {
+        serial_write_str("[KNT-PANIC] SMP and Local APIC timer self-test failed!\r\n");
     }
 
     // Initialize Virtual File System & mount demo initramfs
