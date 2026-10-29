@@ -191,10 +191,8 @@ impl StartMenuLauncher {
 
         self.populate_default_entries(panel_bounds.x, panel_bounds.y);
 
-        // 1. Acrylic blur backdrop & translucent fill
-        let snapshot = buffer.to_vec();
-        AcrylicSurface::render_acrylic(
-            &snapshot,
+        // 1. Acrylic blur backdrop & translucent fill in-place
+        AcrylicSurface::render_acrylic_in_place(
             buffer,
             screen_width,
             screen_height,

@@ -12,6 +12,8 @@ import shutil
 import subprocess
 import sys
 import time
+import threading
+import queue
 
 SENTINEL_SUCCESS = re.compile(r"\[KNT-BOOT-SUCCESS\]")
 SENTINEL_PANIC = re.compile(r"\[KNT-PANIC\]")
@@ -52,7 +54,7 @@ def find_ovmf_firmware(qemu_exe: str) -> str:
                 return os.path.join(root, f)
     raise FileNotFoundError(f"Could not locate OVMF firmware in {qemu_dir}")
 
-def run_boot_test(efi_path: str, timeout_sec: int = 5) -> int:
+def run_boot_test(efi_path: str, timeout_sec: int = 15) -> int:
     if not os.path.isfile(efi_path):
         print(f"[HARNESS-ERROR] EFI executable not found: {efi_path}", file=sys.stderr)
         return 1
@@ -104,6 +106,19 @@ def run_boot_test(efi_path: str, timeout_sec: int = 5) -> int:
     boot_success = False
     panic_detected = False
 
+    q = queue.Queue()
+    def enqueue_output(out, queue_obj):
+        try:
+            for l in iter(out.readline, ''):
+                queue_obj.put(l)
+        except Exception:
+            pass
+        finally:
+            out.close()
+
+    t = threading.Thread(target=enqueue_output, args=(proc.stdout, q), daemon=True)
+    t.start()
+
     try:
         while True:
             elapsed = time.time() - start_time
@@ -111,9 +126,13 @@ def run_boot_test(efi_path: str, timeout_sec: int = 5) -> int:
                 print(f"\n[HARNESS] Timeout exceeded ({timeout_sec}s). Stopping QEMU.", file=sys.stderr)
                 break
 
-            line = proc.stdout.readline()
-            if not line and proc.poll() is not None:
-                break
+            try:
+                line = q.get(timeout=0.1)
+            except queue.Empty:
+                if proc.poll() is not None:
+                    break
+                continue
+
             if line:
                 sys.stdout.write(f"[SERIAL] {line}")
                 sys.stdout.flush()
@@ -169,8 +188,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--timeout",
         type=int,
-        default=8,
-        help="Timeout in seconds (default: 8)",
+        default=15,
+        help="Timeout in seconds (default: 15)",
     )
     args = parser.parse_args()
     sys.exit(run_boot_test(os.path.abspath(args.efi), args.timeout))

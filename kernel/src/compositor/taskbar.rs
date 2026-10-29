@@ -352,11 +352,16 @@ impl DesktopTaskbar {
         let taskbar_y = screen_height.saturating_sub(self.height);
         self.start_button_bounds = Rect::new(4, taskbar_y + 4, 36, 24);
 
+        if windows.is_empty() {
+            return;
+        }
+
         let start_x = 44;
-        let item_width = 100;
         let item_height = 24;
         let gap = 4;
-        let max_x = screen_width.saturating_sub(160); // reserve space for clock & tray
+        let max_x = screen_width.saturating_sub(140); // reserve space for clock & tray
+        let available_w = max_x.saturating_sub(start_x);
+        let item_width = ((available_w / windows.len()).saturating_sub(gap)).min(100).max(36);
 
         for (i, win) in windows.iter().enumerate() {
             let item_x = start_x + i * (item_width + gap);
@@ -411,10 +416,8 @@ impl DesktopTaskbar {
             }
         }
 
-        // 1. Acrylic blur backdrop & base fill
-        let snapshot = buffer.to_vec();
-        AcrylicSurface::render_acrylic(
-            &snapshot,
+        // 1. Acrylic blur backdrop & base fill in-place
+        AcrylicSurface::render_acrylic_in_place(
             buffer,
             screen_width,
             screen_height,

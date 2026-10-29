@@ -209,15 +209,20 @@ impl AcrylicSurface {
             return;
         }
 
-        let mut sample_buf = alloc::vec::Vec::with_capacity(actual_w * actual_h);
-        for y in start_y..end_y {
-            let row_offset = y * width;
-            for x in start_x..end_x {
-                sample_buf.push(target[row_offset + x]);
-            }
+        let mut prev_row = alloc::vec::Vec::with_capacity(actual_w);
+        let mut curr_row = alloc::vec::Vec::with_capacity(actual_w);
+
+        let row_offset_0 = start_y * width;
+        for x in start_x..end_x {
+            let p = target[row_offset_0 + x];
+            curr_row.push(p);
+            prev_row.push(p);
         }
 
-        for (row_idx, y) in (start_y..end_y).enumerate() {
+        for y in start_y..end_y {
+            let has_next = y + 1 < end_y;
+            let next_row_offset = (y + 1) * width;
+
             for (col_idx, x) in (start_x..end_x).enumerate() {
                 if let Some(c) = clip {
                     if !c.contains_point(x, y) {
@@ -231,11 +236,19 @@ impl AcrylicSurface {
                 let mut count = 0u32;
 
                 for dy in 0..=2 {
-                    let py = (row_idx + dy).saturating_sub(1).min(actual_h - 1);
-                    let row_offset = py * actual_w;
                     for dx in 0..=2 {
                         let px = (col_idx + dx).saturating_sub(1).min(actual_w - 1);
-                        let p = sample_buf[row_offset + px];
+                        let p = match dy {
+                            0 => prev_row[px],
+                            1 => curr_row[px],
+                            _ => {
+                                if has_next {
+                                    target[next_row_offset + start_x + px]
+                                } else {
+                                    curr_row[px]
+                                }
+                            }
+                        };
                         sum_r += p.r as u32;
                         sum_g += p.g as u32;
                         sum_b += p.b as u32;
@@ -256,6 +269,16 @@ impl AcrylicSurface {
                 let final_pixel = noise_color.blend(tinted);
 
                 target[y * width + x] = final_pixel;
+            }
+
+            prev_row.clear();
+            prev_row.extend_from_slice(&curr_row);
+
+            if has_next {
+                curr_row.clear();
+                for x in start_x..end_x {
+                    curr_row.push(target[next_row_offset + x]);
+                }
             }
         }
     }

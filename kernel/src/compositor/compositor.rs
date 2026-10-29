@@ -3,7 +3,6 @@
 use alloc::string::ToString;
 use alloc::vec::Vec;
 use crate::display::color::Color;
-use crate::display::font::{get_glyph, FONT_HEIGHT, FONT_WIDTH};
 use crate::display::framebuffer::LinearFramebuffer;
 use super::cursor::CursorState;
 use super::dirty::{DamageRegion, Rect};
@@ -368,116 +367,7 @@ impl SceneCompositor {
             }
         }
 
-        // 2. Taskbar decorations if clip intersects taskbar
-        let taskbar_rect = Rect::new(0, taskbar_y, self.width, self.taskbar_height);
-        if clip.intersects(&taskbar_rect) {
-            self.render_taskbar_decorations(taskbar_y, clip);
-        }
-    }
-
-    fn render_taskbar_decorations(&mut self, taskbar_y: usize, clip: &Rect) {
-        let center_x = self.width / 2;
-        let start_x = center_x.saturating_sub(120);
-
-        // Centered Start button: 4 Fluent tiles
-        let tile_size = 12;
-        let gap = 3;
-        let btn_y = taskbar_y + 10;
-        self.draw_rect_clipped(start_x, btn_y, tile_size, tile_size, Color::WIN11_ACCENT, clip);
-        self.draw_rect_clipped(start_x + tile_size + gap, btn_y, tile_size, tile_size, Color::WIN11_ACCENT, clip);
-        self.draw_rect_clipped(start_x, btn_y + tile_size + gap, tile_size, tile_size, Color::WIN11_ACCENT, clip);
-        self.draw_rect_clipped(start_x + tile_size + gap, btn_y + tile_size + gap, tile_size, tile_size, Color::WIN11_ACCENT, clip);
-
-        // Pinned app icons
-        self.render_taskbar_icon(start_x + 40, btn_y, "Term", Color::WIN11_ACCENT, clip);
-        self.render_taskbar_icon(start_x + 90, btn_y, "Files", Color::rgb(255, 185, 0), clip);
-        self.render_taskbar_icon(start_x + 140, btn_y, "Game", Color::rgb(16, 124, 65), clip);
-        self.render_taskbar_icon(start_x + 190, btn_y, "Set", Color::WIN11_TEXT_SECONDARY, clip);
-
-        // System Tray (right side)
-        let tray_x = self.width.saturating_sub(150);
-        self.draw_string_clipped(tray_x, taskbar_y + 16, "11:40 AM", Color::WIN11_TEXT_PRIMARY, clip);
-        self.draw_string_clipped(tray_x + 80, taskbar_y + 16, "KNT 64", Color::WIN11_ACCENT, clip);
-
-        // Left Branding
-        self.draw_string_clipped(24, taskbar_y + 16, "KntonOS 1.0 (Snatch)", Color::WIN11_TEXT_SECONDARY, clip);
-    }
-
-    fn render_taskbar_icon(
-        &mut self,
-        x: usize,
-        y: usize,
-        label: &str,
-        accent: Color,
-        clip: &Rect,
-    ) {
-        self.draw_rect_clipped(x, y, 36, 28, Color::WIN11_HOVER, clip);
-        self.draw_rect_clipped(x, y + 26, 36, 2, accent, clip);
-        let text_offset = (36usize.saturating_sub(label.len() * FONT_WIDTH)) / 2;
-        self.draw_string_clipped(x + text_offset, y + 6, label, Color::WIN11_TEXT_PRIMARY, clip);
-    }
-
-    fn draw_rect_clipped(
-        &mut self,
-        x: usize,
-        y: usize,
-        w: usize,
-        h: usize,
-        color: Color,
-        clip: &Rect,
-    ) {
-        for row in 0..h {
-            let ty = y + row;
-            if ty >= self.height {
-                break;
-            }
-            for col in 0..w {
-                let tx = x + col;
-                if tx >= self.width {
-                    break;
-                }
-                if clip.contains_point(tx, ty) {
-                    self.backbuffer[ty * self.width + tx] = color;
-                }
-            }
-        }
-    }
-
-    fn draw_string_clipped(
-        &mut self,
-        x: usize,
-        y: usize,
-        s: &str,
-        fg: Color,
-        clip: &Rect,
-    ) {
-        let mut cur_x = x;
-        for c in s.chars() {
-            if c == '\n' {
-                continue;
-            }
-            let glyph = get_glyph(c);
-            for row in 0..FONT_HEIGHT {
-                let ty = y + row;
-                if ty >= self.height {
-                    break;
-                }
-                let bits = glyph[row];
-                for col in 0..FONT_WIDTH {
-                    let tx = cur_x + col;
-                    if tx >= self.width {
-                        break;
-                    }
-                    if clip.contains_point(tx, ty) && (bits & (0x80 >> col)) != 0 {
-                        self.backbuffer[ty * self.width + tx] = fg;
-                    }
-                }
-            }
-            cur_x += FONT_WIDTH;
-            if cur_x + FONT_WIDTH > self.width {
-                break;
-            }
-        }
+        // Base taskbar fill is complete; taskbar struct renders decorations
     }
 
     /// Compose the scene for all damaged regions into the internal backbuffer.
