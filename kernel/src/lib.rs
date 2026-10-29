@@ -13,6 +13,7 @@ pub mod drivers;
 pub mod compositor;
 pub mod net;
 pub mod shell;
+pub mod ipc;
 
 pub use memory::ALLOCATOR;
 
