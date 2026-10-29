@@ -17,9 +17,9 @@ These branches are managed by their respective developers with granular commit l
 
 | Contributor identity | Branch | Local workspace | Status |
 | --- | --- | --- | --- |
-| Ada Chen | `workspace/ada-chen` | `E:\Git Lab's\kntonOS-ada-chen` | Active (TASK-KNT-017) |
-| Jules Martin | `workspace/jules-martin` | `E:\Git Lab's\kntonOS-jules-martin` | Active (TASK-KNT-014) |
-| Priya Nair | `workspace/priya-nair` | `E:\Git Lab's\kntonOS-priya-nair` | Active (TASK-KNT-016) |
+| Ada Chen | `workspace/ada-chen` | `E:\Git Lab's\kntonOS-ada-chen` | Active (TASK-KNT-021) |
+| Jules Martin | `workspace/jules-martin` | `E:\Git Lab's\kntonOS-jules-martin` | Active (TASK-KNT-022) |
+| Priya Nair | `workspace/priya-nair` | `E:\Git Lab's\kntonOS-priya-nair` | Active (TASK-KNT-023) |
 
 ## Task index
 
@@ -44,8 +44,13 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-017 | Embedded Network Protocol Stack (ARP, IPv4, ICMP, UDP) | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-017-network-stack.md) |
 | TASK-KNT-018 | SMP Multi-Core Discovery and Local APIC Timer Subsystem | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-018-smp-apic.md) |
 | TASK-KNT-019 | Transmission Control Protocol (TCP) State Machine and Stream Sockets | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-019-tcp-stack.md) |
-| TASK-KNT-020 | PCI Device Subsystem and USB xHCI Host Controller Discovery | Claimed | TASK-KNT-013 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-020-pci-xhci.md) |
+| TASK-KNT-020 | PCI Device Subsystem and USB xHCI Host Controller Discovery | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-020-pci-xhci.md) |
+| TASK-KNT-021 | Domain Name System (DNS) Resolver & HTTP/1.1 Micro-Client | Claimed | TASK-KNT-019 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-021-dns-http.md) |
+| TASK-KNT-022 | IPC Zero-Copy Shared Memory Rings & Fast Futex Synchronization | Claimed | TASK-KNT-011 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-022-ipc-futex.md) |
+| TASK-KNT-023 | USB 3.0 xHCI Enumeration & HID Keyboard/Mouse Input Pipeline | Claimed | TASK-KNT-020 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-023-usb-hid.md) |
 
 ## Active reservations
 
-- `kernel/src/drivers/`: reserved by Priya Nair for TASK-KNT-020.
+- `kernel/src/net/dns.rs`, `kernel/src/net/http.rs`: reserved by Ada Chen for TASK-KNT-021.
+- `kernel/src/ipc/`: reserved by Jules Martin for TASK-KNT-022.
+- `kernel/src/drivers/usb/`: reserved by Priya Nair for TASK-KNT-023.
