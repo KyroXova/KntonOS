@@ -117,6 +117,12 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Compositor subsystem self-test failed!\r\n");
     }
 
+    // Initialize Embedded Network Protocol Stack (ARP, IPv4, ICMP, UDP)
+    net::init();
+    if !net::test_network_stack() {
+        serial_write_str("[KNT-PANIC] Network stack self-test failed!\r\n");
+    }
+
     serial_write_str("[KNT-SUBSYSTEM] Display & Win32 PE64 loader modules active\r\n");
     serial_write_str("[KNT-BOOT-SUCCESS] Native UEFI-to-kernel boot verified\r\n");
 
