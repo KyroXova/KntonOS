@@ -138,6 +138,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Syscall subsystem self-test failed!\r\n");
     }
 
+    // Verify POSIX Signal Handling & Process Exception Dispatch Engine
+    if !process::test_signals_subsystem() {
+        serial_write_str("[KNT-PANIC] POSIX signals subsystem self-test failed!\r\n");
+    }
+
     // Initialize Inter-Process Communication (IPC) Shared Memory Rings & Fast Futex Engine
     ipc::init();
     if !ipc::test_ipc_subsystem() {

@@ -1,8 +1,8 @@
 //! Core NT Subsystem System Call Stubs and Implementation Handlers.
 
 use super::validate::{
-    validate_user_mut_ptr, validate_user_mut_slice, validate_user_slice, STATUS_INVALID_HANDLE,
-    STATUS_INVALID_PARAMETER, STATUS_SUCCESS,
+    validate_user_mut_ptr, validate_user_mut_slice, validate_user_ptr, validate_user_slice,
+    STATUS_INVALID_HANDLE, STATUS_INVALID_PARAMETER, STATUS_SUCCESS,
 };
 use crate::memory::{PAGE_SIZE, PMM};
 
@@ -244,4 +244,189 @@ pub fn sys_alert_thread_by_thread_id(
     } else {
         STATUS_INVALID_PARAMETER
     }
+}
+
+/// NtSigAction: Sets or retrieves action associated with a signal.
+/// - arg1: Signal number
+/// - arg2: Pointer to new SigAction (*const SigAction)
+/// - arg3: Pointer to receive old SigAction (*mut SigAction)
+pub fn sys_sigaction(signum: u64, act_ptr: u64, oldact_ptr: u64) -> u32 {
+    let sig = signum as usize;
+    if sig == 0 || sig >= crate::process::NSIG {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if sig == crate::process::SIGKILL || sig == crate::process::SIGSTOP {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    let pid = {
+        let guard = crate::process::SCHEDULER.lock();
+        if let Some(ref sched) = *guard {
+            if let Some(ref curr) = sched.current {
+                curr.pid
+            } else {
+                1
+            }
+        } else {
+            1
+        }
+    };
+
+    let old_action = {
+        let sm = crate::process::signals::SIGNAL_MANAGER.lock();
+        match sm.get_sigaction(pid, sig) {
+            Ok(act) => act,
+            Err(_) => return STATUS_INVALID_PARAMETER,
+        }
+    };
+
+    if oldact_ptr != 0 {
+        let out_ptr = match validate_user_mut_ptr(oldact_ptr as *mut crate::process::SigAction) {
+            Ok(p) => p,
+            Err(status) => return status,
+        };
+        unsafe {
+            *out_ptr = old_action;
+        }
+    }
+
+    if act_ptr != 0 {
+        let in_ptr = match validate_user_ptr(act_ptr as *const crate::process::SigAction) {
+            Ok(p) => p,
+            Err(status) => return status,
+        };
+        let new_action = unsafe { *in_ptr };
+        let mut sm = crate::process::signals::SIGNAL_MANAGER.lock();
+        if sm.set_sigaction(pid, sig, new_action).is_err() {
+            return STATUS_INVALID_PARAMETER;
+        }
+    }
+
+    STATUS_SUCCESS
+}
+
+/// NtKill: Sends a signal to a process or thread.
+/// - arg1: Target PID (0 or NT_CURRENT_PROCESS = current process)
+/// - arg2: Signal number
+pub fn sys_kill(pid: u64, sig: u64) -> u32 {
+    let sig = sig as usize;
+    if sig >= crate::process::NSIG {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    let target_pid = if pid == NT_CURRENT_PROCESS || pid == 0 {
+        let guard = crate::process::SCHEDULER.lock();
+        if let Some(ref sched) = *guard {
+            if let Some(ref curr) = sched.current {
+                curr.pid
+            } else {
+                1
+            }
+        } else {
+            1
+        }
+    } else {
+        pid
+    };
+
+    if sig == 0 {
+        return STATUS_SUCCESS;
+    }
+
+    let mut sm = crate::process::signals::SIGNAL_MANAGER.lock();
+    match sm.send_signal(target_pid, sig) {
+        Ok(()) => {
+            let mut sched_guard = crate::process::SCHEDULER.lock();
+            if let Some(ref mut sched) = *sched_guard {
+                let mut wake_list = alloc::vec::Vec::new();
+                for t in sched.blocked_threads.iter() {
+                    if (t.pid == target_pid || target_pid == 0) && (t.signal_mask & (1 << sig)) == 0 {
+                        wake_list.push(t.tid);
+                    }
+                }
+                for tid in wake_list {
+                    if let Some(pos) = sched.blocked_threads.iter().position(|t| t.tid == tid) {
+                        let mut thread = sched.blocked_threads.remove(pos);
+                        thread.state = crate::process::ThreadState::Ready;
+                        sched.enqueue(thread);
+                    }
+                }
+            }
+            STATUS_SUCCESS
+        }
+        Err(_) => STATUS_INVALID_HANDLE,
+    }
+}
+
+/// NtSigReturn: Restores the execution context after signal handler execution.
+pub fn sys_sigreturn() -> u32 {
+    let mut guard = crate::process::SCHEDULER.lock();
+    let sched = match guard.as_mut() {
+        Some(s) => s,
+        None => return STATUS_INVALID_HANDLE,
+    };
+
+    if let Some(ref mut curr) = sched.current {
+        if let Some(saved) = curr.saved_sigcontext.take() {
+            curr.signal_mask = saved.oldmask;
+            curr.rsp = saved.rsp;
+            STATUS_SUCCESS
+        } else {
+            STATUS_INVALID_PARAMETER
+        }
+    } else {
+        STATUS_INVALID_HANDLE
+    }
+}
+
+/// NtSigProcMask: Examines and changes blocked signals mask for current thread.
+/// - arg1: How flag (SIG_BLOCK=0, SIG_UNBLOCK=1, SIG_SETMASK=2)
+/// - arg2: Pointer to new mask (*const u64)
+/// - arg3: Pointer to receive old mask (*mut u64)
+pub fn sys_sigprocmask(how: u64, set_ptr: u64, oldset_ptr: u64) -> u32 {
+    let mut guard = crate::process::SCHEDULER.lock();
+    let sched = match guard.as_mut() {
+        Some(s) => s,
+        None => return STATUS_INVALID_HANDLE,
+    };
+
+    let curr = match sched.current.as_mut() {
+        Some(c) => c,
+        None => return STATUS_INVALID_HANDLE,
+    };
+
+    if oldset_ptr != 0 {
+        let out_ptr = match validate_user_mut_ptr(oldset_ptr as *mut u64) {
+            Ok(p) => p,
+            Err(status) => return status,
+        };
+        unsafe {
+            *out_ptr = curr.signal_mask;
+        }
+    }
+
+    if set_ptr != 0 {
+        let in_ptr = match validate_user_ptr(set_ptr as *const u64) {
+            Ok(p) => p,
+            Err(status) => return status,
+        };
+        let new_set = unsafe { *in_ptr };
+        let unblockable = (1u64 << crate::process::SIGKILL) | (1u64 << crate::process::SIGSTOP);
+        let safe_set = new_set & !unblockable;
+
+        match how as u32 {
+            crate::process::SIG_BLOCK => {
+                curr.signal_mask |= safe_set;
+            }
+            crate::process::SIG_UNBLOCK => {
+                curr.signal_mask &= !safe_set;
+            }
+            crate::process::SIG_SETMASK => {
+                curr.signal_mask = safe_set;
+            }
+            _ => return STATUS_INVALID_PARAMETER,
+        }
+    }
+
+    STATUS_SUCCESS
 }

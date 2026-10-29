@@ -29,6 +29,8 @@ pub struct ProcessControlBlock {
     pub file_descriptors: Vec<Option<FileDescriptor>>,
     pub thread_ids: Vec<u64>,
     pub parent_pid: Option<u64>,
+    pub signals: super::signals::SignalDispositions,
+    pub pending_signals: u64,
 }
 
 impl ProcessControlBlock {
@@ -62,6 +64,8 @@ impl ProcessControlBlock {
             file_descriptors: fd_table,
             thread_ids: Vec::new(),
             parent_pid,
+            signals: super::signals::SignalDispositions::new(),
+            pending_signals: 0,
         }
     }
 
