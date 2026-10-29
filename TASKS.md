@@ -17,9 +17,9 @@ These branches are managed by their respective developers with granular commit l
 
 | Contributor identity | Branch | Local workspace | Status |
 | --- | --- | --- | --- |
-| Ada Chen | `workspace/ada-chen` | `E:\Git Lab's\kntonOS-ada-chen` | Active (TASK-KNT-021) |
+| Ada Chen | `workspace/ada-chen` | `E:\Git Lab's\kntonOS-ada-chen` | Active (TASK-KNT-024) |
 | Jules Martin | `workspace/jules-martin` | `E:\Git Lab's\kntonOS-jules-martin` | Active (TASK-KNT-022) |
-| Priya Nair | `workspace/priya-nair` | `E:\Git Lab's\kntonOS-priya-nair` | Active (TASK-KNT-023) |
+| Priya Nair | `workspace/priya-nair` | `E:\Git Lab's\kntonOS-priya-nair` | Active (TASK-KNT-025) |
 
 ## Task index
 
@@ -48,9 +48,11 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-021 | Domain Name System (DNS) Resolver & HTTP/1.1 Micro-Client | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-021-dns-http.md) |
 | TASK-KNT-022 | IPC Zero-Copy Shared Memory Rings & Fast Futex Synchronization | Claimed | TASK-KNT-011 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-022-ipc-futex.md) |
 | TASK-KNT-023 | USB 3.0 xHCI Enumeration & HID Keyboard/Mouse Input Pipeline | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-023-usb-hid.md) |
+| TASK-KNT-024 | DHCP IPv4 Lease Client & Network Auto-Configuration | Claimed | TASK-KNT-021 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-024-dhcp-client.md) |
+| TASK-KNT-025 | Desktop GUI Controls & Acrylic Backdrop Surface Renderer | Claimed | TASK-KNT-023 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-025-gui-controls.md) |
 
 ## Active reservations
 
-- `kernel/src/net/dns.rs`, `kernel/src/net/http.rs`: reserved by Ada Chen for TASK-KNT-021.
+- `kernel/src/net/dhcp.rs`: reserved by Ada Chen for TASK-KNT-024.
 - `kernel/src/ipc/`: reserved by Jules Martin for TASK-KNT-022.
-- `kernel/src/drivers/usb/`: reserved by Priya Nair for TASK-KNT-023.
+- `kernel/src/compositor/`: reserved by Priya Nair for TASK-KNT-025.
