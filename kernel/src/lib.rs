@@ -12,6 +12,7 @@ pub mod syscall;
 pub mod drivers;
 pub mod compositor;
 pub mod net;
+pub mod shell;
 
 pub use memory::ALLOCATOR;
 
@@ -121,6 +122,12 @@ pub extern "C" fn kmain() -> ! {
     compositor::init(320, 240);
     if !compositor::test_compositor_subsystem() {
         serial_write_str("[KNT-PANIC] Compositor subsystem self-test failed!\r\n");
+    }
+
+    // Initialize Interactive Virtual Terminal (VT) Shell & Key-Event Engine
+    shell::init(34, 9);
+    if !shell::test_shell_subsystem() {
+        serial_write_str("[KNT-PANIC] Shell subsystem self-test failed!\r\n");
     }
 
     // Spawn and execute initial Win32 PE64 userland process (/bin/init.exe)
