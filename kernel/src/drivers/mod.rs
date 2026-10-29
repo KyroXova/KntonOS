@@ -231,3 +231,7 @@ pub fn test_pci_subsystem() -> bool {
     serial_write_str("[KNT-PCI-TESTS-PASS] All PCI subsystem and xHCI controller checks passed\r\n");
     true
 }
+
+pub fn test_gpu_subsystem() -> bool {
+    gpu::test_virtio_gpu_subsystem()
+}

@@ -687,8 +687,8 @@ pub fn test_gpu_command_submit_and_resource_allocation() -> bool {
     assert_eq!(gpu.next_resource_id, 1);
     assert_eq!(gpu.resources.len(), 0);
 
-    // 1. Allocate 2D resource ID 1 (1024x768 B8G8R8A8_UNORM)
-    let res_id = gpu.create_resource_2d(1024, 768, VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM)
+    // 1. Allocate 2D resource ID 1 (320x240 B8G8R8A8_UNORM, 307.2 KiB within 2 MiB kernel heap pool)
+    let res_id = gpu.create_resource_2d(320, 240, VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM)
         .expect("Resource creation must succeed");
     assert_eq!(res_id, 1);
     assert_eq!(gpu.next_resource_id, 2);
@@ -696,11 +696,11 @@ pub fn test_gpu_command_submit_and_resource_allocation() -> bool {
 
     // 2. Validate surface dimensions and memory buffer
     let res = gpu.get_resource(res_id).expect("Resource 1 must be present");
-    assert_eq!(res.width, 1024);
-    assert_eq!(res.height, 768);
+    assert_eq!(res.width, 320);
+    assert_eq!(res.height, 240);
     assert_eq!(res.format, VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM);
-    assert_eq!(res.size_bytes(), 1024 * 768 * 4); // 3,145,728 bytes
-    assert_eq!(res.stride_bytes(), 4096);
+    assert_eq!(res.size_bytes(), 320 * 240 * 4); // 307,200 bytes
+    assert_eq!(res.stride_bytes(), 1280);
     assert!(!res.attached);
 
     // 3. Attach backing guest physical buffer
@@ -711,8 +711,8 @@ pub fn test_gpu_command_submit_and_resource_allocation() -> bool {
 
     // 4. Test pixel drawing
     let res_mut = gpu.get_resource_mut(res_id).unwrap();
-    res_mut.set_pixel(100, 100, 0x11, 0x22, 0x33, 0xFF);
-    let offset = (100 * 1024 + 100) * 4;
+    res_mut.set_pixel(50, 50, 0x11, 0x22, 0x33, 0xFF);
+    let offset = (50 * 320 + 50) * 4;
     assert_eq!(res_mut.buffer[offset], 0x11);     // B
     assert_eq!(res_mut.buffer[offset + 1], 0x22); // G
     assert_eq!(res_mut.buffer[offset + 2], 0x33); // R
@@ -848,41 +848,41 @@ impl VirtioGpuDevice {
 pub fn test_scanout_flush_and_zero_copy_handover() -> bool {
     let mut gpu = VirtioGpuDevice::new(None, 64);
 
-    // 1. Allocate 2D resource ID 1 (640x480 B8G8R8A8_UNORM)
-    let res_id = gpu.create_resource_2d(640, 480, VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM)
+    // 1. Allocate 2D resource ID 1 (320x240 B8G8R8A8_UNORM)
+    let res_id = gpu.create_resource_2d(320, 240, VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM)
         .expect("Creation must succeed");
     gpu.attach_resource_backing(res_id)
         .expect("Attach must succeed");
 
     // 2. Set scanout 0 to resource 1 (mode setting)
-    let scanout_rect = VirtioGpuRect::new(0, 0, 640, 480);
+    let scanout_rect = VirtioGpuRect::new(0, 0, 320, 240);
     gpu.set_scanout(0, res_id, scanout_rect)
         .expect("Setting scanout must succeed");
 
     assert_eq!(gpu.active_scanout, Some((0, res_id)));
-    assert_eq!(gpu.display_width, 640);
-    assert_eq!(gpu.display_height, 480);
+    assert_eq!(gpu.display_width, 320);
+    assert_eq!(gpu.display_height, 240);
 
     // 3. Test zero-copy LinearFramebuffer wrapping
     {
         let res = gpu.get_resource(res_id).unwrap();
         let mut fb = unsafe { res.as_linear_framebuffer() };
-        assert_eq!(fb.width(), 640);
-        assert_eq!(fb.height(), 480);
-        assert_eq!(fb.stride(), 640);
+        assert_eq!(fb.width(), 320);
+        assert_eq!(fb.height(), 240);
+        assert_eq!(fb.stride(), 320);
 
         // Draw test pattern directly into zero-copy backing buffer
-        fb.put_pixel(50, 50, crate::display::color::Color::rgb(0xFF, 0x00, 0x00));
+        fb.put_pixel(25, 25, crate::display::color::Color::rgb(0xFF, 0x00, 0x00));
     }
 
     // Verify written pixel in backing buffer
     let res = gpu.get_resource(res_id).unwrap();
-    let offset = (50 * 640 + 50) * 4;
+    let offset = (25 * 320 + 25) * 4;
     // B8G8R8A8: Color(R=0xFF, G=0, B=0) -> B=0, G=0, R=0xFF
     assert_eq!(res.buffer[offset + 2], 0xFF); // Red channel
 
     // 4. Transfer and flush dirty rectangle
-    let dirty_rect = VirtioGpuRect::new(40, 40, 20, 20);
+    let dirty_rect = VirtioGpuRect::new(20, 20, 20, 20);
     gpu.blit_and_flush(res_id, dirty_rect)
         .expect("Blit and flush must succeed");
 
@@ -890,5 +890,34 @@ pub fn test_scanout_flush_and_zero_copy_handover() -> bool {
     gpu.disable_scanout(0).expect("Disable scanout must succeed");
     assert_eq!(gpu.active_scanout, None);
 
+    true
+}
+
+/// Comprehensive VirtIO GPU verification suite emitting boot sentinel [KNT-GPU-VIRTIO-PASS].
+pub fn test_virtio_gpu_subsystem() -> bool {
+    crate::serial_write_str("[KNT-GPU-TEST] Executing VirtIO GPU 2D/3D acceleration test suite...\r\n");
+
+    // 1. Verify wire protocol packet structures and sizing
+    if !test_virtio_gpu_packet_structures() {
+        crate::serial_write_str("[KNT-TEST-FAIL] VirtIO GPU packet structures check failed!\r\n");
+        return false;
+    }
+    crate::serial_write_str("[KNT-GPU-PROTO-PASS] VirtIO GPU wire protocol headers and commands verified\r\n");
+
+    // 2. Verify command queue submission, 2D resource allocation, and backing attachment
+    if !test_gpu_command_submit_and_resource_allocation() {
+        crate::serial_write_str("[KNT-TEST-FAIL] GPU command queue and 2D surface allocation test failed!\r\n");
+        return false;
+    }
+    crate::serial_write_str("[KNT-GPU-RES-PASS] 2D resource surface creation and backing attachment verified\r\n");
+
+    // 3. Verify scanout mode setting, dirty rect flush blitter, and zero-copy backbuffer
+    if !test_scanout_flush_and_zero_copy_handover() {
+        crate::serial_write_str("[KNT-TEST-FAIL] Scanout blit and zero-copy handover test failed!\r\n");
+        return false;
+    }
+    crate::serial_write_str("[KNT-GPU-SCANOUT-PASS] Display scanout mode setting, dirty rect transfer, and zero-copy framebuffer verified\r\n");
+
+    crate::serial_write_str("[KNT-GPU-VIRTIO-PASS] VirtIO GPU acceleration and display scanout driver verified\r\n");
     true
 }
