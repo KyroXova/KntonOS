@@ -1,7 +1,7 @@
 //! Transmission Control Protocol (TCP, RFC 793) Header Parser and Builder.
 //!
 //! Implements RFC 793 20-byte standard TCP header layout, control flags (SYN, ACK, FIN, RST, PSH),
-//! data offset parsing, window size, and pseudo-header checksum calculation.
+//! data offset parsing, window size, pseudo-header checksum calculation, and connection state machine.
 
 use super::ipv4::compute_checksum;
 use alloc::vec::Vec;
@@ -146,4 +146,68 @@ pub fn compute_tcp_checksum(
     pseudo.extend_from_slice(tcp_segment);
 
     compute_checksum(&pseudo)
+}
+
+/// RFC 793 TCP Connection States.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TcpState {
+    Closed,
+    Listen,
+    SynSent,
+    SynReceived,
+    Established,
+    FinWait1,
+    FinWait2,
+    CloseWait,
+    Closing,
+    LastAck,
+    TimeWait,
+}
+
+/// Events driving TCP state machine transitions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TcpEvent {
+    PassiveOpen,
+    ActiveOpen,
+    SendSyn,
+    RecvSyn,
+    SendSynAck,
+    RecvSynAck,
+    RecvAck,
+    SendFin,
+    RecvFin,
+    Close,
+    Timeout,
+}
+
+impl TcpState {
+    /// Returns true if the TCP connection is fully established and capable of bidirectional data transfer.
+    pub fn is_established(&self) -> bool {
+        *self == TcpState::Established
+    }
+
+    /// Evaluates RFC 793 state transition table based on an incoming event.
+    pub fn transition(&mut self, event: TcpEvent) -> Result<(), TcpError> {
+        let next_state = match (*self, event) {
+            (TcpState::Closed, TcpEvent::PassiveOpen) => TcpState::Listen,
+            (TcpState::Closed, TcpEvent::ActiveOpen) => TcpState::SynSent,
+            (TcpState::Listen, TcpEvent::RecvSyn) => TcpState::SynReceived,
+            (TcpState::SynSent, TcpEvent::RecvSynAck) => TcpState::Established,
+            (TcpState::SynSent, TcpEvent::RecvSyn) => TcpState::SynReceived,
+            (TcpState::SynReceived, TcpEvent::RecvAck) => TcpState::Established,
+            (TcpState::Established, TcpEvent::Close) => TcpState::FinWait1,
+            (TcpState::Established, TcpEvent::RecvFin) => TcpState::CloseWait,
+            (TcpState::FinWait1, TcpEvent::RecvAck) => TcpState::FinWait2,
+            (TcpState::FinWait1, TcpEvent::RecvFin) => TcpState::Closing,
+            (TcpState::FinWait2, TcpEvent::RecvFin) => TcpState::TimeWait,
+            (TcpState::CloseWait, TcpEvent::Close) => TcpState::LastAck,
+            (TcpState::Closing, TcpEvent::RecvAck) => TcpState::TimeWait,
+            (TcpState::LastAck, TcpEvent::RecvAck) => TcpState::Closed,
+            (TcpState::TimeWait, TcpEvent::Timeout) => TcpState::Closed,
+            _ => return Err(TcpError::UnexpectedState),
+        };
+
+        *self = next_state;
+        Ok(())
+    }
 }
