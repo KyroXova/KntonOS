@@ -385,6 +385,89 @@ impl SignalDeliveryEngine {
     }
 }
 
+pub struct ProcessSignalState {
+    pub pid: u64,
+    pub dispositions: SignalDispositions,
+    pub pending_signals: u64,
+}
+
+pub struct SignalManager {
+    pub processes: alloc::collections::BTreeMap<u64, ProcessSignalState>,
+}
+
+impl SignalManager {
+    pub const fn new() -> Self {
+        Self {
+            processes: alloc::collections::BTreeMap::new(),
+        }
+    }
+
+    pub fn register_process(&mut self, pid: u64) {
+        if !self.processes.contains_key(&pid) {
+            self.processes.insert(
+                pid,
+                ProcessSignalState {
+                    pid,
+                    dispositions: SignalDispositions::new(),
+                    pending_signals: 0,
+                },
+            );
+        }
+    }
+
+    pub fn set_sigaction(&mut self, pid: u64, sig: usize, action: SigAction) -> Result<SigAction, SignalError> {
+        self.register_process(pid);
+        let state = self.processes.get_mut(&pid).ok_or(SignalError::ProcessNotFound)?;
+        state.dispositions.set(sig, action)
+    }
+
+    pub fn get_sigaction(&self, pid: u64, sig: usize) -> Result<SigAction, SignalError> {
+        if let Some(state) = self.processes.get(&pid) {
+            state.dispositions.get(sig)
+        } else {
+            if sig == 0 || sig >= NSIG {
+                return Err(SignalError::InvalidSignal);
+            }
+            Ok(SigAction::default())
+        }
+    }
+
+    pub fn send_signal(&mut self, pid: u64, sig: usize) -> Result<(), SignalError> {
+        if sig == 0 || sig >= NSIG {
+            return Err(SignalError::InvalidSignal);
+        }
+        self.register_process(pid);
+        let state = self.processes.get_mut(&pid).ok_or(SignalError::ProcessNotFound)?;
+        state.pending_signals |= 1u64 << sig;
+
+        // Wake target threads if in SCHEDULER
+        let mut sched_guard = crate::process::SCHEDULER.lock();
+        if let Some(ref mut sched) = *sched_guard {
+            if let Some(ref mut curr) = sched.current {
+                if curr.pid == pid || pid == 0 {
+                    curr.pending_signals |= 1u64 << sig;
+                }
+            }
+            for t in sched.blocked_threads.iter_mut() {
+                if t.pid == pid || pid == 0 {
+                    t.pending_signals |= 1u64 << sig;
+                }
+            }
+            for q in sched.runqueues.iter_mut() {
+                for t in q.iter_mut() {
+                    if t.pid == pid || pid == 0 {
+                        t.pending_signals |= 1u64 << sig;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+pub static SIGNAL_MANAGER: crate::memory::spinlock::Spinlock<SignalManager> =
+    crate::memory::spinlock::Spinlock::new(SignalManager::new());
+
 /// Verification unit test ensuring POSIX signal constants, masks, and unmaskable rules behave correctly.
 pub fn test_signal_definitions() -> bool {
     let mut mask = SigSet::empty();

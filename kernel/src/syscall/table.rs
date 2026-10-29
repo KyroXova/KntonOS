@@ -20,8 +20,17 @@ pub const NT_MAP_VIEW_OF_SECTION: u64 = 0x0028;
 pub const NT_TERMINATE_PROCESS: u64 = 0x002C;
 pub const NT_YIELD_EXECUTION: u64 = 0x0046;
 pub const NT_CREATE_SECTION: u64 = 0x004A;
+pub const NT_SIGACTION: u64 = 0x0050;
+pub const NT_KILL: u64 = 0x0051;
+pub const NT_SIGRETURN: u64 = 0x0052;
+pub const NT_SIGPROCMASK: u64 = 0x0053;
 pub const NT_WAIT_FOR_ALERT_BY_THREAD_ID: u64 = 0x0182;
 pub const NT_ALERT_THREAD_BY_THREAD_ID: u64 = 0x0183;
+
+pub const SYS_SIGACTION: u64 = NT_SIGACTION;
+pub const SYS_KILL: u64 = NT_KILL;
+pub const SYS_SIGRETURN: u64 = NT_SIGRETURN;
+pub const SYS_SIGPROCMASK: u64 = NT_SIGPROCMASK;
 
 static DISPATCH_COUNT: AtomicU64 = AtomicU64::new(0);
 
@@ -36,6 +45,10 @@ pub const fn syscall_name(id: u64) -> &'static str {
         NT_TERMINATE_PROCESS => "NtTerminateProcess",
         NT_YIELD_EXECUTION => "NtYieldExecution",
         NT_CREATE_SECTION => "NtCreateSection",
+        NT_SIGACTION => "NtSigAction",
+        NT_KILL => "NtKill",
+        NT_SIGRETURN => "NtSigReturn",
+        NT_SIGPROCMASK => "NtSigProcMask",
         NT_WAIT_FOR_ALERT_BY_THREAD_ID => "NtWaitForAlertByThreadId",
         NT_ALERT_THREAD_BY_THREAD_ID => "NtAlertThreadByThreadId",
         _ => "UnknownSyscall",
@@ -65,6 +78,10 @@ pub fn dispatch(id: u64, arg1: u64, arg2: u64, arg3: u64, arg4: u64) -> u32 {
         NT_YIELD_EXECUTION => handlers::sys_yield_execution(),
         NT_CREATE_SECTION => handlers::sys_create_section(arg1, arg2, arg3, arg4),
         NT_MAP_VIEW_OF_SECTION => handlers::sys_map_view_of_section(arg1, arg2, arg3, arg4),
+        NT_SIGACTION => handlers::sys_sigaction(arg1, arg2, arg3),
+        NT_KILL => handlers::sys_kill(arg1, arg2),
+        NT_SIGRETURN => handlers::sys_sigreturn(),
+        NT_SIGPROCMASK => handlers::sys_sigprocmask(arg1, arg2, arg3),
         NT_WAIT_FOR_ALERT_BY_THREAD_ID => {
             handlers::sys_wait_for_alert_by_thread_id(arg1, arg2, arg3, arg4)
         }

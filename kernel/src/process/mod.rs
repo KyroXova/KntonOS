@@ -14,6 +14,7 @@ pub use scheduler::{
 pub use signals::{
     signal_restorer_trampoline, test_signal_definitions, test_signal_delivery_engine,
     SigAction, SigContext, SigSet, SignalDeliveryEngine, SignalDispositions, SignalError,
+    SignalManager, SIGNAL_MANAGER,
     NSIG, SA_NOCLDSTOP, SA_NOCLDWAIT, SA_NODEFER, SA_ONSTACK, SA_RESETHAND, SA_RESTART,
     SA_RESTORER, SA_SIGINFO, SIGABRT, SIGALRM, SIGBUS, SIGCHLD, SIGCONT, SIGFPE, SIGHUP,
     SIGILL, SIGINT, SIGIO, SIGKILL, SIGPIPE, SIGPROF, SIGPWR, SIGQUIT, SIGSEGV, SIGSTOP,
