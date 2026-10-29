@@ -2,6 +2,7 @@ pub mod gdt;
 pub mod tss;
 pub mod idt;
 pub mod syscall;
+pub mod acpi;
 
 use crate::serial_write_str;
 
