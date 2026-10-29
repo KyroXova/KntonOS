@@ -217,6 +217,174 @@ impl SignalDispositions {
     }
 }
 
+use super::process::{ProcessControlBlock, ProcessState};
+use super::thread::{ThreadControlBlock, ThreadState};
+
+/// Userland trampoline that invokes sys_sigreturn upon handler completion.
+#[unsafe(naked)]
+pub unsafe extern "C" fn signal_restorer_trampoline() {
+    core::arch::naked_asm!(
+        "mov rax, 0x0052", // SYS_RT_SIGRETURN
+        "syscall",
+        "ud2",
+    );
+}
+
+pub struct SignalDeliveryEngine;
+
+impl SignalDeliveryEngine {
+    /// Queues a signal to be delivered to a thread.
+    pub fn queue_signal_thread(thread: &mut ThreadControlBlock, sig: usize) -> Result<(), SignalError> {
+        if sig == 0 || sig >= NSIG {
+            return Err(SignalError::InvalidSignal);
+        }
+        thread.pending_signals |= 1u64 << sig;
+        Ok(())
+    }
+
+    /// Queues a signal to be delivered to a process.
+    pub fn queue_signal_process(pcb: &mut ProcessControlBlock, sig: usize) -> Result<(), SignalError> {
+        if sig == 0 || sig >= NSIG {
+            return Err(SignalError::InvalidSignal);
+        }
+        pcb.pending_signals |= 1u64 << sig;
+        Ok(())
+    }
+
+    /// Checks and delivers any pending unmasked signal to the current thread.
+    /// Returns true if a signal handler was dispatched and user_ctx was redirected.
+    pub fn deliver_pending_signals(
+        thread: &mut ThreadControlBlock,
+        pcb: &mut ProcessControlBlock,
+        user_ctx: &mut SigContext,
+    ) -> bool {
+        // Collect pending signals not blocked by thread signal mask.
+        // SIGKILL and SIGSTOP cannot be blocked.
+        let unblockable = (1u64 << SIGKILL) | (1u64 << SIGSTOP);
+        let effective_mask = thread.signal_mask & !unblockable;
+        let combined_pending = (thread.pending_signals | pcb.pending_signals) & !effective_mask;
+
+        if combined_pending == 0 {
+            return false;
+        }
+
+        // Find lowest pending signal number (1..31)
+        let sig = combined_pending.trailing_zeros() as usize;
+        if sig == 0 || sig >= NSIG {
+            return false;
+        }
+
+        // Clear pending bit from both thread and process
+        thread.pending_signals &= !(1u64 << sig);
+        pcb.pending_signals &= !(1u64 << sig);
+
+        // Fetch disposition
+        let act = match pcb.signals.get(sig) {
+            Ok(a) => a,
+            Err(_) => return false,
+        };
+
+        // Handle default actions
+        if act.sa_handler == SIG_IGN {
+            return false;
+        }
+
+        if act.sa_handler == SIG_DFL {
+            if sig == SIGCHLD || sig == SIGURG || sig == SIGWINCH {
+                return false;
+            }
+            if sig == SIGSTOP || sig == SIGTSTP || sig == SIGTTIN || sig == SIGTTOU {
+                thread.state = ThreadState::Blocked;
+                return false;
+            }
+            // Fatal default signals terminate the process
+            crate::serial_write_str("[KNT-SIGNAL] Fatal default signal received (sig: ");
+            crate::serial_write_byte(b'0' + (sig as u8 % 10));
+            crate::serial_write_str("), terminating process\r\n");
+            pcb.state = ProcessState::Terminated;
+            thread.state = ThreadState::Terminated;
+            return false;
+        }
+
+        // Custom signal handler registered:
+        // 1. Construct SigContext with full CPU register state
+        let mut sigctx = *user_ctx;
+        sigctx.oldmask = thread.signal_mask;
+
+        // 2. Compute user stack frame location (reserve 128-byte red zone and align to 16 bytes)
+        let base_rsp = if user_ctx.rsp > 256 { user_ctx.rsp - 128 } else { user_ctx.rsp };
+        let ctx_size = core::mem::size_of::<SigContext>() as u64;
+        let sigctx_vaddr = (base_rsp - ctx_size) & !0x0F;
+
+        // Write to user stack if in user space range
+        if sigctx_vaddr >= 0x0000_0000_0001_0000 && sigctx_vaddr < 0x0000_7FFF_FFFF_0000 {
+            unsafe {
+                let dst = sigctx_vaddr as *mut SigContext;
+                *dst = sigctx;
+                let ret_slot = (sigctx_vaddr - 8) as *mut u64;
+                let restorer = if act.sa_restorer != 0 {
+                    act.sa_restorer
+                } else {
+                    signal_restorer_trampoline as *const () as usize as u64
+                };
+                *ret_slot = restorer;
+            }
+        }
+
+        // Save backup in TCB for reliable sigreturn restoration
+        thread.saved_sigcontext = Some(sigctx);
+
+        // 3. Update thread signal mask
+        thread.signal_mask |= act.sa_mask;
+        if (act.sa_flags & SA_NODEFER) == 0 {
+            thread.signal_mask |= 1u64 << sig;
+        }
+
+        if (act.sa_flags & SA_RESETHAND) != 0 {
+            let _ = pcb.signals.set(sig, SigAction::default());
+        }
+
+        // 4. Redirect user execution context to handler
+        user_ctx.rip = act.sa_handler;
+        user_ctx.rsp = sigctx_vaddr.saturating_sub(8);
+        user_ctx.rdi = sig as u64;
+        user_ctx.rsi = 0;
+        user_ctx.rdx = sigctx_vaddr;
+
+        true
+    }
+
+    /// Restores the interrupted userland execution context from SigContext (sys_sigreturn).
+    pub fn restore_sigcontext(
+        thread: &mut ThreadControlBlock,
+        user_ctx: &mut SigContext,
+        sigctx_ptr: Option<u64>,
+    ) -> Result<(), SignalError> {
+        let saved = if let Some(ptr) = sigctx_ptr {
+            if ptr != 0 && ptr >= 0x0000_0000_0001_0000 && ptr < 0x0000_7FFF_FFFF_0000 {
+                unsafe { *(ptr as *const SigContext) }
+            } else if let Some(saved) = thread.saved_sigcontext.take() {
+                saved
+            } else {
+                return Err(SignalError::ProcessNotFound);
+            }
+        } else if let Some(saved) = thread.saved_sigcontext.take() {
+            saved
+        } else {
+            return Err(SignalError::ProcessNotFound);
+        };
+
+        // Restore thread signal mask
+        thread.signal_mask = saved.oldmask;
+
+        // Restore full execution context
+        *user_ctx = saved;
+        thread.saved_sigcontext = None;
+
+        Ok(())
+    }
+}
+
 /// Verification unit test ensuring POSIX signal constants, masks, and unmaskable rules behave correctly.
 pub fn test_signal_definitions() -> bool {
     let mut mask = SigSet::empty();
@@ -263,6 +431,81 @@ pub fn test_signal_definitions() -> bool {
     // SIGKILL must not allow custom disposition
     assert_eq!(disp.set(SIGKILL, custom_action), Err(SignalError::UncatchableSignal));
     assert_eq!(disp.set(SIGSTOP, custom_action), Err(SignalError::UncatchableSignal));
+
+    true
+}
+
+/// Verification unit test ensuring signal delivery, stack frame construction, and context restoration.
+pub fn test_signal_delivery_engine() -> bool {
+    let mut pcb = ProcessControlBlock::new("sig_test", 0, None);
+    let mut thread = ThreadControlBlock::new_idle_thread(pcb.pid, "sig_thread");
+
+    // Configure SIGINT with custom handler and restorer
+    let custom_action = SigAction {
+        sa_handler: 0x0040_5000,
+        sa_mask: 1 << SIGQUIT,
+        sa_flags: 0,
+        sa_restorer: 0x0040_9000,
+    };
+    assert!(pcb.signals.set(SIGINT, custom_action).is_ok());
+
+    // Initial simulated userland context
+    let mut user_ctx = SigContext {
+        rip: 0x0040_0050,
+        rsp: 0x0000_7FFF_FFFF_0000,
+        rax: 0xCAFE_BABE,
+        rflags: 0x202,
+        ..Default::default()
+    };
+
+    // 1. Queue SIGINT
+    assert!(SignalDeliveryEngine::queue_signal_thread(&mut thread, SIGINT).is_ok());
+
+    // 2. Deliver pending signals
+    let delivered = SignalDeliveryEngine::deliver_pending_signals(&mut thread, &mut pcb, &mut user_ctx);
+    assert!(delivered);
+
+    // Verify user context was modified to enter handler
+    assert_eq!(user_ctx.rip, 0x0040_5000);
+    assert_eq!(user_ctx.rdi, SIGINT as u64);
+    assert!(user_ctx.rsp < 0x0000_7FFF_FFFF_0000);
+    // Verify SIGINT and sa_mask (SIGQUIT) are blocked
+    assert!((thread.signal_mask & (1 << SIGINT)) != 0);
+    assert!((thread.signal_mask & (1 << SIGQUIT)) != 0);
+    // Verify pending signal cleared
+    assert_eq!(thread.pending_signals & (1 << SIGINT), 0);
+
+    // 3. Restore context via sigreturn
+    assert!(SignalDeliveryEngine::restore_sigcontext(&mut thread, &mut user_ctx, None).is_ok());
+    assert_eq!(user_ctx.rip, 0x0040_0050);
+    assert_eq!(user_ctx.rax, 0xCAFE_BABE);
+    assert_eq!(user_ctx.rsp, 0x0000_7FFF_FFFF_0000);
+    assert_eq!(thread.signal_mask, 0);
+
+    // 4. Test signal mask blocking
+    // Block SIGUSR1
+    thread.signal_mask |= 1 << SIGUSR1;
+    let usr1_action = SigAction {
+        sa_handler: 0x0040_6000,
+        sa_mask: 0,
+        sa_flags: 0,
+        sa_restorer: 0,
+    };
+    assert!(pcb.signals.set(SIGUSR1, usr1_action).is_ok());
+    assert!(SignalDeliveryEngine::queue_signal_thread(&mut thread, SIGUSR1).is_ok());
+
+    // Should NOT deliver because SIGUSR1 is blocked
+    let blocked_delivered = SignalDeliveryEngine::deliver_pending_signals(&mut thread, &mut pcb, &mut user_ctx);
+    assert!(!blocked_delivered);
+    assert_eq!(user_ctx.rip, 0x0040_0050); // Unchanged
+    assert!((thread.pending_signals & (1 << SIGUSR1)) != 0); // Remains pending
+
+    // Unblock SIGUSR1 and verify delivery
+    thread.signal_mask &= !(1 << SIGUSR1);
+    let unblocked_delivered = SignalDeliveryEngine::deliver_pending_signals(&mut thread, &mut pcb, &mut user_ctx);
+    assert!(unblocked_delivered);
+    assert_eq!(user_ctx.rip, 0x0040_6000);
+    assert_eq!(user_ctx.rdi, SIGUSR1 as u64);
 
     true
 }

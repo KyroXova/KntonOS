@@ -12,7 +12,8 @@ pub use scheduler::{
     SCHEDULER,
 };
 pub use signals::{
-    test_signal_definitions, SigAction, SigContext, SigSet, SignalDispositions, SignalError,
+    signal_restorer_trampoline, test_signal_definitions, test_signal_delivery_engine,
+    SigAction, SigContext, SigSet, SignalDeliveryEngine, SignalDispositions, SignalError,
     NSIG, SA_NOCLDSTOP, SA_NOCLDWAIT, SA_NODEFER, SA_ONSTACK, SA_RESETHAND, SA_RESTART,
     SA_RESTORER, SA_SIGINFO, SIGABRT, SIGALRM, SIGBUS, SIGCHLD, SIGCONT, SIGFPE, SIGHUP,
     SIGILL, SIGINT, SIGIO, SIGKILL, SIGPIPE, SIGPROF, SIGPWR, SIGQUIT, SIGSEGV, SIGSTOP,
@@ -60,7 +61,8 @@ pub fn test_process_subsystem() -> bool {
 
     let passed = THREAD_A_EXECUTED.load(Ordering::SeqCst)
         && THREAD_B_EXECUTED.load(Ordering::SeqCst)
-        && test_signal_definitions();
+        && test_signal_definitions()
+        && test_signal_delivery_engine();
     if passed {
         serial_write_str("[KNT-PROC] Process & thread scheduler test: PASSED\r\n");
     } else {
