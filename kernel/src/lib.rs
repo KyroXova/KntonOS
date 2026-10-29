@@ -14,6 +14,7 @@ pub mod compositor;
 pub mod net;
 pub mod shell;
 pub mod ipc;
+pub mod loader;
 
 pub use memory::ALLOCATOR;
 
