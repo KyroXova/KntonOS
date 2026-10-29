@@ -6,8 +6,15 @@ pub mod acpi;
 pub mod apic;
 pub mod timer;
 pub mod smp;
+pub mod power;
 
 pub use smp::{test_smp_and_timer_subsystem, SMP};
+pub use power::{
+    test_fadt_parser_and_power_structures, FadtInfo, GenericAddressStructure, PowerError,
+    PowerState, SleepTypeConfig, DSDT_SIGNATURE, FADT_SIGNATURE, GAS_ADDR_SPACE_PCI_CFG,
+    GAS_ADDR_SPACE_SYS_IO, GAS_ADDR_SPACE_SYS_MEM, PM1_BM_RLD, PM1_GBL_RLS, PM1_SCI_EN,
+    PM1_SLP_EN, PM1_SLP_TYP_MASK, PORT_CF9_RESET, PORT_KBD_RESET,
+};
 
 use crate::serial_write_str;
 
