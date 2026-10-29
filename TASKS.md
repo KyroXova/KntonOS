@@ -18,7 +18,7 @@ These branches are managed by their respective developers with granular commit l
 | Contributor identity | Branch | Local workspace | Status |
 | --- | --- | --- | --- |
 | Ada Chen | `workspace/ada-chen` | `E:\Git Lab's\kntonOS-ada-chen` | Active (TASK-KNT-030) |
-| Jules Martin | `workspace/jules-martin` | `E:\Git Lab's\kntonOS-jules-martin` | Active (TASK-KNT-029) |
+| Jules Martin | `workspace/jules-martin` | `E:\Git Lab's\kntonOS-jules-martin` | Active (TASK-KNT-032) |
 | Priya Nair | `workspace/priya-nair` | `E:\Git Lab's\kntonOS-priya-nair` | Active (TASK-KNT-031) |
 
 ## Task index
@@ -56,9 +56,10 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-029 | POSIX Signal Handling & Process Exception Dispatch Engine | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-029-signals.md) |
 | TASK-KNT-030 | Embedded HTTP/1.1 Micro-Server & Kernel REST Telemetry API | Claimed | TASK-KNT-027 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-030-http-server.md) |
 | TASK-KNT-031 | FAT32 Persistent File System Driver & VirtIO Block Mount Integration | Claimed | TASK-KNT-013 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-031-fat32.md) |
+| TASK-KNT-032 | Dynamic Linker & Shared Library Loader with GOT/PLT Relocations | Claimed | TASK-KNT-026 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-032-dynlink.md) |
 
 ## Active reservations
 
 - `kernel/src/net/server.rs`: reserved by Ada Chen for TASK-KNT-030.
-- `kernel/src/process/signals.rs`: reserved by Jules Martin for TASK-KNT-029.
+- `kernel/src/loader/dynlink.rs`: reserved by Jules Martin for TASK-KNT-032.
 - `kernel/src/fs/fat32.rs`: reserved by Priya Nair for TASK-KNT-031.
