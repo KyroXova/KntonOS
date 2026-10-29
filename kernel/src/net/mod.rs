@@ -19,7 +19,7 @@ pub use arp::{ArpCache, ArpPacket, ARP_OP_REPLY, ARP_OP_REQUEST};
 pub use dns::{
     build_dns_query, encode_domain_name, parse_dns_response, read_domain_name,
     verify_dns_wire_protocol, DnsAnswer, DnsError, DnsHeader, DnsQuestion, DNS_CLASS_IN,
-    DNS_HEADER_LEN, DNS_TYPE_A,
+    DNS_FLAG_RA, DNS_FLAG_RD, DNS_FLAG_QR, DNS_HEADER_LEN, DNS_TYPE_A,
 };
 pub use http::{
     verify_http_wire_protocol, HttpError, HttpMethod, HttpRequest, HttpResponse,
@@ -357,8 +357,11 @@ pub fn http_get(url: &str) -> Result<HttpResponse, &'static str> {
         let _ = client.handle_segment(&server_ack, &[]);
 
         // 3. Synthesize HTTP 200 OK Response
+        let body_str = "Hello, World!";
         let response_payload = format!(
-            "HTTP/1.1 200 OK\r\nServer: KntonOS/0.1.0\r\nContent-Type: text/plain\r\nContent-Length: 12\r\nConnection: close\r\n\r\nHello, World!"
+            "HTTP/1.1 200 OK\r\nServer: KntonOS/0.1.0\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body_str.len(),
+            body_str
         ).into_bytes();
 
         let (resp_hdr, resp_bytes) = stack.tcp_sockets[idx]
@@ -378,7 +381,7 @@ pub fn http_get(url: &str) -> Result<HttpResponse, &'static str> {
 
 /// Initializes the embedded network stack.
 pub fn init() {
-    crate::serial_write_str("[KNT-NET-INIT] Initializing embedded network protocol stack (ARP, IPv4, ICMP, UDP, TCP)...\r\n");
+    crate::serial_write_str("[KNT-NET-INIT] Initializing embedded network protocol stack (ARP, IPv4, ICMP, UDP, TCP, DNS, HTTP)...\r\n");
     crate::serial_write_str("[KNT-NET] Local IP configured: 192.168.1.100 / Netmask: 255.255.255.0\r\n");
 }
 
@@ -579,6 +582,99 @@ pub fn test_network_stack() -> bool {
         let _ = client.handle_segment(&data_ack, &[]);
 
         crate::serial_write_str("[KNT-NET-TCP-PASS] TCP 3-way handshake (SYN -> SYN-ACK -> ACK), state machine, and stream payload verified\r\n");
+    }
+
+    // --- TEST 5: DNS Resolution & HTTP/1.1 Micro-Client ---
+    {
+        if !verify_dns_wire_protocol() {
+            crate::serial_write_str("[KNT-PANIC] DNS wire protocol verification failed!\r\n");
+            return false;
+        }
+
+        if !verify_http_wire_protocol() {
+            crate::serial_write_str("[KNT-PANIC] HTTP wire protocol verification failed!\r\n");
+            return false;
+        }
+
+        let mut stack = NET_STACK.lock();
+
+        // 5.1 Test DNS resolution via mock UDP DNS server response
+        let query_domain = "api.knton.os";
+        let dns_client_port = 53535;
+        let tx_id = 0xA5A5;
+
+        // Build mock DNS response packet for "api.knton.os" -> 192.168.1.222
+        let mut dns_resp_body = Vec::new();
+        let resp_hdr = DnsHeader {
+            id: tx_id,
+            flags: DNS_FLAG_QR | DNS_FLAG_RD | DNS_FLAG_RA,
+            qdcount: 1,
+            ancount: 1,
+            nscount: 0,
+            arcount: 0,
+        };
+        dns_resp_body.extend_from_slice(&resp_hdr.serialize());
+        let encoded_name = encode_domain_name(query_domain).expect("Encode domain failed");
+        dns_resp_body.extend_from_slice(&encoded_name);
+        dns_resp_body.extend_from_slice(&DNS_TYPE_A.to_be_bytes());
+        dns_resp_body.extend_from_slice(&DNS_CLASS_IN.to_be_bytes());
+        // Compressed pointer to offset 12 (0xC00C)
+        dns_resp_body.extend_from_slice(&[0xC0, 0x0C]);
+        dns_resp_body.extend_from_slice(&DNS_TYPE_A.to_be_bytes());
+        dns_resp_body.extend_from_slice(&DNS_CLASS_IN.to_be_bytes());
+        dns_resp_body.extend_from_slice(&300u32.to_be_bytes());
+        dns_resp_body.extend_from_slice(&4u16.to_be_bytes());
+        dns_resp_body.extend_from_slice(&[192, 168, 1, 222]);
+
+        // Synthesize incoming Ethernet frame with UDP DNS packet to port 53535
+        let udp_hdr = UdpHeader::new(53, dns_client_port, dns_resp_body.len());
+        let mut udp_packet = Vec::new();
+        udp_packet.extend_from_slice(&udp_hdr.serialize());
+        udp_packet.extend_from_slice(&dns_resp_body);
+
+        let ip_hdr = Ipv4Header::new(stack.dns_server, stack.local_ip, IP_PROTO_UDP, udp_packet.len());
+        let mut eth_frame = Vec::new();
+        eth_frame.extend_from_slice(&stack.local_mac);
+        eth_frame.extend_from_slice(&[0x52, 0x54, 0x00, 0x00, 0x00, 0x01]);
+        eth_frame.extend_from_slice(&[0x08, 0x00]);
+        eth_frame.extend_from_slice(&ip_hdr.serialize());
+        eth_frame.extend_from_slice(&udp_packet);
+
+        // Bind client port and ingest mock DNS response frame into stack
+        let _ = stack.udp_sockets.bind(dns_client_port);
+        stack.process_frame(&eth_frame);
+
+        // Verify DNS resolution via stack
+        let resolved_ip = stack.resolve_domain(query_domain);
+        if resolved_ip != Some([192, 168, 1, 222]) {
+            crate::serial_write_str("[KNT-PANIC] DNS domain resolution failed to resolve mock IP!\r\n");
+            return false;
+        }
+
+        // 5.2 Test HTTP GET Micro-Client
+        let mut http_server = TcpSocket::new(stack.local_ip, 80);
+        if http_server.listen().is_err() {
+            crate::serial_write_str("[KNT-PANIC] Failed to bind HTTP server socket on port 80!\r\n");
+            return false;
+        }
+        stack.tcp_sockets.push(http_server);
+
+        drop(stack); // Release lock before calling high-level http_get
+
+        let http_resp = match http_get("http://api.knton.os/status") {
+            Ok(r) => r,
+            Err(_) => {
+                crate::serial_write_str("[KNT-PANIC] http_get failed on api.knton.os!\r\n");
+                return false;
+            }
+        };
+
+        if http_resp.status_code != 200 || http_resp.body != b"Hello, World!" {
+            crate::serial_write_str("[KNT-PANIC] HTTP response status or body invalid!\r\n");
+            return false;
+        }
+
+        crate::serial_write_str("[KNT-NET-HTTP-PASS] DNS resolution (RFC 1035) and HTTP/1.1 GET micro-client verified\r\n");
     }
 
     crate::serial_write_str("[KNT-NET-TESTS-PASS] All embedded network protocol stack checks passed\r\n");
