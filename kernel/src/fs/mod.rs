@@ -27,7 +27,10 @@ pub use acl::{
     AccessControlEntry, AccessControlList, AceType, FileAccessMask, FilePermissions,
     ModePermissions, SecurityIdentifier,
 };
-pub use cache::InodeCacheEntry;
+pub use cache::{
+    ByteRangeLock, InodeCacheEntry, InodeCacheStats, InodeLockManager, InodeLockType,
+    InodeLookupCache, INODE_CACHE, INODE_CACHE_CAPACITY, INODE_LOCK_MGR,
+};
 
 use crate::memory::spinlock::Spinlock;
 use crate::serial_write_str;
