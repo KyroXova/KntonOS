@@ -203,6 +203,12 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Audio subsystem self-test failed!\r\n");
     }
 
+    // Initialize and verify Hardware RNG & ChaCha20 Cryptographic Entropy Pool
+    crypto::init_kernel_rng();
+    if !crypto::test_crypto_rng_subsystem() {
+        serial_write_str("[KNT-PANIC] Hardware RNG and ChaCha20 CSPRNG self-test failed!\r\n");
+    }
+
     // Initialize and verify ELF64 Executable Loader Subsystem
     loader::init();
     if !loader::test_loader_subsystem() {

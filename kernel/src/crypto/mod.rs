@@ -42,3 +42,66 @@ pub fn verify_crypto_primitives() -> bool {
         && verify_entropy_extractor()
         && verify_chacha20_csprng()
 }
+
+/// Comprehensive verification of the hardware entropy extractor and ChaCha20 CSPRNG.
+///
+/// Tests CPUID detection, RDRAND/RDSEED/RDTSC extraction, RFC 7539 test vectors,
+/// ChaCha20 20-round keystream generation, monobit statistical balance,
+/// byte frequency distribution, and non-repeating sequence uniqueness.
+pub fn test_crypto_rng_subsystem() -> bool {
+    // 1. Verify underlying cryptographic primitives and RFC vectors
+    if !verify_crypto_primitives() {
+        return false;
+    }
+
+    // 2. Statistical Monobit (Frequency) Test across 1024 bytes (8192 bits)
+    let mut random_sample = [0u8; 1024];
+    get_random_bytes(&mut random_sample);
+
+    let mut ones_count: u32 = 0;
+    for &byte in &random_sample {
+        ones_count += byte.count_ones();
+    }
+
+    // Expected ones for 8192 random bits: ~4096. Range 3700..=4500 (45.1% - 54.9%)
+    if ones_count < 3700 || ones_count > 4500 {
+        return false;
+    }
+
+    // 3. Byte Value Diversity / Frequency Distribution Test
+    let mut seen = [false; 256];
+    let mut unique_bytes = 0;
+    for &byte in &random_sample {
+        if !seen[byte as usize] {
+            seen[byte as usize] = true;
+            unique_bytes += 1;
+        }
+    }
+    // Across 1024 random samples with replacement from 256 items,
+    // expected unique count is ~251. We require >= 200 distinct values.
+    if unique_bytes < 200 {
+        return false;
+    }
+
+    // 4. Non-Repeating Random Sequence Verification
+    let mut seq = [0u64; 8];
+    for i in 0..8 {
+        seq[i] = get_random_u64();
+        if seq[i] == 0 {
+            return false;
+        }
+    }
+    // Verify all 8 samples are pairwise unique
+    for i in 0..8 {
+        for j in (i + 1)..8 {
+            if seq[i] == seq[j] {
+                return false;
+            }
+        }
+    }
+
+    // 5. Output boot sentinel verification
+    crate::serial_write_str("[KNT-CRYPTO-RNG-PASS] Hardware entropy and ChaCha20 CSPRNG verified\r\n");
+
+    true
+}
