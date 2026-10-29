@@ -9,6 +9,7 @@
 pub mod types;
 pub mod pipeline;
 pub mod rasterizer;
+pub mod cube_test;
 
 pub use types::{
     cos_f32, sin_f32, sqrt_f32, tan_f32, test_3d_math_and_structures, Color4, Mat4, Triangle3D,
@@ -23,3 +24,5 @@ pub use pipeline::{
 pub use rasterizer::{
     test_rasterizer_and_depth_buffering, DepthBuffer, Rasterizer3D, ShadingMode,
 };
+
+pub use cube_test::{generate_cube_mesh, test_graphics_subsystem};

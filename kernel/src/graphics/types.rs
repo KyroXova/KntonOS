@@ -25,7 +25,7 @@ pub fn sqrt_f32(x: f32) -> f32 {
     guess
 }
 
-/// Computes sine in radians using range reduction and 7th-order Taylor polynomial.
+/// Computes sine in radians using range reduction and 9th-order Taylor polynomial.
 pub fn sin_f32(mut rad: f32) -> f32 {
     // Range reduction to [-PI, PI]
     while rad > PI {
@@ -35,13 +35,21 @@ pub fn sin_f32(mut rad: f32) -> f32 {
         rad += TWO_PI;
     }
 
+    // Reduce to [-PI/2, PI/2] via sine symmetry
+    if rad > HALF_PI {
+        rad = PI - rad;
+    } else if rad < -HALF_PI {
+        rad = -PI - rad;
+    }
+
     let x = rad;
     let x2 = x * x;
     let x3 = x * x2;
     let x5 = x3 * x2;
     let x7 = x5 * x2;
+    let x9 = x7 * x2;
 
-    x - (x3 / 6.0) + (x5 / 120.0) - (x7 / 5040.0)
+    x - (x3 / 6.0) + (x5 / 120.0) - (x7 / 5040.0) + (x9 / 362880.0)
 }
 
 /// Computes cosine in radians using identity cos(x) = sin(x + PI/2).

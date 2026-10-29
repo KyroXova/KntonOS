@@ -181,6 +181,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] VirtIO GPU subsystem self-test failed!\r\n");
     }
 
+    // Initialize and verify Software 3D Graphics Pipeline & Barycentric Triangle Rasterizer
+    if !graphics::test_graphics_subsystem() {
+        serial_write_str("[KNT-PANIC] Software 3D graphics subsystem self-test failed!\r\n");
+    }
+
     // Initialize Embedded Network Protocol Stack (ARP, IPv4, ICMP, UDP, TCP)
     net::init();
     if !net::test_network_stack() {

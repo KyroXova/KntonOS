@@ -174,11 +174,11 @@ pub fn clip_triangle_near_plane(tri: &Triangle3D, near_plane: f32, out: &mut Vec
     }
 }
 
-/// Tests whether a triangle in 2D screen coordinates is front-facing (counter-clockwise winding).
+/// Tests whether a triangle in 2D screen coordinates is front-facing (counter-clockwise winding in screen space with inverted Y).
 #[inline(always)]
 pub fn is_front_facing_screen(p0: Vec3, p1: Vec3, p2: Vec3) -> bool {
     let cross = (p1.x - p0.x) * (p2.y - p0.y) - (p1.y - p0.y) * (p2.x - p0.x);
-    cross > 0.0
+    cross < 0.0
 }
 
 /// Central 3D Transformation Pipeline.
