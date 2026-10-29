@@ -6,6 +6,7 @@ pub mod arch;
 pub mod memory;
 pub mod display;
 pub mod pe;
+pub mod fs;
 
 pub use memory::ALLOCATOR;
 
