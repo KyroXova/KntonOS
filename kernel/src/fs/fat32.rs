@@ -2,10 +2,13 @@
 //!
 //! Implements Microsoft FAT32 specification volume geometry, BIOS Parameter Block (BPB)
 //! parsing, cluster-to-sector address resolution, cluster chain traversal,
-//! and free cluster allocation.
+//! free cluster allocation, 32-byte directory entry parsing, and VFS Inode/FileSystem integration.
 
+use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
-use crate::fs::vfs::FsError;
+use crate::fs::inode::{DirEntry, Inode};
+use crate::fs::vfs::{FilePerms, FileType, FileSystem, FsError, VfsMetadata};
 
 /// Standard FAT boot sector signature (0x55, 0xAA at offsets 510..511).
 pub const FAT_BOOT_SIGNATURE: u16 = 0xAA55;
@@ -30,6 +33,27 @@ pub const FAT32_CLUSTER_EOC: u32 = 0x0FFF_FFFF;
 
 /// Bitmask to clear the reserved top 4 bits in FAT32 table entries.
 pub const FAT32_ENTRY_MASK: u32 = 0x0FFF_FFFF;
+
+/// Directory attribute: Read-only file.
+pub const ATTR_READ_ONLY: u8 = 0x01;
+
+/// Directory attribute: Hidden file.
+pub const ATTR_HIDDEN: u8 = 0x02;
+
+/// Directory attribute: Operating system file.
+pub const ATTR_SYSTEM: u8 = 0x04;
+
+/// Directory attribute: Volume label marker.
+pub const ATTR_VOLUME_ID: u8 = 0x08;
+
+/// Directory attribute: Subdirectory.
+pub const ATTR_DIRECTORY: u8 = 0x10;
+
+/// Directory attribute: Archive / modified.
+pub const ATTR_ARCHIVE: u8 = 0x20;
+
+/// Directory attribute combination for Long File Name (LFN) entries.
+pub const ATTR_LONG_NAME: u8 = 0x0F;
 
 /// Abstract interface for a block storage device capable of 512-byte sector I/O.
 pub trait BlockDevice: Send + Sync {
@@ -376,7 +400,6 @@ pub fn traverse_cluster_chain<D: BlockDevice + ?Sized>(
 
     while curr >= 2 && !is_end_of_chain(curr) && !is_bad_cluster(curr) {
         if chain.len() as u64 >= max_clusters || chain.contains(&curr) {
-            // Cycle detected or chain length exceeded volume capacity
             return Err(FsError::CorruptArchive);
         }
         chain.push(curr);
@@ -482,4 +505,359 @@ pub fn free_cluster_chain<D: BlockDevice + ?Sized>(
         write_fat_entry(bpb, device, cluster, FAT32_CLUSTER_FREE)?;
     }
     Ok(())
+}
+
+/// Decodes an 11-byte short 8.3 filename into a clean UTF-8 string.
+pub fn format_8_3_name(raw: &[u8; 11]) -> String {
+    if raw == b".          " {
+        return String::from(".");
+    }
+    if raw == b"..         " {
+        return String::from("..");
+    }
+
+    let name_part = &raw[0..8];
+    let ext_part = &raw[8..11];
+
+    let name_len = name_part.iter().rposition(|&b| b != b' ').map(|p| p + 1).unwrap_or(0);
+    let ext_len = ext_part.iter().rposition(|&b| b != b' ').map(|p| p + 1).unwrap_or(0);
+
+    let mut result = String::new();
+    for &b in &name_part[..name_len] {
+        result.push((b as char).to_ascii_lowercase());
+    }
+
+    if ext_len > 0 {
+        result.push('.');
+        for &b in &ext_part[..ext_len] {
+            result.push((b as char).to_ascii_lowercase());
+        }
+    }
+
+    result
+}
+
+/// Encodes a standard filename into an 11-byte short 8.3 representation.
+pub fn encode_8_3_name(name: &str) -> [u8; 11] {
+    let mut out = [b' '; 11];
+    if name == "." {
+        out[0] = b'.';
+        return out;
+    }
+    if name == ".." {
+        out[0] = b'.';
+        out[1] = b'.';
+        return out;
+    }
+
+    let parts: Vec<&str> = name.split('.').collect();
+    let base = parts[0];
+    let ext = if parts.len() > 1 { parts[1] } else { "" };
+
+    let base_bytes = base.as_bytes();
+    let base_len = core::cmp::min(base_bytes.len(), 8);
+    for i in 0..base_len {
+        out[i] = base_bytes[i].to_ascii_uppercase();
+    }
+
+    let ext_bytes = ext.as_bytes();
+    let ext_len = core::cmp::min(ext_bytes.len(), 3);
+    for i in 0..ext_len {
+        out[8 + i] = ext_bytes[i].to_ascii_uppercase();
+    }
+
+    out
+}
+
+/// 32-byte FAT directory entry.
+#[derive(Debug, Clone)]
+pub struct Fat32DirEntry {
+    pub name: String,
+    pub raw_name: [u8; 11],
+    pub attributes: u8,
+    pub first_cluster: u32,
+    pub file_size: u32,
+}
+
+impl Fat32DirEntry {
+    /// Parse a 32-byte directory entry record.
+    pub fn parse(raw: &[u8]) -> Result<Option<Self>, FsError> {
+        if raw.len() < 32 {
+            return Err(FsError::InvalidArgument);
+        }
+        // 0x00 indicates end of directory entries
+        if raw[0] == 0x00 {
+            return Ok(None);
+        }
+        // 0xE5 indicates free/deleted entry
+        if raw[0] == 0xE5 {
+            return Ok(None);
+        }
+        let attributes = raw[11];
+        // Skip Long File Name (LFN) entries and Volume ID entries
+        if attributes == ATTR_LONG_NAME || (attributes & ATTR_VOLUME_ID != 0) {
+            return Ok(None);
+        }
+
+        let mut raw_name = [0u8; 11];
+        raw_name.copy_from_slice(&raw[0..11]);
+        let name = format_8_3_name(&raw_name);
+
+        let first_cluster_hi = u16::from_le_bytes([raw[20], raw[21]]);
+        let first_cluster_lo = u16::from_le_bytes([raw[26], raw[27]]);
+        let first_cluster = ((first_cluster_hi as u32) << 16) | (first_cluster_lo as u32);
+        let file_size = u32::from_le_bytes([raw[28], raw[29], raw[30], raw[31]]);
+
+        Ok(Some(Self {
+            name,
+            raw_name,
+            attributes,
+            first_cluster,
+            file_size,
+        }))
+    }
+
+    /// Serializes this directory entry into a 32-byte binary record.
+    pub fn serialize(&self) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        out[0..11].copy_from_slice(&self.raw_name);
+        out[11] = self.attributes;
+        let hi = (self.first_cluster >> 16) as u16;
+        let lo = (self.first_cluster & 0xFFFF) as u16;
+        out[20..22].copy_from_slice(&hi.to_le_bytes());
+        out[26..28].copy_from_slice(&lo.to_le_bytes());
+        out[28..32].copy_from_slice(&self.file_size.to_le_bytes());
+        out
+    }
+
+    pub fn is_directory(&self) -> bool {
+        self.attributes & ATTR_DIRECTORY != 0
+    }
+
+    pub fn is_readonly(&self) -> bool {
+        self.attributes & ATTR_READ_ONLY != 0
+    }
+}
+
+/// Concrete Inode representation for FAT32 files and directories.
+pub struct Fat32Inode {
+    pub bpb: BiosParameterBlock32,
+    pub device: Arc<dyn BlockDevice>,
+    pub name: String,
+    pub inode_id: u64,
+    pub file_type: FileType,
+    pub file_size: u64,
+    pub first_cluster: u32,
+    pub is_readonly: bool,
+}
+
+impl Fat32Inode {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    fn read_dir_entries(&self) -> Result<Vec<Fat32DirEntry>, FsError> {
+        let raw_data = read_cluster_chain_data(&self.bpb, self.device.as_ref(), self.first_cluster)?;
+        let mut entries = Vec::new();
+
+        for chunk in raw_data.chunks_exact(32) {
+            if chunk[0] == 0x00 {
+                break;
+            }
+            if let Some(entry) = Fat32DirEntry::parse(chunk)? {
+                entries.push(entry);
+            }
+        }
+
+        Ok(entries)
+    }
+}
+
+impl Inode for Fat32Inode {
+    fn metadata(&self) -> VfsMetadata {
+        VfsMetadata {
+            file_type: self.file_type,
+            size: self.file_size,
+            permissions: if self.is_readonly {
+                FilePerms::readonly()
+            } else {
+                FilePerms::rwx()
+            },
+            inode_id: self.inode_id,
+        }
+    }
+
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize, FsError> {
+        if self.file_type == FileType::Directory {
+            return Err(FsError::IsADirectory);
+        }
+        if offset >= self.file_size || self.file_size == 0 || self.first_cluster < 2 {
+            return Ok(0);
+        }
+        let data = read_cluster_chain_data(&self.bpb, self.device.as_ref(), self.first_cluster)?;
+        let offset = offset as usize;
+        if offset >= data.len() {
+            return Ok(0);
+        }
+        let available = (self.file_size as usize).saturating_sub(offset);
+        let to_read = core::cmp::min(available, buf.len());
+        let actual_read = core::cmp::min(to_read, data.len().saturating_sub(offset));
+        buf[..actual_read].copy_from_slice(&data[offset..offset + actual_read]);
+        Ok(actual_read)
+    }
+
+    fn write_at(&self, offset: u64, buf: &[u8]) -> Result<usize, FsError> {
+        if self.file_type == FileType::Directory {
+            return Err(FsError::IsADirectory);
+        }
+        if self.is_readonly {
+            return Err(FsError::PermissionDenied);
+        }
+        if self.first_cluster < 2 || buf.is_empty() {
+            return Ok(0);
+        }
+
+        let chain = traverse_cluster_chain(&self.bpb, self.device.as_ref(), self.first_cluster)?;
+        let cluster_size = self.bpb.bytes_per_cluster() as usize;
+        let sec_size = self.bpb.bytes_per_sector as usize;
+
+        let mut bytes_written = 0;
+        for (i, &cluster) in chain.iter().enumerate() {
+            let cluster_start = i * cluster_size;
+            let cluster_end = cluster_start + cluster_size;
+
+            if (offset as usize) < cluster_end && (offset as usize) + buf.len() > cluster_start {
+                let start_sec = self.bpb.cluster_to_sector(cluster)?;
+                for s in 0..(self.bpb.sectors_per_cluster as u64) {
+                    let sec_start = cluster_start + (s as usize) * sec_size;
+                    let sec_end = sec_start + sec_size;
+
+                    let write_start = (offset as usize).max(sec_start);
+                    let write_end = ((offset as usize) + buf.len()).min(sec_end);
+
+                    if write_start < write_end {
+                        let mut sec_buf = [0u8; FAT32_SECTOR_SIZE];
+                        self.device.read_sector(start_sec + s, &mut sec_buf)?;
+
+                        let buf_offset = write_start - (offset as usize);
+                        let sec_offset = write_start - sec_start;
+                        let chunk_len = write_end - write_start;
+
+                        sec_buf[sec_offset..sec_offset + chunk_len]
+                            .copy_from_slice(&buf[buf_offset..buf_offset + chunk_len]);
+                        self.device.write_sector(start_sec + s, &sec_buf)?;
+                        bytes_written += chunk_len;
+                    }
+                }
+            }
+        }
+        Ok(bytes_written)
+    }
+
+    fn lookup(&self, name: &str) -> Result<Arc<dyn Inode>, FsError> {
+        if self.file_type != FileType::Directory {
+            return Err(FsError::NotADirectory);
+        }
+
+        let entries = self.read_dir_entries()?;
+        for entry in entries {
+            if entry.name.eq_ignore_ascii_case(name) {
+                let file_type = if entry.is_directory() {
+                    FileType::Directory
+                } else {
+                    FileType::File
+                };
+                let is_readonly = entry.is_readonly();
+                let inode_id = if entry.first_cluster != 0 {
+                    entry.first_cluster as u64
+                } else {
+                    0x10000
+                };
+                return Ok(Arc::new(Fat32Inode {
+                    bpb: self.bpb,
+                    device: Arc::clone(&self.device),
+                    name: entry.name,
+                    inode_id,
+                    file_type,
+                    file_size: entry.file_size as u64,
+                    first_cluster: entry.first_cluster,
+                    is_readonly,
+                }));
+            }
+        }
+
+        Err(FsError::NotFound)
+    }
+
+    fn readdir(&self) -> Result<Vec<DirEntry>, FsError> {
+        if self.file_type != FileType::Directory {
+            return Err(FsError::NotADirectory);
+        }
+
+        let entries = self.read_dir_entries()?;
+        let mut list = Vec::new();
+        for entry in entries {
+            if entry.name == "." || entry.name == ".." {
+                continue;
+            }
+            let file_type = if entry.is_directory() {
+                FileType::Directory
+            } else {
+                FileType::File
+            };
+            list.push(DirEntry {
+                name: entry.name,
+                inode_id: if entry.first_cluster != 0 {
+                    entry.first_cluster as u64
+                } else {
+                    0x10000
+                },
+                file_type,
+            });
+        }
+
+        Ok(list)
+    }
+}
+
+/// FAT32 Filesystem instance implementing the VFS `FileSystem` trait.
+pub struct Fat32FileSystem {
+    bpb: BiosParameterBlock32,
+    device: Arc<dyn BlockDevice>,
+}
+
+impl Fat32FileSystem {
+    /// Mount a FAT32 filesystem from a block storage device.
+    pub fn new(device: Arc<dyn BlockDevice>) -> Result<Self, FsError> {
+        let mut boot_sector = [0u8; FAT32_SECTOR_SIZE];
+        device.read_sector(0, &mut boot_sector)?;
+        let bpb = BiosParameterBlock32::parse(&boot_sector)?;
+        Ok(Self { bpb, device })
+    }
+
+    pub fn bpb(&self) -> &BiosParameterBlock32 {
+        &self.bpb
+    }
+
+    pub fn device(&self) -> &Arc<dyn BlockDevice> {
+        &self.device
+    }
+}
+
+impl FileSystem for Fat32FileSystem {
+    fn name(&self) -> &'static str {
+        "fat32"
+    }
+
+    fn root(&self) -> Result<Arc<dyn Inode>, FsError> {
+        Ok(Arc::new(Fat32Inode {
+            bpb: self.bpb,
+            device: Arc::clone(&self.device),
+            name: String::from("/"),
+            inode_id: self.bpb.root_cluster as u64,
+            file_type: FileType::Directory,
+            file_size: 0,
+            first_cluster: self.bpb.root_cluster,
+            is_readonly: false,
+        }))
+    }
 }
