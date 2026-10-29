@@ -7,6 +7,7 @@ pub mod memory;
 pub mod display;
 pub mod pe;
 pub mod fs;
+pub mod syscall;
 
 pub use memory::ALLOCATOR;
 
@@ -86,6 +87,12 @@ pub extern "C" fn kmain() -> ! {
     fs::init();
     if !fs::test_vfs_subsystem() {
         serial_write_str("[KNT-PANIC] VFS subsystem self-test failed!\r\n");
+    }
+
+    // Initialize Userland Syscall Dispatch Engine
+    syscall::init();
+    if !syscall::test_syscall_subsystem() {
+        serial_write_str("[KNT-PANIC] Syscall subsystem self-test failed!\r\n");
     }
 
     serial_write_str("[KNT-SUBSYSTEM] Display & Win32 PE64 loader modules active\r\n");
