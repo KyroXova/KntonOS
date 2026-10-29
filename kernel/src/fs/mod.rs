@@ -35,10 +35,64 @@ pub use cache::{
 use crate::memory::spinlock::Spinlock;
 use crate::serial_write_str;
 
+/// Security context attached to a VFS file or directory path.
+#[derive(Clone, Debug)]
+pub struct VfsSecurityContext {
+    pub owner: SecurityIdentifier,
+    pub permissions: FilePermissions,
+    pub acl: Option<AccessControlList>,
+}
+
+/// Inode representation of an in-memory dynamic VFS file.
+pub struct DynamicFileInode {
+    pub name: alloc::string::String,
+    pub size: u64,
+    pub permissions: FilePerms,
+    pub inode_id: u64,
+    pub data: Vec<u8>,
+}
+
+impl Inode for DynamicFileInode {
+    fn metadata(&self) -> VfsMetadata {
+        VfsMetadata {
+            file_type: FileType::File,
+            size: self.size,
+            permissions: self.permissions,
+            inode_id: self.inode_id,
+        }
+    }
+
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize, FsError> {
+        if offset >= self.size {
+            return Ok(0);
+        }
+        let start = offset as usize;
+        if start >= self.data.len() {
+            return Ok(0);
+        }
+        let to_read = core::cmp::min(buf.len(), self.data.len() - start);
+        buf[..to_read].copy_from_slice(&self.data[start..start + to_read]);
+        Ok(to_read)
+    }
+
+    fn write_at(&self, _offset: u64, _buf: &[u8]) -> Result<usize, FsError> {
+        Err(FsError::NotSupported)
+    }
+
+    fn lookup(&self, _name: &str) -> Result<Arc<dyn Inode>, FsError> {
+        Err(FsError::NotADirectory)
+    }
+
+    fn readdir(&self) -> Result<Vec<DirEntry>, FsError> {
+        Err(FsError::NotADirectory)
+    }
+}
+
 pub struct VfsManager {
     root_fs: Option<Arc<dyn FileSystem>>,
     mounts: alloc::collections::BTreeMap<alloc::string::String, Arc<dyn FileSystem>>,
     dynamic_files: alloc::collections::BTreeMap<alloc::string::String, Vec<u8>>,
+    security: alloc::collections::BTreeMap<alloc::string::String, VfsSecurityContext>,
 }
 
 impl VfsManager {
@@ -47,6 +101,7 @@ impl VfsManager {
             root_fs: None,
             mounts: alloc::collections::BTreeMap::new(),
             dynamic_files: alloc::collections::BTreeMap::new(),
+            security: alloc::collections::BTreeMap::new(),
         }
     }
 
@@ -59,16 +114,24 @@ impl VfsManager {
         self.mounts.insert(alloc::string::String::from(name), fs);
     }
 
-    pub fn write_file(&mut self, path: &str, data: &[u8]) {
-        self.dynamic_files.insert(alloc::string::String::from(path), data.to_vec());
-    }
+    /// Internal path resolver that traverses mounts and roots to find an Inode.
+    fn resolve_path(&self, path: &str) -> Result<Arc<dyn Inode>, FsError> {
+        if let Some(data) = self.dynamic_files.get(path) {
+            let inode_id = 0x8000_0000_0000_0000u64 | (path.len() as u64);
+            let perms = if let Some(sec) = self.security.get(path) {
+                sec.permissions.to_file_perms()
+            } else {
+                FilePerms::rwx()
+            };
+            return Ok(Arc::new(DynamicFileInode {
+                name: alloc::string::String::from(path),
+                size: data.len() as u64,
+                permissions: perms,
+                inode_id,
+                data: data.clone(),
+            }));
+        }
 
-    pub fn append_file(&mut self, path: &str, data: &[u8]) {
-        let entry = self.dynamic_files.entry(alloc::string::String::from(path)).or_insert_with(Vec::new);
-        entry.extend_from_slice(data);
-    }
-
-    pub fn open(&self, path: &str) -> Result<Arc<dyn Inode>, FsError> {
         let segments = Path::parse_segments(path)?;
 
         if let Some(&first_seg) = segments.first() {
@@ -92,20 +155,262 @@ impl VfsManager {
         Ok(curr)
     }
 
-    pub fn read_file(&self, path: &str) -> Result<Vec<u8>, FsError> {
-        if let Some(data) = self.dynamic_files.get(path) {
-            return Ok(data.clone());
+    /// Opens an Inode with ACL and POSIX permission validation.
+    pub fn open_with_perm(
+        &self,
+        path: &str,
+        subject: &SecurityIdentifier,
+        mask: FileAccessMask,
+    ) -> Result<Arc<dyn Inode>, FsError> {
+        // 1. Check Inode Cache first
+        if let Some(cached) = INODE_CACHE.lock().get_by_path(path) {
+            let allowed = if let Some(acl) = &cached.acl {
+                acl.check_access(subject, mask)
+            } else {
+                cached.permissions.check_permission(&cached.owner, subject, mask)
+            };
+
+            if !allowed {
+                return Err(FsError::PermissionDenied);
+            }
+            return Ok(cached.inode);
         }
-        let inode = self.open(path)?;
+
+        // 2. Cache miss: Resolve Inode through filesystem
+        let inode = self.resolve_path(path)?;
+        let meta = inode.metadata();
+
+        let (owner, perms, acl) = if let Some(sec) = self.security.get(path) {
+            (sec.owner.clone(), sec.permissions, sec.acl.clone())
+        } else {
+            (SecurityIdentifier::root(), FilePermissions::from(meta.permissions), None)
+        };
+
+        // Cache the resolved Inode
+        let mut entry = InodeCacheEntry::new(meta.inode_id, path, inode.clone(), perms, owner.clone());
+        if let Some(a) = acl.clone() {
+            entry = entry.with_acl(a);
+        }
+        INODE_CACHE.lock().insert(entry);
+
+        // Verify permissions
+        let allowed = if let Some(a) = &acl {
+            a.check_access(subject, mask)
+        } else {
+            perms.check_permission(&owner, subject, mask)
+        };
+
+        if !allowed {
+            return Err(FsError::PermissionDenied);
+        }
+
+        Ok(inode)
+    }
+
+    /// Opens an Inode using root/kernel privileges.
+    pub fn open(&self, path: &str) -> Result<Arc<dyn Inode>, FsError> {
+        self.open_with_perm(path, &SecurityIdentifier::root(), FileAccessMask::read())
+    }
+
+    /// Reads file data with subject access permission verification.
+    pub fn read_file_with_perm(
+        &self,
+        path: &str,
+        subject: &SecurityIdentifier,
+    ) -> Result<Vec<u8>, FsError> {
+        let inode = self.open_with_perm(path, subject, FileAccessMask::read())?;
         let meta = inode.metadata();
         if meta.file_type != FileType::File {
             return Err(FsError::IsADirectory);
+        }
+
+        if let Some(data) = self.dynamic_files.get(path) {
+            return Ok(data.clone());
         }
 
         let mut buf = alloc::vec![0u8; meta.size as usize];
         let bytes_read = inode.read_at(0, &mut buf)?;
         buf.truncate(bytes_read);
         Ok(buf)
+    }
+
+    /// Reads file data using root privileges.
+    pub fn read_file(&self, path: &str) -> Result<Vec<u8>, FsError> {
+        self.read_file_with_perm(path, &SecurityIdentifier::root())
+    }
+
+    /// Writes data to a file validating write permissions and lock contention.
+    pub fn write_file_with_perm(
+        &mut self,
+        path: &str,
+        data: &[u8],
+        subject: &SecurityIdentifier,
+    ) -> Result<(), FsError> {
+        // Validate write permissions
+        if let Some(sec) = self.security.get(path) {
+            let allowed = if let Some(acl) = &sec.acl {
+                acl.check_access(subject, FileAccessMask::write())
+            } else {
+                sec.permissions.check_permission(&sec.owner, subject, FileAccessMask::write())
+            };
+            if !allowed {
+                return Err(FsError::PermissionDenied);
+            }
+        }
+
+        // Validate lock contention
+        if let Some(entry) = INODE_CACHE.lock().get_by_path(path) {
+            if INODE_LOCK_MGR.lock().has_conflict(
+                entry.inode_id,
+                InodeLockType::Exclusive,
+                0,
+                data.len() as u64,
+                subject.uid as u64,
+            ) {
+                return Err(FsError::PermissionDenied);
+            }
+        }
+
+        self.dynamic_files.insert(alloc::string::String::from(path), data.to_vec());
+
+        if let Some(mut entry) = INODE_CACHE.lock().get_by_path(path) {
+            entry.mark_dirty();
+            INODE_CACHE.lock().insert(entry);
+        }
+
+        Ok(())
+    }
+
+    pub fn write_file(&mut self, path: &str, data: &[u8]) {
+        let _ = self.write_file_with_perm(path, data, &SecurityIdentifier::root());
+    }
+
+    pub fn append_file(&mut self, path: &str, data: &[u8]) {
+        let entry = self.dynamic_files.entry(alloc::string::String::from(path)).or_insert_with(Vec::new);
+        entry.extend_from_slice(data);
+    }
+
+    /// Creates a new file with explicit owner, POSIX permissions, and optional ACL.
+    pub fn create_file_with_perm(
+        &mut self,
+        path: &str,
+        data: &[u8],
+        owner: SecurityIdentifier,
+        permissions: FilePermissions,
+        acl: Option<AccessControlList>,
+        subject: &SecurityIdentifier,
+    ) -> Result<(), FsError> {
+        // Validate parent directory permissions
+        if let Some((parent, _)) = path.rsplit_once('/') {
+            let parent_path = if parent.is_empty() { "/" } else { parent };
+            if let Some(sec) = self.security.get(parent_path) {
+                let mask = FileAccessMask::from_bits(FileAccessMask::WRITE | FileAccessMask::EXECUTE);
+                let allowed = if let Some(p_acl) = &sec.acl {
+                    p_acl.check_access(subject, mask)
+                } else {
+                    sec.permissions.check_permission(&sec.owner, subject, mask)
+                };
+                if !allowed {
+                    return Err(FsError::PermissionDenied);
+                }
+            }
+        }
+
+        self.security.insert(
+            alloc::string::String::from(path),
+            VfsSecurityContext {
+                owner: owner.clone(),
+                permissions,
+                acl: acl.clone(),
+            },
+        );
+
+        self.dynamic_files.insert(alloc::string::String::from(path), data.to_vec());
+
+        let inode_id = 0x8000_0000_0000_0000u64 | (self.dynamic_files.len() as u64);
+        let mut entry = InodeCacheEntry::new(
+            inode_id,
+            path,
+            Arc::new(DynamicFileInode {
+                name: alloc::string::String::from(path),
+                size: data.len() as u64,
+                permissions: permissions.to_file_perms(),
+                inode_id,
+                data: data.to_vec(),
+            }),
+            permissions,
+            owner,
+        );
+        if let Some(a) = acl {
+            entry = entry.with_acl(a);
+        }
+        INODE_CACHE.lock().insert(entry);
+
+        Ok(())
+    }
+
+    /// Sets or updates the Access Control List on an existing file.
+    pub fn set_acl(
+        &mut self,
+        path: &str,
+        acl: AccessControlList,
+        subject: &SecurityIdentifier,
+    ) -> Result<(), FsError> {
+        let mut sec = if let Some(s) = self.security.get(path) {
+            s.clone()
+        } else {
+            VfsSecurityContext {
+                owner: SecurityIdentifier::root(),
+                permissions: FilePermissions::default_file(),
+                acl: None,
+            }
+        };
+
+        if !subject.is_root() && subject.uid != sec.owner.uid {
+            return Err(FsError::PermissionDenied);
+        }
+
+        sec.acl = Some(acl.clone());
+        self.security.insert(alloc::string::String::from(path), sec);
+
+        if let Some(mut cached) = INODE_CACHE.lock().get_by_path(path) {
+            cached.acl = Some(acl);
+            INODE_CACHE.lock().insert(cached);
+        }
+
+        Ok(())
+    }
+
+    /// Sets or updates POSIX file mode permissions on an existing file.
+    pub fn set_permissions(
+        &mut self,
+        path: &str,
+        permissions: FilePermissions,
+        subject: &SecurityIdentifier,
+    ) -> Result<(), FsError> {
+        let mut sec = if let Some(s) = self.security.get(path) {
+            s.clone()
+        } else {
+            VfsSecurityContext {
+                owner: SecurityIdentifier::root(),
+                permissions: FilePermissions::default_file(),
+                acl: None,
+            }
+        };
+
+        if !subject.is_root() && subject.uid != sec.owner.uid {
+            return Err(FsError::PermissionDenied);
+        }
+
+        sec.permissions = permissions;
+        self.security.insert(alloc::string::String::from(path), sec);
+
+        if let Some(mut cached) = INODE_CACHE.lock().get_by_path(path) {
+            cached.permissions = permissions;
+            INODE_CACHE.lock().insert(cached);
+        }
+
+        Ok(())
     }
 }
 

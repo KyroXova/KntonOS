@@ -261,6 +261,24 @@ impl FilePermissions {
 
         self.others.allows(mask)
     }
+
+    pub fn to_file_perms(&self) -> super::vfs::FilePerms {
+        super::vfs::FilePerms {
+            readable: self.owner.read,
+            writable: self.owner.write,
+            executable: self.owner.execute,
+        }
+    }
+}
+
+impl From<super::vfs::FilePerms> for FilePermissions {
+    fn from(p: super::vfs::FilePerms) -> Self {
+        Self::new(
+            ModePermissions::new(p.readable, p.writable, p.executable),
+            ModePermissions::new(p.readable, false, p.executable),
+            ModePermissions::new(p.readable, false, p.executable),
+        )
+    }
 }
 
 /// Access Control Entry (ACE) Type: Allow or Deny.
