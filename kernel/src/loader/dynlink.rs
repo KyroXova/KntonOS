@@ -37,6 +37,23 @@ pub const DT_INIT_ARRAYSZ: i64 = 27;
 pub const DT_FINI_ARRAYSZ: i64 = 28;
 pub const DT_FLAGS: i64 = 30;
 
+pub const R_X86_64_NONE: u32 = 0;
+pub const R_X86_64_64: u32 = 1;
+pub const R_X86_64_PC32: u32 = 2;
+pub const R_X86_64_GOT32: u32 = 3;
+pub const R_X86_64_PLT32: u32 = 4;
+pub const R_X86_64_COPY: u32 = 5;
+pub const R_X86_64_GLOB_DAT: u32 = 6;
+pub const R_X86_64_JUMP_SLOT: u32 = 7;
+pub const R_X86_64_RELATIVE: u32 = 8;
+pub const R_X86_64_GOTPCREL: u32 = 9;
+pub const R_X86_64_32: u32 = 10;
+pub const R_X86_64_32S: u32 = 11;
+pub const R_X86_64_16: u32 = 12;
+pub const R_X86_64_PC16: u32 = 13;
+pub const R_X86_64_8: u32 = 14;
+pub const R_X86_64_PC8: u32 = 15;
+
 pub const STB_LOCAL: u8 = 0;
 pub const STB_GLOBAL: u8 = 1;
 pub const STB_WEAK: u8 = 2;
@@ -97,6 +114,36 @@ pub struct Elf64Sym {
     pub st_shndx: u16,
     pub st_value: u64,
     pub st_size: u64,
+}
+
+/// ELF64 Relocation Entry with Explicit Addend (RELA).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Elf64Rela {
+    pub r_offset: u64,
+    pub r_info: u64,
+    pub r_addend: i64,
+}
+
+impl Elf64Rela {
+    #[inline(always)]
+    pub const fn r_sym(&self) -> u32 {
+        (self.r_info >> 32) as u32
+    }
+
+    #[inline(always)]
+    pub const fn r_type(&self) -> u32 {
+        (self.r_info & 0xFFFF_FFFF) as u32
+    }
+
+    #[inline(always)]
+    pub const fn new(r_offset: u64, r_sym: u32, r_type: u32, r_addend: i64) -> Self {
+        Self {
+            r_offset,
+            r_info: ((r_sym as u64) << 32) | (r_type as u64 & 0xFFFF_FFFF),
+            r_addend,
+        }
+    }
 }
 
 /// Parsed metadata extracted from ELF PT_DYNAMIC segment.
@@ -343,6 +390,186 @@ pub fn test_dynamic_parser_and_symbols() -> bool {
         Some(0x0000_7FFF_2000_5678)
     );
     assert_eq!(resolve_symbol_in_libraries("missing", &libs), None);
+
+    true
+}
+
+/// Resolves the absolute 64-bit virtual address for a symbol in relocations.
+pub fn resolve_symbol_value(
+    base_address: u64,
+    sym: &Elf64Sym,
+    strtab: &[u8],
+    libraries: &[SharedLibrary],
+) -> Result<u64, DynLinkError> {
+    if sym.st_shndx == SHN_UNDEF {
+        let name = extract_string(strtab, sym.st_name as usize)
+            .ok_or(DynLinkError::SymbolNotFound)?;
+        resolve_symbol_in_libraries(&name, libraries)
+            .ok_or(DynLinkError::SymbolNotFound)
+    } else {
+        Ok(base_address + sym.st_value)
+    }
+}
+
+/// Computes the target virtual address and patched value for an individual RELA entry.
+pub fn compute_relocation(
+    base_address: u64,
+    rela: &Elf64Rela,
+    symtab: &[Elf64Sym],
+    strtab: &[u8],
+    libraries: &[SharedLibrary],
+) -> Result<(u64, u64), DynLinkError> {
+    let target_vaddr = base_address + rela.r_offset;
+    let r_type = rela.r_type();
+    let r_sym = rela.r_sym() as usize;
+
+    let computed_val = match r_type {
+        R_X86_64_NONE => return Ok((target_vaddr, 0)),
+        R_X86_64_RELATIVE => {
+            (base_address as i64 + rela.r_addend) as u64
+        }
+        R_X86_64_64 => {
+            if r_sym >= symtab.len() {
+                return Err(DynLinkError::SymbolNotFound);
+            }
+            let sym = &symtab[r_sym];
+            let sym_val = resolve_symbol_value(base_address, sym, strtab, libraries)?;
+            (sym_val as i64 + rela.r_addend) as u64
+        }
+        R_X86_64_GLOB_DAT | R_X86_64_JUMP_SLOT => {
+            if r_sym >= symtab.len() {
+                return Err(DynLinkError::SymbolNotFound);
+            }
+            let sym = &symtab[r_sym];
+            let sym_val = resolve_symbol_value(base_address, sym, strtab, libraries)?;
+            (sym_val as i64 + rela.r_addend) as u64
+        }
+        R_X86_64_32 | R_X86_64_32S => {
+            if r_sym >= symtab.len() {
+                return Err(DynLinkError::SymbolNotFound);
+            }
+            let sym = &symtab[r_sym];
+            let sym_val = resolve_symbol_value(base_address, sym, strtab, libraries)?;
+            let res = (sym_val as i64 + rela.r_addend) as u64;
+            res & 0xFFFF_FFFF
+        }
+        other => return Err(DynLinkError::UnsupportedRelocation(other)),
+    };
+
+    Ok((target_vaddr, computed_val))
+}
+
+/// Applies an array of RELA relocations to the active process virtual memory.
+pub fn apply_relocations(
+    base_address: u64,
+    relas: &[Elf64Rela],
+    symtab: &[Elf64Sym],
+    strtab: &[u8],
+    libraries: &[SharedLibrary],
+) -> Result<usize, DynLinkError> {
+    let mut count = 0;
+    for rela in relas {
+        let (target_vaddr, val) = compute_relocation(base_address, rela, symtab, strtab, libraries)?;
+
+        let cr3: u64;
+        unsafe {
+            core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags));
+            let ptm = crate::memory::vmm::PageTableManager::new((cr3 & !0xFFF) as *mut crate::memory::vmm::PageTable);
+            if ptm.translate(crate::memory::vmm::VirtAddr(target_vaddr as usize)).is_some() {
+                *(target_vaddr as *mut u64) = val;
+            }
+        }
+        count += 1;
+    }
+    Ok(count)
+}
+
+/// Verification unit test exercising x86-64 RELA relocation records (RELATIVE, GLOB_DAT, JUMP_SLOT, 64).
+pub fn test_relocation_engine() -> bool {
+    let base_address = 0x0000_7FFF_1000_0000;
+
+    let mut strtab = Vec::new();
+    strtab.push(0);
+    strtab.extend_from_slice(b"printf\0"); // offset 1
+    strtab.extend_from_slice(b"sqrt\0");   // offset 8
+
+    let symtab = [
+        Elf64Sym::default(), // 0: UNDEF
+        Elf64Sym {
+            st_name: 1, // "printf"
+            st_info: elf64_st_info(STB_GLOBAL, STT_FUNC),
+            st_other: 0,
+            st_shndx: SHN_UNDEF, // External
+            st_value: 0,
+            st_size: 0,
+        },
+        Elf64Sym {
+            st_name: 8, // "sqrt"
+            st_info: elf64_st_info(STB_GLOBAL, STT_FUNC),
+            st_other: 0,
+            st_shndx: SHN_UNDEF, // External
+            st_value: 0,
+            st_size: 0,
+        },
+        Elf64Sym {
+            st_name: 0, // internal data symbol
+            st_info: elf64_st_info(STB_LOCAL, STT_OBJECT),
+            st_other: 0,
+            st_shndx: 1,
+            st_value: 0x0500,
+            st_size: 8,
+        },
+    ];
+
+    let mut libc = SharedLibrary::new("libc.so.6", 0x0000_7FFF_4000_0000, 0x10000);
+    libc.add_export("printf", 0x0100, 64, true);
+
+    let mut libm = SharedLibrary::new("libm.so.6", 0x0000_7FFF_5000_0000, 0x10000);
+    libm.add_export("sqrt", 0x0200, 32, true);
+
+    let libraries = [libc, libm];
+
+    // 1. Test R_X86_64_RELATIVE (B + A)
+    let rela_relative = Elf64Rela::new(0x1000, 0, R_X86_64_RELATIVE, 0x2000);
+    let (target, val) = compute_relocation(base_address, &rela_relative, &symtab, &strtab, &libraries)
+        .expect("R_X86_64_RELATIVE must succeed");
+    assert_eq!(target, base_address + 0x1000);
+    assert_eq!(val, base_address + 0x2000);
+
+    // 2. Test R_X86_64_GLOB_DAT (GOT entry creation for printf)
+    let rela_glob_dat = Elf64Rela::new(0x1008, 1, R_X86_64_GLOB_DAT, 0);
+    let (target, val) = compute_relocation(base_address, &rela_glob_dat, &symtab, &strtab, &libraries)
+        .expect("R_X86_64_GLOB_DAT must succeed");
+    assert_eq!(target, base_address + 0x1008);
+    assert_eq!(val, 0x0000_7FFF_4000_0100);
+
+    // 3. Test R_X86_64_JUMP_SLOT (PLT slot binding for sqrt)
+    let rela_jump_slot = Elf64Rela::new(0x1010, 2, R_X86_64_JUMP_SLOT, 0);
+    let (target, val) = compute_relocation(base_address, &rela_jump_slot, &symtab, &strtab, &libraries)
+        .expect("R_X86_64_JUMP_SLOT must succeed");
+    assert_eq!(target, base_address + 0x1010);
+    assert_eq!(val, 0x0000_7FFF_5000_0200);
+
+    // 4. Test R_X86_64_64 (S + A on internal symbol)
+    let rela_64 = Elf64Rela::new(0x1018, 3, R_X86_64_64, 0x08);
+    let (target, val) = compute_relocation(base_address, &rela_64, &symtab, &strtab, &libraries)
+        .expect("R_X86_64_64 must succeed");
+    assert_eq!(target, base_address + 0x1018);
+    assert_eq!(val, base_address + 0x0508);
+
+    // 5. Test missing symbol returns error
+    let rela_missing = Elf64Rela::new(0x1020, 99, R_X86_64_GLOB_DAT, 0);
+    assert_eq!(
+        compute_relocation(base_address, &rela_missing, &symtab, &strtab, &libraries),
+        Err(DynLinkError::SymbolNotFound)
+    );
+
+    // 6. Test unsupported relocation returns error
+    let rela_unsupported = Elf64Rela::new(0x1028, 0, 0xFE, 0);
+    assert_eq!(
+        compute_relocation(base_address, &rela_unsupported, &symtab, &strtab, &libraries),
+        Err(DynLinkError::UnsupportedRelocation(0xFE))
+    );
 
     true
 }
