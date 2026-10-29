@@ -43,17 +43,8 @@ pub unsafe fn pci_read_u32(bus: u8, slot: u8, func: u8, offset: u8) -> u32 {
         | ((offset as u32) & 0xFC)
         | 0x8000_0000;
 
-    crate::outb(PCI_CONFIG_ADDRESS + 0, (address & 0xFF) as u8);
-    crate::outb(PCI_CONFIG_ADDRESS + 1, ((address >> 8) & 0xFF) as u8);
-    crate::outb(PCI_CONFIG_ADDRESS + 2, ((address >> 16) & 0xFF) as u8);
-    crate::outb(PCI_CONFIG_ADDRESS + 3, ((address >> 24) & 0xFF) as u8);
-
-    let b0 = crate::inb(PCI_CONFIG_DATA + 0) as u32;
-    let b1 = crate::inb(PCI_CONFIG_DATA + 1) as u32;
-    let b2 = crate::inb(PCI_CONFIG_DATA + 2) as u32;
-    let b3 = crate::inb(PCI_CONFIG_DATA + 3) as u32;
-
-    b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
+    crate::outl(PCI_CONFIG_ADDRESS, address);
+    crate::inl(PCI_CONFIG_DATA)
 }
 
 #[inline(always)]
@@ -64,15 +55,8 @@ pub unsafe fn pci_write_u32(bus: u8, slot: u8, func: u8, offset: u8, val: u32) {
         | ((offset as u32) & 0xFC)
         | 0x8000_0000;
 
-    crate::outb(PCI_CONFIG_ADDRESS + 0, (address & 0xFF) as u8);
-    crate::outb(PCI_CONFIG_ADDRESS + 1, ((address >> 8) & 0xFF) as u8);
-    crate::outb(PCI_CONFIG_ADDRESS + 2, ((address >> 16) & 0xFF) as u8);
-    crate::outb(PCI_CONFIG_ADDRESS + 3, ((address >> 24) & 0xFF) as u8);
-
-    crate::outb(PCI_CONFIG_DATA + 0, (val & 0xFF) as u8);
-    crate::outb(PCI_CONFIG_DATA + 1, ((val >> 8) & 0xFF) as u8);
-    crate::outb(PCI_CONFIG_DATA + 2, ((val >> 16) & 0xFF) as u8);
-    crate::outb(PCI_CONFIG_DATA + 3, ((val >> 24) & 0xFF) as u8);
+    crate::outl(PCI_CONFIG_ADDRESS, address);
+    crate::outl(PCI_CONFIG_DATA, val);
 }
 
 #[inline(always)]
