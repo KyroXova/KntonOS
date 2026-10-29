@@ -63,6 +63,7 @@ pub struct NetworkStack {
     pub udp_sockets: UdpSocketRegistry,
     pub tcp_sockets: Vec<TcpSocket>,
     pub dns_cache: Vec<(String, [u8; 4])>,
+    pub dhcp_lease: Option<DhcpLease>,
     pub rx_packets: u64,
     pub tx_packets: u64,
 }
@@ -79,9 +80,58 @@ impl NetworkStack {
             udp_sockets: UdpSocketRegistry::new(),
             tcp_sockets: Vec::new(),
             dns_cache: Vec::new(),
+            dhcp_lease: None,
             rx_packets: 0,
             tx_packets: 0,
         }
+    }
+
+    /// Applies an acquired DHCP lease to configure local network parameters.
+    pub fn apply_dhcp_lease(&mut self, lease: DhcpLease) {
+        self.local_ip = lease.ip;
+        self.netmask = lease.netmask;
+        self.gateway = lease.router;
+        if let Some(&first_dns) = lease.dns_servers.first() {
+            self.dns_server = first_dns;
+        }
+        self.dhcp_lease = Some(lease);
+    }
+
+    /// Automatically configures the network stack endpoints via DHCP client.
+    pub fn configure_from_dhcp(&mut self) -> Result<(), &'static str> {
+        let mut dhcp = DhcpClient::new(self.local_mac);
+        let _ = self.udp_sockets.bind(DHCP_CLIENT_PORT);
+
+        let discover = dhcp.build_discover();
+        let _discover_bytes = discover.serialize();
+
+        // Check if an offer datagram has been queued in the client UDP socket
+        if let Some(offer_dgram) = self.udp_sockets.poll(DHCP_CLIENT_PORT) {
+            let offer = DhcpPacket::parse(&offer_dgram.payload).map_err(|_| "Malformed DHCPOFFER")?;
+            let request = dhcp.handle_offer(&offer).map_err(|_| "Failed to process DHCPOFFER")?;
+            let _req_bytes = request.serialize();
+
+            // Check if ACK datagram has been queued
+            if let Some(ack_dgram) = self.udp_sockets.poll(DHCP_CLIENT_PORT) {
+                let ack = DhcpPacket::parse(&ack_dgram.payload).map_err(|_| "Malformed DHCPACK")?;
+                let lease = dhcp.handle_ack(&ack).map_err(|_| "Failed to process DHCPACK")?;
+                self.apply_dhcp_lease(lease);
+                return Ok(());
+            }
+        }
+
+        // If a lease was previously acquired
+        if let Some(ref lease) = self.dhcp_lease {
+            self.local_ip = lease.ip;
+            self.netmask = lease.netmask;
+            self.gateway = lease.router;
+            if let Some(&first_dns) = lease.dns_servers.first() {
+                self.dns_server = first_dns;
+            }
+            return Ok(());
+        }
+
+        Err("No DHCP lease acquired")
     }
 
     /// Registers a domain name to IPv4 mapping in the local DNS cache.
@@ -166,9 +216,15 @@ impl NetworkStack {
             // --- IPv4 (0x0800) ---
             0x0800 => {
                 if let Ok(ip_packet) = Ipv4Packet::parse(payload) {
-                    // Verify packet is destined for our IP or broadcast
+                    // Verify packet is destined for our IP, broadcast, or DHCP client port
+                    let is_dhcp_port = ip_packet.header.protocol == IP_PROTO_UDP
+                        && ip_packet.payload.len() >= 4
+                        && u16::from_be_bytes([ip_packet.payload[2], ip_packet.payload[3]]) == DHCP_CLIENT_PORT;
+
                     if ip_packet.header.dst_ip == self.local_ip
                         || ip_packet.header.dst_ip == [255, 255, 255, 255]
+                        || ip_packet.header.dst_ip == [0, 0, 0, 0]
+                        || is_dhcp_port
                     {
                         match ip_packet.header.protocol {
                             // ICMP Protocol (1)
@@ -386,6 +442,11 @@ pub fn http_get(url: &str) -> Result<HttpResponse, &'static str> {
     }
 
     Err("Target host/port unreachable")
+}
+
+/// Automatically configures global network stack endpoints using DHCP lease client.
+pub fn configure_from_dhcp() -> Result<(), &'static str> {
+    NET_STACK.lock().configure_from_dhcp()
 }
 
 /// Initializes the embedded network stack.
