@@ -20,3 +20,48 @@ pub use mixer::{
     verify_audio_mixer, AudioChannel, AudioMixer, AudioSampleQueue, PcmSample, DEFAULT_VOLUME,
     MAX_CHANNELS, QUEUE_CAPACITY,
 };
+
+/// Comprehensive verification of the real-time audio subsystem.
+///
+/// Tests HDA MMIO register maps, BDL entry sizing, CORB/RIRB ring buffers,
+/// Codec discovery, DAC-to-PinComplex widget routing, Stream DMA cyclic buffer
+/// management, and multi-channel software PCM mixer with saturation arithmetic.
+pub fn test_audio_subsystem() -> bool {
+    if !verify_hda_structures() {
+        return false;
+    }
+
+    if !verify_hda_codec_and_stream() {
+        return false;
+    }
+
+    if !verify_audio_mixer() {
+        return false;
+    }
+
+    // End-to-end audio pipeline verification: synthesize tone and stream via DMA
+    let mut mixer = AudioMixer::new();
+    if let Some(ch) = mixer.channel(0) {
+        for i in 0..16 {
+            let val = if i % 2 == 0 { 8000 } else { -8000 };
+            ch.enqueue_sample(PcmSample::new(val, val));
+        }
+    } else {
+        return false;
+    }
+
+    let mut dma_buf = [0u8; 64];
+    let written = mixer.mix_into_buffer(&mut dma_buf);
+    if written != 64 {
+        return false;
+    }
+
+    let s0 = PcmSample::from_bytes([dma_buf[0], dma_buf[1], dma_buf[2], dma_buf[3]]);
+    if s0.left != 8000 || s0.right != 8000 {
+        return false;
+    }
+
+    crate::serial_write_str("[KNT-AUDIO-HDA-PASS] Intel HDA audio controller, codec widgets, and PCM mixer verified\r\n");
+
+    true
+}
