@@ -2,7 +2,7 @@
 //!
 //! Provides the memory-mapped register definitions for the Advanced Host Controller
 //! Interface (AHCI), including Generic Host Control (GHC), Port Control registers,
-//! and SATA device signature classifications.
+//! Command Headers, Command Tables, PRDT scatter-gather lists, and SATA FIS structures.
 
 pub const PCI_CLASS_MASS_STORAGE: u8 = 0x01;
 pub const PCI_SUBCLASS_SATA: u8 = 0x06;
@@ -209,6 +209,256 @@ pub struct HbaPortRegisters {
     pub vendor_specific: [u32; 4],
 }
 
+// ============================================================================
+// AHCI Command Headers, Command Tables, PRDT Lists, and SATA FIS Structures
+// ============================================================================
+
+pub const MAX_COMMAND_SLOTS: usize = 32;
+pub const MAX_PRDT_ENTRIES: usize = 16;
+pub const PRDT_MAX_BYTES: usize = 4 * 1024 * 1024; // 4 MiB max per PRDT descriptor
+pub const PRDT_IOC: u32 = 1 << 31;                 // Interrupt on Completion flag
+
+// --- SATA FIS Types (Serial ATA Revision 3.0 Section 10.3) ---
+pub const FIS_TYPE_REG_H2D: u8 = 0x27;   // Register FIS - Host to Device
+pub const FIS_TYPE_REG_D2H: u8 = 0x34;   // Register FIS - Device to Host
+pub const FIS_TYPE_DMA_ACT: u8 = 0x39;   // DMA Activate FIS - Device to Host
+pub const FIS_TYPE_DMA_SETUP: u8 = 0x41; // DMA Setup FIS - Bidirectional
+pub const FIS_TYPE_DATA: u8 = 0x46;      // Data FIS - Bidirectional
+pub const FIS_TYPE_BIST: u8 = 0x58;      // BIST Activate FIS - Bidirectional
+pub const FIS_TYPE_PIO_SETUP: u8 = 0x5F; // PIO Setup FIS - Device to Host
+pub const FIS_TYPE_DEV_BITS: u8 = 0xA1;  // Set Device Bits FIS - Device to Host
+
+// --- ATA Command Opcode Constants ---
+pub const ATA_CMD_READ_DMA_EXT: u8 = 0x25;
+pub const ATA_CMD_WRITE_DMA_EXT: u8 = 0x35;
+pub const ATA_CMD_IDENTIFY: u8 = 0xEC;
+pub const ATA_CMD_IDENTIFY_PACKET: u8 = 0xA1;
+
+/// AHCI Command Header Structure (32 bytes per command slot, 1 KiB total for 32 slots).
+#[repr(C, packed)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HbaCommandHeader {
+    pub flags: u16,        // CFL (bits 4:0), A (bit 5), W (bit 6), P (bit 7), R (bit 8), B (bit 9), C (bit 10), PMP (bits 15:12)
+    pub prdtl: u16,        // Physical Region Descriptor Table length (number of PRDT entries)
+    pub prdbc: u32,        // Physical Region Descriptor Byte Count transferred
+    pub ctba: u32,         // Command Table Descriptor Base Address lower 32-bit (128-byte aligned)
+    pub ctbau: u32,        // Command Table Descriptor Base Address upper 32-bit
+    pub reserved: [u32; 4],// Reserved (16 bytes)
+}
+
+impl HbaCommandHeader {
+    pub const FLAG_WRITE: u16 = 1 << 6;
+    pub const FLAG_ATAPI: u16 = 1 << 5;
+    pub const FLAG_PREFETCH: u16 = 1 << 7;
+    pub const FLAG_CLEAR_BSY: u16 = 1 << 10;
+
+    /// Builds a standard ATA command header.
+    pub fn new(ctba_phys: u64, prdt_count: u16, is_write: bool, fis_dwords: u8) -> Self {
+        let mut flags = (fis_dwords as u16) & 0x1F;
+        if is_write {
+            flags |= Self::FLAG_WRITE;
+        }
+        flags |= Self::FLAG_PREFETCH;
+
+        Self {
+            flags,
+            prdtl: prdt_count,
+            prdbc: 0,
+            ctba: (ctba_phys & 0xFFFF_FFFF) as u32,
+            ctbau: ((ctba_phys >> 32) & 0xFFFF_FFFF) as u32,
+            reserved: [0u32; 4],
+        }
+    }
+
+    #[inline(always)]
+    pub fn command_table_address(&self) -> u64 {
+        (self.ctba as u64) | ((self.ctbau as u64) << 32)
+    }
+
+    #[inline(always)]
+    pub fn is_write(&self) -> bool {
+        (self.flags & Self::FLAG_WRITE) != 0
+    }
+}
+
+/// Physical Region Descriptor Table (PRDT) Entry (16 bytes).
+#[repr(C, packed)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HbaPrdtEntry {
+    pub dba: u32,          // Data Base Address lower 32-bit
+    pub dbau: u32,         // Data Base Address upper 32-bit
+    pub reserved: u32,     // Reserved (0)
+    pub dbc: u32,          // Byte count (bits 21:0, 0-based), bit 31 = Interrupt on Completion (IOC)
+}
+
+impl HbaPrdtEntry {
+    pub const IOC_FLAG: u32 = 1 << 31;
+
+    /// Creates a PRDT entry with given physical buffer address, byte count, and IOC flag.
+    pub fn new(data_phys: u64, byte_count: u32, ioc: bool) -> Self {
+        // DBC is 0-based (byte_count - 1), but bit 0 must be 1 for word alignment in AHCI
+        let count_field = if byte_count > 0 { byte_count - 1 } else { 0 };
+        let dbc = (count_field & 0x003F_FFFF) | if ioc { Self::IOC_FLAG } else { 0 };
+
+        Self {
+            dba: (data_phys & 0xFFFF_FFFF) as u32,
+            dbau: ((data_phys >> 32) & 0xFFFF_FFFF) as u32,
+            reserved: 0,
+            dbc,
+        }
+    }
+
+    #[inline(always)]
+    pub fn data_address(&self) -> u64 {
+        (self.dba as u64) | ((self.dbau as u64) << 32)
+    }
+
+    #[inline(always)]
+    pub fn byte_count(&self) -> u32 {
+        (self.dbc & 0x003F_FFFF) + 1
+    }
+}
+
+/// Host to Device (H2D) Register FIS Structure (20 bytes).
+#[repr(C, packed)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FisRegH2D {
+    pub fis_type: u8,      // FIS_TYPE_REG_H2D (0x27)
+    pub pmport_c: u8,      // Bit 7: 1 = Command, 0 = Control; Bits 3:0: Port Multiplier port
+    pub command: u8,       // ATA Command Opcode
+    pub feature_low: u8,   // Features register bits 7:0
+    pub lba0: u8,          // LBA bits 7:0
+    pub lba1: u8,          // LBA bits 15:8
+    pub lba2: u8,          // LBA bits 23:16
+    pub device: u8,        // Device register (Bit 6: 1 = LBA mode)
+    pub lba3: u8,          // LBA bits 31:24
+    pub lba4: u8,          // LBA bits 39:32
+    pub lba5: u8,          // LBA bits 47:40
+    pub feature_high: u8,  // Features register bits 15:8
+    pub count_low: u8,     // Sector count bits 7:0
+    pub count_high: u8,    // Sector count bits 15:8
+    pub icc: u8,           // Isochronous command completion
+    pub control: u8,       // Device control register
+    pub reserved: [u8; 4], // Reserved
+}
+
+impl FisRegH2D {
+    pub const C_BIT_COMMAND: u8 = 1 << 7;
+    pub const DEV_LBA_MODE: u8 = 1 << 6;
+
+    /// Constructs an ATA IDENTIFY DEVICE (0xEC) FIS.
+    pub fn new_identify() -> Self {
+        Self {
+            fis_type: FIS_TYPE_REG_H2D,
+            pmport_c: Self::C_BIT_COMMAND,
+            command: ATA_CMD_IDENTIFY,
+            feature_low: 0,
+            lba0: 0,
+            lba1: 0,
+            lba2: 0,
+            device: Self::DEV_LBA_MODE,
+            lba3: 0,
+            lba4: 0,
+            lba5: 0,
+            feature_high: 0,
+            count_low: 0,
+            count_high: 0,
+            icc: 0,
+            control: 0,
+            reserved: [0u8; 4],
+        }
+    }
+
+    /// Constructs an ATA READ DMA EXT (48-bit LBA) command FIS.
+    pub fn new_read_dma_ext(lba: u64, sector_count: u16) -> Self {
+        Self {
+            fis_type: FIS_TYPE_REG_H2D,
+            pmport_c: Self::C_BIT_COMMAND,
+            command: ATA_CMD_READ_DMA_EXT,
+            feature_low: 0,
+            lba0: (lba & 0xFF) as u8,
+            lba1: ((lba >> 8) & 0xFF) as u8,
+            lba2: ((lba >> 16) & 0xFF) as u8,
+            device: Self::DEV_LBA_MODE,
+            lba3: ((lba >> 24) & 0xFF) as u8,
+            lba4: ((lba >> 32) & 0xFF) as u8,
+            lba5: ((lba >> 40) & 0xFF) as u8,
+            feature_high: 0,
+            count_low: (sector_count & 0xFF) as u8,
+            count_high: ((sector_count >> 8) & 0xFF) as u8,
+            icc: 0,
+            control: 0,
+            reserved: [0u8; 4],
+        }
+    }
+
+    /// Constructs an ATA WRITE DMA EXT (48-bit LBA) command FIS.
+    pub fn new_write_dma_ext(lba: u64, sector_count: u16) -> Self {
+        Self {
+            fis_type: FIS_TYPE_REG_H2D,
+            pmport_c: Self::C_BIT_COMMAND,
+            command: ATA_CMD_WRITE_DMA_EXT,
+            feature_low: 0,
+            lba0: (lba & 0xFF) as u8,
+            lba1: ((lba >> 8) & 0xFF) as u8,
+            lba2: ((lba >> 16) & 0xFF) as u8,
+            device: Self::DEV_LBA_MODE,
+            lba3: ((lba >> 24) & 0xFF) as u8,
+            lba4: ((lba >> 32) & 0xFF) as u8,
+            lba5: ((lba >> 40) & 0xFF) as u8,
+            feature_high: 0,
+            count_low: (sector_count & 0xFF) as u8,
+            count_high: ((sector_count >> 8) & 0xFF) as u8,
+            icc: 0,
+            control: 0,
+            reserved: [0u8; 4],
+        }
+    }
+}
+
+/// AHCI Command Table (128 bytes base + PRDT entries).
+#[repr(C)]
+#[derive(Debug, Clone)]
+pub struct HbaCommandTable {
+    pub cfis: [u8; 64],
+    pub acmd: [u8; 16],
+    pub reserved: [u8; 48],
+    pub prdt_entries: [HbaPrdtEntry; MAX_PRDT_ENTRIES],
+}
+
+impl HbaCommandTable {
+    pub fn new() -> Self {
+        Self {
+            cfis: [0u8; 64],
+            acmd: [0u8; 16],
+            reserved: [0u8; 48],
+            prdt_entries: [HbaPrdtEntry::new(0, 0, false); MAX_PRDT_ENTRIES],
+        }
+    }
+
+    pub fn set_cfis(&mut self, h2d: &FisRegH2D) {
+        unsafe {
+            let src = h2d as *const FisRegH2D as *const u8;
+            core::ptr::copy_nonoverlapping(src, self.cfis.as_mut_ptr(), core::mem::size_of::<FisRegH2D>());
+        }
+    }
+}
+
+/// Received FIS buffer layout (256 bytes per port).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct HbaReceivedFis {
+    pub dsfis: [u8; 28],    // 0x00: DMA Setup FIS
+    pub reserved0: [u8; 4], // 0x1C
+    pub psfis: [u8; 20],    // 0x20: PIO Setup FIS
+    pub reserved1: [u8; 12],// 0x34
+    pub rfis: [u8; 20],     // 0x40: D2H Register FIS
+    pub reserved2: [u8; 4], // 0x54
+    pub sdbfis: [u8; 8],    // 0x58: Set Device Bits FIS
+    pub ufis: [u8; 64],     // 0x60: Unknown FIS
+    pub reserved3: [u8; 96],// 0xA0: Reserved
+}
+
 /// Self-test verifying AHCI structure sizing, offsets, and signature classification.
 pub fn verify_ahci_structures() -> bool {
     // 1. Verify HbaPortRegisters size is exactly 128 bytes (0x80)
@@ -248,6 +498,73 @@ pub fn verify_ahci_structures() -> bool {
         return false;
     }
     if AHCI_PORT_BASE + 1 * AHCI_PORT_STRIDE != 0x180 {
+        return false;
+    }
+
+    true
+}
+
+/// Self-test verifying Command Headers, PRDT scatter-gather descriptors, and FIS structures.
+pub fn verify_ahci_fis_and_commands() -> bool {
+    // 1. Verify Command Header and PRDT sizing
+    if core::mem::size_of::<HbaCommandHeader>() != 32 {
+        return false;
+    }
+    if core::mem::size_of::<HbaPrdtEntry>() != 16 {
+        return false;
+    }
+    if core::mem::size_of::<FisRegH2D>() != 20 {
+        return false;
+    }
+    if core::mem::size_of::<HbaReceivedFis>() != 256 {
+        return false;
+    }
+
+    // 2. Verify Command Header initialization
+    let cmd_header = HbaCommandHeader::new(0x1_0000_1000, 1, false, 5);
+    if cmd_header.command_table_address() != 0x1_0000_1000 || cmd_header.prdtl != 1 {
+        return false;
+    }
+    if cmd_header.is_write() {
+        return false;
+    }
+
+    let write_header = HbaCommandHeader::new(0x1_0000_2000, 2, true, 5);
+    if !write_header.is_write() {
+        return false;
+    }
+
+    // 3. Verify PRDT Entry descriptor
+    let prdt = HbaPrdtEntry::new(0x2_0000_0000, 4096, true);
+    if prdt.data_address() != 0x2_0000_0000 || prdt.byte_count() != 4096 {
+        return false;
+    }
+    if (prdt.dbc & HbaPrdtEntry::IOC_FLAG) == 0 {
+        return false;
+    }
+
+    // 4. Verify H2D FIS Construction
+    let identify = FisRegH2D::new_identify();
+    if identify.fis_type != FIS_TYPE_REG_H2D || identify.command != ATA_CMD_IDENTIFY {
+        return false;
+    }
+    if (identify.pmport_c & FisRegH2D::C_BIT_COMMAND) == 0 {
+        return false;
+    }
+
+    let read_dma = FisRegH2D::new_read_dma_ext(0x0123_4567_89AB, 64);
+    if read_dma.command != ATA_CMD_READ_DMA_EXT {
+        return false;
+    }
+    if read_dma.lba0 != 0xAB || read_dma.lba1 != 0x89 || read_dma.lba2 != 0x45 || read_dma.lba3 != 0x67 {
+        return false;
+    }
+    if read_dma.count_low != 64 || read_dma.count_high != 0 {
+        return false;
+    }
+
+    let write_dma = FisRegH2D::new_write_dma_ext(0x42, 1);
+    if write_dma.command != ATA_CMD_WRITE_DMA_EXT || write_dma.lba0 != 0x42 {
         return false;
     }
 
