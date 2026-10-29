@@ -46,7 +46,7 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-019 | Transmission Control Protocol (TCP) State Machine and Stream Sockets | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-019-tcp-stack.md) |
 | TASK-KNT-020 | PCI Device Subsystem and USB xHCI Host Controller Discovery | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-020-pci-xhci.md) |
 | TASK-KNT-021 | Domain Name System (DNS) Resolver & HTTP/1.1 Micro-Client | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-021-dns-http.md) |
-| TASK-KNT-022 | IPC Zero-Copy Shared Memory Rings & Fast Futex Synchronization | Claimed | TASK-KNT-011 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-022-ipc-futex.md) |
+| TASK-KNT-022 | IPC Zero-Copy Shared Memory Rings & Fast Futex Synchronization | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-022-ipc-futex.md) |
 | TASK-KNT-023 | USB 3.0 xHCI Enumeration & HID Keyboard/Mouse Input Pipeline | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-023-usb-hid.md) |
 | TASK-KNT-024 | DHCP IPv4 Lease Client & Network Auto-Configuration | Claimed | TASK-KNT-021 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-024-dhcp-client.md) |
 | TASK-KNT-025 | Desktop GUI Controls & Acrylic Backdrop Surface Renderer | Claimed | TASK-KNT-023 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-025-gui-controls.md) |
