@@ -6,6 +6,7 @@
 //! - 512-byte block device driver for persistent storage
 
 pub mod block;
+pub mod net;
 pub mod pci;
 pub mod virtqueue;
 
