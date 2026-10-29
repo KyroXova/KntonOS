@@ -170,6 +170,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] FAT32 subsystem self-test failed!\r\n");
     }
 
+    // Verify VFS Unified Inode Cache, Lock Manager, & ACL Access Controls
+    if !fs::test_vfs_acl_and_cache() {
+        serial_write_str("[KNT-PANIC] VFS ACL and Inode cache self-test failed!\r\n");
+    }
+
     // Initialize PCI Device Subsystem & USB xHCI Host Controller Discovery
     drivers::init_pci();
     if !drivers::test_pci_subsystem() {
