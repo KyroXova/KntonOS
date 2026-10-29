@@ -117,10 +117,20 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Compositor subsystem self-test failed!\r\n");
     }
 
+    // Initialize Interactive Virtual Terminal (VT) Shell & Key-Event Engine
+    shell::init(34, 9);
+    if !shell::test_shell_subsystem() {
+        serial_write_str("[KNT-PANIC] Shell subsystem self-test failed!\r\n");
+    }
+
     serial_write_str("[KNT-SUBSYSTEM] Display & Win32 PE64 loader modules active\r\n");
     serial_write_str("[KNT-BOOT-SUCCESS] Native UEFI-to-kernel boot verified\r\n");
 
     loop {
+        // Poll PS/2 keyboard hardware for interactive input dispatch
+        if let Some(scancode) = shell::poll_ps2_hardware() {
+            shell::dispatch_scancode(scancode);
+        }
         unsafe {
             core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
         }
