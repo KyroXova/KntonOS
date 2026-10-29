@@ -65,8 +65,10 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-038 | VFS Unified Inode Cache, Lock Manager, & ACL Access Controls | Claimed | TASK-KNT-009 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-038-vfs-acl.md) |
 | TASK-KNT-039 | Hardware RNG (RDRAND/RDSEED) & ChaCha20 Cryptographic Entropy Pool | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-039-csprng.md) |
 | TASK-KNT-040 | Software 3D Graphics Pipeline & Barycentric Triangle Rasterizer | Claimed | TASK-KNT-037 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-040-rasterizer.md) |
+| TASK-KNT-041 | AHCI SATA Persistent Storage Controller Driver & Port Command Queue Engine | Claimed | TASK-KNT-031 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-041-ahci-sata.md) |
 
 ## Active reservations
 
 - `kernel/src/fs/acl.rs`, `kernel/src/fs/cache.rs`: reserved by Priya Nair for TASK-KNT-038.
 - `kernel/src/graphics/`: reserved by Jules Martin for TASK-KNT-040.
+- `kernel/src/drivers/storage/ahci.rs`: reserved by Ada Chen for TASK-KNT-041.
