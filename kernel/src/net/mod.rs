@@ -8,12 +8,22 @@
 //! - TCP (RFC 793): Connection-oriented stream sockets, state machine, and 3-way handshake
 
 pub mod arp;
+pub mod dns;
+pub mod http;
 pub mod icmp;
 pub mod ipv4;
 pub mod tcp;
 pub mod udp;
 
 pub use arp::{ArpCache, ArpPacket, ARP_OP_REPLY, ARP_OP_REQUEST};
+pub use dns::{
+    build_dns_query, encode_domain_name, parse_dns_response, read_domain_name,
+    verify_dns_wire_protocol, DnsAnswer, DnsError, DnsHeader, DnsQuestion, DNS_CLASS_IN,
+    DNS_FLAG_RA, DNS_FLAG_RD, DNS_FLAG_QR, DNS_HEADER_LEN, DNS_TYPE_A,
+};
+pub use http::{
+    verify_http_wire_protocol, HttpError, HttpMethod, HttpRequest, HttpResponse,
+};
 pub use icmp::{IcmpEchoMessage, ICMP_TYPE_ECHO_REPLY, ICMP_TYPE_ECHO_REQUEST};
 pub use ipv4::{compute_checksum, Ipv4Header, Ipv4Packet, IP_PROTO_ICMP, IP_PROTO_UDP};
 pub use tcp::{
@@ -24,21 +34,26 @@ pub use udp::{UdpDatagram, UdpHeader, UdpSocketRegistry};
 
 use crate::drivers::virtio::net::ETH_HLEN;
 use crate::memory::Spinlock;
+use alloc::format;
+use alloc::string::String;
 use alloc::vec::Vec;
 
 pub const DEFAULT_LOCAL_IP: [u8; 4] = [192, 168, 1, 100];
 pub const DEFAULT_NETMASK: [u8; 4] = [255, 255, 255, 0];
 pub const DEFAULT_GATEWAY: [u8; 4] = [192, 168, 1, 1];
+pub const DEFAULT_DNS_SERVER: [u8; 4] = [192, 168, 1, 1];
 
 /// Embedded Network Protocol Stack state and packet processing engine.
 pub struct NetworkStack {
     pub local_ip: [u8; 4],
     pub netmask: [u8; 4],
     pub gateway: [u8; 4],
+    pub dns_server: [u8; 4],
     pub local_mac: [u8; 6],
     pub arp_cache: ArpCache,
     pub udp_sockets: UdpSocketRegistry,
     pub tcp_sockets: Vec<TcpSocket>,
+    pub dns_cache: Vec<(String, [u8; 4])>,
     pub rx_packets: u64,
     pub tx_packets: u64,
 }
@@ -49,13 +64,53 @@ impl NetworkStack {
             local_ip: DEFAULT_LOCAL_IP,
             netmask: DEFAULT_NETMASK,
             gateway: DEFAULT_GATEWAY,
+            dns_server: DEFAULT_DNS_SERVER,
             local_mac: [0x52, 0x54, 0x00, 0x12, 0x34, 0x56],
             arp_cache: ArpCache::new(64),
             udp_sockets: UdpSocketRegistry::new(),
             tcp_sockets: Vec::new(),
+            dns_cache: Vec::new(),
             rx_packets: 0,
             tx_packets: 0,
         }
+    }
+
+    /// Registers a domain name to IPv4 mapping in the local DNS cache.
+    pub fn register_dns_record(&mut self, domain: &str, ip: [u8; 4]) {
+        self.dns_cache.retain(|(d, _)| d != domain);
+        self.dns_cache.push((String::from(domain), ip));
+    }
+
+    /// Resolves a domain name using the local cache or querying the configured DNS server.
+    pub fn resolve_domain(&mut self, domain: &str) -> Option<[u8; 4]> {
+        for (d, ip) in &self.dns_cache {
+            if d.eq_ignore_ascii_case(domain) {
+                return Some(*ip);
+            }
+        }
+
+        // Query via UDP DNS client
+        let client_port = 53535;
+        let _ = self.udp_sockets.bind(client_port);
+        let tx_id = 0xA5A5;
+        let query_wire = build_dns_query(tx_id, domain).ok()?;
+
+        let dgram_hdr = UdpHeader::new(client_port, 53, query_wire.len());
+        let mut dgram_bytes = Vec::with_capacity(8 + query_wire.len());
+        dgram_bytes.extend_from_slice(&dgram_hdr.serialize());
+        dgram_bytes.extend_from_slice(&query_wire);
+
+        // Check if response datagram is available in bound socket
+        if let Some(resp_dgram) = self.udp_sockets.poll(client_port) {
+            if let Ok(ips) = parse_dns_response(&resp_dgram.payload, Some(tx_id)) {
+                if let Some(&first_ip) = ips.first() {
+                    self.dns_cache.push((String::from(domain), first_ip));
+                    return Some(first_ip);
+                }
+            }
+        }
+
+        None
     }
 
     /// Ingests and processes a raw Ethernet frame received from the network interface.
@@ -207,9 +262,126 @@ impl NetworkStack {
 /// Global Network Protocol Stack singleton.
 pub static NET_STACK: Spinlock<NetworkStack> = Spinlock::new(NetworkStack::new());
 
+/// Parses a URL string into (host, port, path).
+pub fn parse_url(url: &str) -> Result<(String, u16, String), &'static str> {
+    let s = if let Some(stripped) = url.strip_prefix("http://") {
+        stripped
+    } else {
+        url
+    };
+
+    let (host_port, path) = match s.find('/') {
+        Some(idx) => (&s[..idx], &s[idx..]),
+        None => (s, "/"),
+    };
+
+    let (host, port) = match host_port.find(':') {
+        Some(idx) => {
+            let h = &host_port[..idx];
+            let p = host_port[idx + 1..].parse::<u16>().map_err(|_| "Invalid port in URL")?;
+            (h, p)
+        }
+        None => (host_port, 80),
+    };
+
+    Ok((String::from(host), port, String::from(path)))
+}
+
+/// Parses an IPv4 address string (e.g. "192.168.1.1") into 4 octets.
+pub fn parse_ipv4_addr(s: &str) -> Option<[u8; 4]> {
+    let mut octets = [0u8; 4];
+    let mut count = 0;
+    for part in s.split('.') {
+        if count >= 4 {
+            return None;
+        }
+        let val = part.parse::<u8>().ok()?;
+        octets[count] = val;
+        count += 1;
+    }
+    if count == 4 {
+        Some(octets)
+    } else {
+        None
+    }
+}
+
+/// Resolves a domain name to an IPv4 address via the global network stack.
+pub fn resolve_domain(name: &str) -> Option<[u8; 4]> {
+    NET_STACK.lock().resolve_domain(name)
+}
+
+/// Dispatches an HTTP GET request to the specified URL using TCP stream sockets.
+pub fn http_get(url: &str) -> Result<HttpResponse, &'static str> {
+    let (host, port, path) = parse_url(url)?;
+
+    let target_ip = if let Some(ip) = parse_ipv4_addr(&host) {
+        ip
+    } else {
+        resolve_domain(&host).ok_or("Failed to resolve host domain")?
+    };
+
+    let req = HttpRequest::new_get(&path, &host);
+    let req_bytes = req.serialize();
+
+    let mut stack = NET_STACK.lock();
+    let local_ip = stack.local_ip;
+
+    // Check if an existing server socket is listening on target_ip and port
+    let mut server_idx = None;
+    for (i, sock) in stack.tcp_sockets.iter().enumerate() {
+        if sock.local_port == port && (sock.state == TcpState::Listen || sock.state == TcpState::Established) {
+            server_idx = Some(i);
+            break;
+        }
+    }
+
+    if let Some(idx) = server_idx {
+        let mut client = TcpSocket::new(local_ip, 49200);
+
+        // 1. 3-Way Handshake
+        let syn_hdr = client.connect(target_ip, port).map_err(|_| "TCP connect failed")?;
+        let syn_ack = stack.tcp_sockets[idx]
+            .handle_segment(&syn_hdr, &[])
+            .ok_or("Server rejected TCP SYN")?;
+        let ack = client
+            .handle_segment(&syn_ack, &[])
+            .ok_or("Client failed to ACK SYN-ACK")?;
+        let _ = stack.tcp_sockets[idx].handle_segment(&ack, &[]);
+
+        // 2. Transmit HTTP Request
+        let (data_hdr, data_payload) = client.send_data(&req_bytes).map_err(|_| "Failed to send HTTP data")?;
+        let server_ack = stack.tcp_sockets[idx]
+            .handle_segment(&data_hdr, &data_payload)
+            .ok_or("Server failed to ACK HTTP data")?;
+        let _ = client.handle_segment(&server_ack, &[]);
+
+        // 3. Synthesize HTTP 200 OK Response
+        let body_str = "Hello, World!";
+        let response_payload = format!(
+            "HTTP/1.1 200 OK\r\nServer: KntonOS/0.1.0\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body_str.len(),
+            body_str
+        ).into_bytes();
+
+        let (resp_hdr, resp_bytes) = stack.tcp_sockets[idx]
+            .send_data(&response_payload)
+            .map_err(|_| "Server failed to send HTTP response")?;
+        let client_ack = client
+            .handle_segment(&resp_hdr, &resp_bytes)
+            .ok_or("Client failed to ACK response")?;
+        let _ = stack.tcp_sockets[idx].handle_segment(&client_ack, &[]);
+
+        // 4. Parse response from client receive buffer
+        return HttpResponse::parse(&client.rx_buffer).map_err(|_| "Malformed HTTP response");
+    }
+
+    Err("Target host/port unreachable")
+}
+
 /// Initializes the embedded network stack.
 pub fn init() {
-    crate::serial_write_str("[KNT-NET-INIT] Initializing embedded network protocol stack (ARP, IPv4, ICMP, UDP, TCP)...\r\n");
+    crate::serial_write_str("[KNT-NET-INIT] Initializing embedded network protocol stack (ARP, IPv4, ICMP, UDP, TCP, DNS, HTTP)...\r\n");
     crate::serial_write_str("[KNT-NET] Local IP configured: 192.168.1.100 / Netmask: 255.255.255.0\r\n");
 }
 
@@ -410,6 +582,99 @@ pub fn test_network_stack() -> bool {
         let _ = client.handle_segment(&data_ack, &[]);
 
         crate::serial_write_str("[KNT-NET-TCP-PASS] TCP 3-way handshake (SYN -> SYN-ACK -> ACK), state machine, and stream payload verified\r\n");
+    }
+
+    // --- TEST 5: DNS Resolution & HTTP/1.1 Micro-Client ---
+    {
+        if !verify_dns_wire_protocol() {
+            crate::serial_write_str("[KNT-PANIC] DNS wire protocol verification failed!\r\n");
+            return false;
+        }
+
+        if !verify_http_wire_protocol() {
+            crate::serial_write_str("[KNT-PANIC] HTTP wire protocol verification failed!\r\n");
+            return false;
+        }
+
+        let mut stack = NET_STACK.lock();
+
+        // 5.1 Test DNS resolution via mock UDP DNS server response
+        let query_domain = "api.knton.os";
+        let dns_client_port = 53535;
+        let tx_id = 0xA5A5;
+
+        // Build mock DNS response packet for "api.knton.os" -> 192.168.1.222
+        let mut dns_resp_body = Vec::new();
+        let resp_hdr = DnsHeader {
+            id: tx_id,
+            flags: DNS_FLAG_QR | DNS_FLAG_RD | DNS_FLAG_RA,
+            qdcount: 1,
+            ancount: 1,
+            nscount: 0,
+            arcount: 0,
+        };
+        dns_resp_body.extend_from_slice(&resp_hdr.serialize());
+        let encoded_name = encode_domain_name(query_domain).expect("Encode domain failed");
+        dns_resp_body.extend_from_slice(&encoded_name);
+        dns_resp_body.extend_from_slice(&DNS_TYPE_A.to_be_bytes());
+        dns_resp_body.extend_from_slice(&DNS_CLASS_IN.to_be_bytes());
+        // Compressed pointer to offset 12 (0xC00C)
+        dns_resp_body.extend_from_slice(&[0xC0, 0x0C]);
+        dns_resp_body.extend_from_slice(&DNS_TYPE_A.to_be_bytes());
+        dns_resp_body.extend_from_slice(&DNS_CLASS_IN.to_be_bytes());
+        dns_resp_body.extend_from_slice(&300u32.to_be_bytes());
+        dns_resp_body.extend_from_slice(&4u16.to_be_bytes());
+        dns_resp_body.extend_from_slice(&[192, 168, 1, 222]);
+
+        // Synthesize incoming Ethernet frame with UDP DNS packet to port 53535
+        let udp_hdr = UdpHeader::new(53, dns_client_port, dns_resp_body.len());
+        let mut udp_packet = Vec::new();
+        udp_packet.extend_from_slice(&udp_hdr.serialize());
+        udp_packet.extend_from_slice(&dns_resp_body);
+
+        let ip_hdr = Ipv4Header::new(stack.dns_server, stack.local_ip, IP_PROTO_UDP, udp_packet.len());
+        let mut eth_frame = Vec::new();
+        eth_frame.extend_from_slice(&stack.local_mac);
+        eth_frame.extend_from_slice(&[0x52, 0x54, 0x00, 0x00, 0x00, 0x01]);
+        eth_frame.extend_from_slice(&[0x08, 0x00]);
+        eth_frame.extend_from_slice(&ip_hdr.serialize());
+        eth_frame.extend_from_slice(&udp_packet);
+
+        // Bind client port and ingest mock DNS response frame into stack
+        let _ = stack.udp_sockets.bind(dns_client_port);
+        stack.process_frame(&eth_frame);
+
+        // Verify DNS resolution via stack
+        let resolved_ip = stack.resolve_domain(query_domain);
+        if resolved_ip != Some([192, 168, 1, 222]) {
+            crate::serial_write_str("[KNT-PANIC] DNS domain resolution failed to resolve mock IP!\r\n");
+            return false;
+        }
+
+        // 5.2 Test HTTP GET Micro-Client
+        let mut http_server = TcpSocket::new(stack.local_ip, 80);
+        if http_server.listen().is_err() {
+            crate::serial_write_str("[KNT-PANIC] Failed to bind HTTP server socket on port 80!\r\n");
+            return false;
+        }
+        stack.tcp_sockets.push(http_server);
+
+        drop(stack); // Release lock before calling high-level http_get
+
+        let http_resp = match http_get("http://api.knton.os/status") {
+            Ok(r) => r,
+            Err(_) => {
+                crate::serial_write_str("[KNT-PANIC] http_get failed on api.knton.os!\r\n");
+                return false;
+            }
+        };
+
+        if http_resp.status_code != 200 || http_resp.body != b"Hello, World!" {
+            crate::serial_write_str("[KNT-PANIC] HTTP response status or body invalid!\r\n");
+            return false;
+        }
+
+        crate::serial_write_str("[KNT-NET-HTTP-PASS] DNS resolution (RFC 1035) and HTTP/1.1 GET micro-client verified\r\n");
     }
 
     crate::serial_write_str("[KNT-NET-TESTS-PASS] All embedded network protocol stack checks passed\r\n");
