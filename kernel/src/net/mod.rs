@@ -462,7 +462,7 @@ pub fn configure_from_dhcp() -> Result<(), &'static str> {
 
 /// Initializes the embedded network stack.
 pub fn init() {
-    crate::serial_write_str("[KNT-NET-INIT] Initializing embedded network protocol stack (ARP, IPv4, ICMP, UDP, TCP, DNS, HTTP, DHCP)...\r\n");
+    crate::serial_write_str("[KNT-NET-INIT] Initializing embedded network protocol stack (ARP, IPv4, ICMP, UDP, TCP, DNS, HTTP, DHCP, Sockets)...\r\n");
     crate::serial_write_str("[KNT-NET] Local IP configured: 192.168.1.100 / Netmask: 255.255.255.0\r\n");
 }
 
@@ -849,6 +849,162 @@ pub fn test_network_stack() -> bool {
         }
 
         crate::serial_write_str("[KNT-NET-DHCP-PASS] DHCP 4-way DORA lease exchange and network auto-configuration verified\r\n");
+    }
+
+    // --- TEST 7: BSD / WinSock Sockets Abstraction Layer & Event Readiness Polling ---
+    {
+        if !verify_socket_table() {
+            crate::serial_write_str("[KNT-PANIC] Socket table verification failed!\r\n");
+            return false;
+        }
+
+        if !verify_poll_multiplexer() {
+            crate::serial_write_str("[KNT-PANIC] Poll multiplexer verification failed!\r\n");
+            return false;
+        }
+
+        // 7.1 TCP Stream Socket Lifecycle, Data Transfer & Non-blocking Polling
+        let srv = match socket(SocketDomain::AfInet, SocketType::SockStream, SocketProtocol::Tcp) {
+            Ok(h) => h,
+            Err(_) => {
+                crate::serial_write_str("[KNT-PANIC] Failed to create TCP server socket!\r\n");
+                return false;
+            }
+        };
+
+        if bind(srv, [127, 0, 0, 1], 12345).is_err() {
+            crate::serial_write_str("[KNT-PANIC] Failed to bind TCP server socket!\r\n");
+            return false;
+        }
+        if listen(srv, 5).is_err() {
+            crate::serial_write_str("[KNT-PANIC] Failed to put TCP server into listen mode!\r\n");
+            return false;
+        }
+        let _ = set_nonblocking(srv, true);
+
+        let cli = match socket(SocketDomain::AfInet, SocketType::SockStream, SocketProtocol::Tcp) {
+            Ok(h) => h,
+            Err(_) => {
+                crate::serial_write_str("[KNT-PANIC] Failed to create TCP client socket!\r\n");
+                return false;
+            }
+        };
+        let _ = set_nonblocking(cli, true);
+
+        // Pre-connect poll: server should not be readable
+        let mut poll_set = [PollFd::new(srv, POLLIN), PollFd::new(cli, POLLOUT)];
+        let p_res = poll(&mut poll_set, Some(0)).unwrap_or(0);
+        if p_res != 0 || poll_set[0].is_readable() {
+            crate::serial_write_str("[KNT-PANIC] Server socket should not be readable before incoming connection!\r\n");
+            return false;
+        }
+
+        // Connect client to server
+        if connect(cli, [127, 0, 0, 1], 12345).is_err() {
+            crate::serial_write_str("[KNT-PANIC] Failed to connect TCP client to server!\r\n");
+            return false;
+        }
+
+        // Post-connect poll: server is readable (pending connection) and client is writable
+        let p_after = poll(&mut poll_set, Some(0)).unwrap_or(0);
+        if p_after != 2 || !poll_set[0].is_readable() || !poll_set[1].is_writable() {
+            crate::serial_write_str("[KNT-PANIC] Poll readiness flags mismatch after connection!\r\n");
+            return false;
+        }
+
+        // Accept connection
+        let (conn, _peer) = match accept(srv) {
+            Ok(res) => res,
+            Err(_) => {
+                crate::serial_write_str("[KNT-PANIC] accept() failed on listening server socket!\r\n");
+                return false;
+            }
+        };
+
+        // Client sends payload to accepted connection
+        let msg = b"KNTON-SOCKET-STREAM-PAYLOAD";
+        if send(cli, msg) != Ok(msg.len()) {
+            crate::serial_write_str("[KNT-PANIC] send() failed on connected client socket!\r\n");
+            return false;
+        }
+
+        // Poll accepted connection socket for readability
+        let mut conn_poll = [PollFd::new(conn, POLLIN)];
+        let p_conn = poll(&mut conn_poll, Some(0)).unwrap_or(0);
+        if p_conn != 1 || !conn_poll[0].is_readable() {
+            crate::serial_write_str("[KNT-PANIC] Accepted socket not readable after client send()!\r\n");
+            return false;
+        }
+
+        let mut recv_buf = [0u8; 64];
+        let n_recv = match recv(conn, &mut recv_buf) {
+            Ok(n) => n,
+            Err(_) => {
+                crate::serial_write_str("[KNT-PANIC] recv() failed on accepted socket!\r\n");
+                return false;
+            }
+        };
+
+        if n_recv != msg.len() || &recv_buf[..n_recv] != msg {
+            crate::serial_write_str("[KNT-PANIC] Stream payload corrupted during socket transfer!\r\n");
+            return false;
+        }
+
+        // 7.2 UDP Datagram Socket sendto / recvfrom
+        let u1 = match socket(SocketDomain::AfInet, SocketType::SockDgram, SocketProtocol::Udp) {
+            Ok(h) => h,
+            Err(_) => {
+                crate::serial_write_str("[KNT-PANIC] Failed to create UDP socket 1!\r\n");
+                return false;
+            }
+        };
+        let u2 = match socket(SocketDomain::AfInet, SocketType::SockDgram, SocketProtocol::Udp) {
+            Ok(h) => h,
+            Err(_) => {
+                crate::serial_write_str("[KNT-PANIC] Failed to create UDP socket 2!\r\n");
+                return false;
+            }
+        };
+
+        if bind(u1, [127, 0, 0, 1], 22222).is_err() || bind(u2, [127, 0, 0, 1], 33333).is_err() {
+            crate::serial_write_str("[KNT-PANIC] Failed to bind UDP sockets!\r\n");
+            return false;
+        }
+
+        let udp_msg = b"KNTON-UDP-DGRAM-PAYLOAD";
+        if sendto(u1, udp_msg, [127, 0, 0, 1], 33333) != Ok(udp_msg.len()) {
+            crate::serial_write_str("[KNT-PANIC] sendto() failed on UDP socket!\r\n");
+            return false;
+        }
+
+        let mut u2_poll = [PollFd::new(u2, POLLIN)];
+        let p_u2 = poll(&mut u2_poll, Some(0)).unwrap_or(0);
+        if p_u2 != 1 || !u2_poll[0].is_readable() {
+            crate::serial_write_str("[KNT-PANIC] UDP socket 2 not readable after sendto!\r\n");
+            return false;
+        }
+
+        let mut ubuf = [0u8; 64];
+        let (u_len, _src) = match recvfrom(u2, &mut ubuf) {
+            Ok(res) => res,
+            Err(_) => {
+                crate::serial_write_str("[KNT-PANIC] recvfrom() failed on UDP socket!\r\n");
+                return false;
+            }
+        };
+
+        if u_len != udp_msg.len() || &ubuf[..u_len] != udp_msg {
+            crate::serial_write_str("[KNT-PANIC] UDP payload corrupted during socket transfer!\r\n");
+            return false;
+        }
+
+        let _ = close(srv);
+        let _ = close(cli);
+        let _ = close(conn);
+        let _ = close(u1);
+        let _ = close(u2);
+
+        crate::serial_write_str("[KNT-NET-SOCKET-PASS] BSD/WinSock socket lifecycle, data transfer, and poll multiplexer verified\r\n");
     }
 
     crate::serial_write_str("[KNT-NET-TESTS-PASS] All embedded network protocol stack checks passed\r\n");

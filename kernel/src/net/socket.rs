@@ -77,6 +77,7 @@ pub struct Socket {
     pub state: SocketState,
     pub local_addr: Option<([u8; 4], u16)>,
     pub peer_addr: Option<([u8; 4], u16)>,
+    pub peer_handle: Option<SocketHandle>,
     pub nonblocking: bool,
     pub rx_buffer: Vec<u8>,
     pub tx_buffer: Vec<u8>,
@@ -98,6 +99,7 @@ impl Socket {
             state: SocketState::Unbound,
             local_addr: None,
             peer_addr: None,
+            peer_handle: None,
             nonblocking: false,
             rx_buffer: Vec::new(),
             tx_buffer: Vec::new(),
@@ -243,10 +245,29 @@ impl SocketTable {
             )
         };
 
-        if let Some(conn_handle) = pending_opt {
-            let peer_sock = inner.sockets.get(&conn_handle).ok_or(SocketError::InvalidHandle)?;
-            let peer_addr = peer_sock.peer_addr.unwrap_or(([127, 0, 0, 1], 0));
-            return Ok((conn_handle, peer_addr));
+        if let Some(client_handle) = pending_opt {
+            let (client_addr, client_domain, client_type, client_proto) = {
+                let client_sock = inner.sockets.get(&client_handle).ok_or(SocketError::InvalidHandle)?;
+                let c_addr = client_sock.local_addr.unwrap_or(([127, 0, 0, 1], 49152));
+                (c_addr, client_sock.domain, client_sock.socket_type, client_sock.protocol)
+            };
+
+            let conn_handle = inner.next_handle;
+            inner.next_handle = inner.next_handle.wrapping_add(1);
+
+            let mut conn_sock = Socket::new(conn_handle, client_domain, client_type, client_proto);
+            conn_sock.local_addr = local_addr;
+            conn_sock.peer_addr = Some(client_addr);
+            conn_sock.peer_handle = Some(client_handle);
+            conn_sock.state = SocketState::Connected;
+
+            let client_sock = inner.sockets.get_mut(&client_handle).ok_or(SocketError::InvalidHandle)?;
+            client_sock.peer_handle = Some(conn_handle);
+            client_sock.peer_addr = local_addr;
+
+            inner.sockets.insert(conn_handle, conn_sock);
+
+            return Ok((conn_handle, client_addr));
         }
 
         if nonblocking {
@@ -332,21 +353,33 @@ impl SocketTable {
     pub fn send(&self, handle: SocketHandle, data: &[u8]) -> Result<usize, SocketError> {
         let mut inner = self.inner.lock();
 
-        let peer_addr = {
+        let (peer_handle, peer_addr) = {
             let sock = inner.sockets.get_mut(&handle).ok_or(SocketError::InvalidHandle)?;
             if sock.state != SocketState::Connected && sock.state != SocketState::Bound {
                 return Err(SocketError::NotConnected);
             }
             sock.tx_buffer.extend_from_slice(data);
-            sock.peer_addr
+            (sock.peer_handle, sock.peer_addr)
         };
 
-        // Deliver payload to peer socket's rx_buffer
-        if let Some(peer) = peer_addr {
-            for (h, other) in inner.sockets.iter_mut() {
-                if *h != handle && (other.local_addr == Some(peer) || other.state == SocketState::Listening) {
-                    other.rx_buffer.extend_from_slice(data);
-                    break;
+        let mut delivered = false;
+
+        // Priority 1: Direct peered descriptor
+        if let Some(target_handle) = peer_handle {
+            if let Some(target_sock) = inner.sockets.get_mut(&target_handle) {
+                target_sock.rx_buffer.extend_from_slice(data);
+                delivered = true;
+            }
+        }
+
+        // Priority 2: Deliver payload to matching peer address
+        if !delivered {
+            if let Some(peer) = peer_addr {
+                for (h, other) in inner.sockets.iter_mut() {
+                    if *h != handle && (other.local_addr == Some(peer) || other.state == SocketState::Listening) {
+                        other.rx_buffer.extend_from_slice(data);
+                        break;
+                    }
                 }
             }
         }
