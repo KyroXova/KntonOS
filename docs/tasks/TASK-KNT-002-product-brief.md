@@ -2,11 +2,11 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Blocked |
+| Status | Claimed — discovery |
 | Requirement/source | OQ-KNT-001 in `docs/project-scope.md` |
 | Milestone | A reviewable, owner-approved first product slice with acceptance evidence. |
-| Depends on | Owner product brief |
-| Owner/session | Unclaimed |
+| Depends on | Owner decisions in OQ-KNT-001 |
+| Owner/session | NadiaMercer / lead |
 | Components | Scope, integration plan, and subsequent product task cards |
 | Review | Lead review of requirement-to-task traceability |
 
@@ -21,6 +21,6 @@ Capture the product's intended users, core problem, first user-visible capabilit
 - [ ] Integration plan names the first component boundary and validation path.
 - [ ] Ready tasks have bounded scope, dependencies, file reservations, and review expectations.
 
-## Blocker and next action
+## Current discovery record
 
-Await the owner's answer to OQ-KNT-001. The lead may then update this card, the scope, integration plan, and task board.
+The owner has established a new-kernel, new-GUI, low-resource, Windows `.exe`-compatible operating-system direction. The remaining architectural and release decisions are recorded in OQ-KNT-001. The lead may update this card, the scope, integration plan, and task board when those answers arrive.

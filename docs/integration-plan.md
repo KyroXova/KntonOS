@@ -6,7 +6,7 @@ The only current component is repository coordination. `main` is the canonical i
 
 ## Product boundary
 
-No application components or contracts are approved. Once the owner supplies the first milestone, the lead will add a minimal producer/consumer contract, compatibility expectations, validations, and an end-to-end demonstration before broad parallel feature work begins.
+The eventual product needs at least a kernel/platform layer, desktop GUI, core applications, and a Windows `.exe` compatibility/runtime boundary. The owner has not yet chosen whether this is a new kernel, a Linux-derived system, a compatibility layer, a virtualized Windows environment, or another approach. No application components or contracts are approved. Once the first milestone and compatibility approach are chosen, the lead will add a minimal producer/consumer contract, compatibility expectations, validations, and an end-to-end demonstration before broad parallel feature work begins.
 
 ## Integration gate
 

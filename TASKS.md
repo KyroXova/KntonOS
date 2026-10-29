@@ -26,7 +26,7 @@ These branches are intentionally unclaimed and clean. A workspace provides isola
 | ID | Capability | State | Depends on / waiting for | Owner/session | Card |
 | --- | --- | --- | --- | --- | --- |
 | TASK-KNT-001 | Coordination-ready repository foundation | Done | None | NadiaMercer / lead | [Card](docs/tasks/TASK-KNT-001-foundation.md) |
-| TASK-KNT-002 | Approved product brief and first usable milestone | Blocked | Owner product brief | Unclaimed | [Card](docs/tasks/TASK-KNT-002-product-brief.md) |
+| TASK-KNT-002 | Approved product brief and first usable milestone | Claimed | Owner decisions in OQ-KNT-001 | NadiaMercer / lead | [Card](docs/tasks/TASK-KNT-002-product-brief.md) |
 
 ## Active reservations
 
