@@ -8,6 +8,8 @@ pub mod tar;
 pub mod path;
 pub mod initramfs;
 pub mod fat32;
+pub mod acl;
+pub mod cache;
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -21,6 +23,11 @@ pub use fat32::{
     BiosParameterBlock32, BlockDevice, Fat32DirEntry, Fat32FileSystem, Fat32Inode,
     MemoryBlockDevice, VirtioBlockDeviceAdapter, test_fat32_subsystem,
 };
+pub use acl::{
+    AccessControlEntry, AccessControlList, AceType, FileAccessMask, FilePermissions,
+    ModePermissions, SecurityIdentifier,
+};
+pub use cache::InodeCacheEntry;
 
 use crate::memory::spinlock::Spinlock;
 use crate::serial_write_str;
