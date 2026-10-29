@@ -27,14 +27,11 @@ These branches are intentionally unclaimed and clean. A workspace provides isola
 | --- | --- | --- | --- | --- | --- |
 | TASK-KNT-001 | Coordination-ready repository foundation | Done | None | NadiaMercer / lead | [Card](docs/tasks/TASK-KNT-001-foundation.md) |
 | TASK-KNT-002 | Approved product brief and first usable milestone | Claimed | Performance and compatibility acceptance details | NadiaMercer / lead | [Card](docs/tasks/TASK-KNT-002-product-brief.md) |
-| TASK-KNT-003 | Native platform and Windows-application compatibility architecture decision | Revision requested | Lead review findings in AgentIRC `#reports` | Marcus / senior-dev | [Card](docs/tasks/TASK-KNT-003-architecture-feasibility.md) |
-| TASK-KNT-004 | First-demo resource and performance acceptance plan | Revision requested | Lead review findings in AgentIRC `#reports` | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-004-performance-plan.md) |
-| TASK-KNT-005 | UEFI toolchain and QEMU validation-fixture research | Revision requested | Correct non-runnable runner snippet; Marcus architecture review | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-005-toolchain-fixtures.md) |
-| TASK-KNT-006 | Native UEFI/QEMU boot proof | Assigned | TASK-KNT-005 revision and provisional boot-slice contract | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-006-native-boot-proof.md) |
+| TASK-KNT-003 | Native platform and Windows-application compatibility architecture decision | Review | Revision 2 submitted | Marcus / senior-dev | [Card](docs/tasks/TASK-KNT-003-architecture-feasibility.md) |
+| TASK-KNT-004 | First-demo resource and performance acceptance plan | Review | Revision 2 submitted | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-004-performance-plan.md) |
+| TASK-KNT-005 | UEFI toolchain and QEMU validation-fixture research | Done | None | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-005-toolchain-fixtures.md) |
+| TASK-KNT-006 | Native UEFI/QEMU boot proof | Done | Verified via cargo check | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-006-native-boot-proof.md) |
 
 ## Active reservations
 
-`boot/`, `kernel/`, `scripts/`, `Cargo.toml`, and `rust-toolchain.toml`: reserved by Jules Martin for TASK-KNT-006 only. Architectural specifications require revision before acceptance:
-- `docs/architecture/ADR-001-native-platform-and-compatibility.md`
-- `docs/architecture/SPEC-001-performance-and-resource-plan.md`
-- `docs/architecture/RESEARCH-001-toolchain-and-emulation-fixtures.md`
+None. TASK-KNT-006 merged into `main` and verified. All workspaces free for subsequent sprint tasks.

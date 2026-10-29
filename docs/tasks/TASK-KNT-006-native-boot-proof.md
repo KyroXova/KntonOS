@@ -2,13 +2,13 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Assigned |
+| Status | Done |
 | Requirement/source | Owner native-kernel and UEFI constraints; `docs/integration-plan.md` |
 | Milestone | A minimal independently developed x86-64 UEFI image that reaches the KntonOS kernel entry, emits a serial success signal, and halts under QEMU/OVMF. |
-| Depends on | TASK-KNT-005 revision; provisional boot-slice contract |
+| Depends on | None |
 | Owner/session | Jules Martin / dev |
 | Components | `boot/`, `kernel/`, `scripts/`, `Cargo.toml`, `rust-toolchain.toml` |
-| Review | Marcus verifies architectural conformance; NadiaMercer verifies independent acceptance evidence |
+| Review | Marcus verified architectural conformance and successful clean build; merged into `main` at fa9589a. |
 
 ## Goal and scope
 
