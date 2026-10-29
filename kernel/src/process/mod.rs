@@ -2,6 +2,7 @@ pub mod context;
 pub mod thread;
 pub mod process;
 pub mod scheduler;
+pub mod signals;
 
 pub use context::{switch_context, Context};
 pub use thread::{Priority, ThreadControlBlock, ThreadState};
@@ -9,6 +10,15 @@ pub use process::{FileDescriptor, ProcessControlBlock, ProcessState};
 pub use scheduler::{
     block_current_thread, current_thread_id, init, spawn, timer_tick, wake_thread, yield_now,
     SCHEDULER,
+};
+pub use signals::{
+    test_signal_definitions, SigAction, SigContext, SigSet, SignalDispositions, SignalError,
+    NSIG, SA_NOCLDSTOP, SA_NOCLDWAIT, SA_NODEFER, SA_ONSTACK, SA_RESETHAND, SA_RESTART,
+    SA_RESTORER, SA_SIGINFO, SIGABRT, SIGALRM, SIGBUS, SIGCHLD, SIGCONT, SIGFPE, SIGHUP,
+    SIGILL, SIGINT, SIGIO, SIGKILL, SIGPIPE, SIGPROF, SIGPWR, SIGQUIT, SIGSEGV, SIGSTOP,
+    SIGSYS, SIGTERM, SIGTRAP, SIGTSTP, SIGTTIN, SIGTTOU, SIGURG, SIGUSR1, SIGUSR2, SIGVTALRM,
+    SIGWINCH, SIGXCPU, SIGXFSZ, SIG_BLOCK, SIG_DFL, SIG_ERR, SIG_IGN, SIG_SETMASK,
+    SIG_UNBLOCK,
 };
 
 use crate::serial_write_str;
@@ -48,7 +58,9 @@ pub fn test_process_subsystem() -> bool {
     yield_now();
     yield_now();
 
-    let passed = THREAD_A_EXECUTED.load(Ordering::SeqCst) && THREAD_B_EXECUTED.load(Ordering::SeqCst);
+    let passed = THREAD_A_EXECUTED.load(Ordering::SeqCst)
+        && THREAD_B_EXECUTED.load(Ordering::SeqCst)
+        && test_signal_definitions();
     if passed {
         serial_write_str("[KNT-PROC] Process & thread scheduler test: PASSED\r\n");
     } else {

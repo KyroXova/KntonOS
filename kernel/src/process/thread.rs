@@ -36,6 +36,9 @@ pub struct ThreadControlBlock {
     pub stack: Vec<u8>,
     pub quantum_remaining: usize,
     pub total_ticks: u64,
+    pub signal_mask: u64,
+    pub pending_signals: u64,
+    pub saved_sigcontext: Option<super::signals::SigContext>,
 }
 
 impl ThreadControlBlock {
@@ -86,6 +89,9 @@ impl ThreadControlBlock {
             stack,
             quantum_remaining: DEFAULT_TIME_QUANTUM,
             total_ticks: 0,
+            signal_mask: 0,
+            pending_signals: 0,
+            saved_sigcontext: None,
         }
     }
 
@@ -102,6 +108,9 @@ impl ThreadControlBlock {
             stack: Vec::new(),
             quantum_remaining: DEFAULT_TIME_QUANTUM,
             total_ticks: 0,
+            signal_mask: 0,
+            pending_signals: 0,
+            saved_sigcontext: None,
         }
     }
 }
