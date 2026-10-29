@@ -128,3 +128,120 @@ pub fn sys_terminate_process(process_handle: u64, exit_code: u64) -> u32 {
         STATUS_INVALID_HANDLE
     }
 }
+
+/// NtCreateSection: Creates a shared memory section.
+/// - arg1: Pointer to receive SectionHandle (*mut u64)
+/// - arg2: Desired access flags
+/// - arg3: Section size in bytes
+/// - arg4: Object attributes / name pointer
+pub fn sys_create_section(
+    section_handle_ptr: u64,
+    _desired_access: u64,
+    size: u64,
+    _name_ptr: u64,
+) -> u32 {
+    let out_ptr = if section_handle_ptr != 0 {
+        section_handle_ptr as *mut u64
+    } else {
+        return STATUS_INVALID_PARAMETER;
+    };
+
+    if size == 0 {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    let mut sm = crate::ipc::SECTION_MANAGER.lock();
+    match sm.create_section("Section", size as usize) {
+        Ok(handle) => {
+            unsafe {
+                *out_ptr = handle;
+            }
+            STATUS_SUCCESS
+        }
+        Err(status) => status,
+    }
+}
+
+/// NtMapViewOfSection: Maps a view of a section into the virtual address space.
+/// - arg1: Section handle
+/// - arg2: Process handle (NT_CURRENT_PROCESS)
+/// - arg3: Pointer to BaseAddress (*mut usize)
+/// - arg4: View size in bytes
+pub fn sys_map_view_of_section(
+    section_handle: u64,
+    process_handle: u64,
+    base_addr_ptr: u64,
+    _view_size: u64,
+) -> u32 {
+    if process_handle != NT_CURRENT_PROCESS && process_handle != 0 {
+        return STATUS_INVALID_HANDLE;
+    }
+
+    let base_ptr = if base_addr_ptr != 0 {
+        base_addr_ptr as *mut usize
+    } else {
+        return STATUS_INVALID_PARAMETER;
+    };
+
+    let preferred = unsafe { *base_ptr };
+    let sm = crate::ipc::SECTION_MANAGER.lock();
+    match sm.map_view(section_handle, preferred) {
+        Ok(mapped_vaddr) => {
+            unsafe {
+                *base_ptr = mapped_vaddr;
+            }
+            STATUS_SUCCESS
+        }
+        Err(status) => status,
+    }
+}
+
+/// NtWaitForAlertByThreadId: Fast futex wait operation.
+/// - arg1: Address of futex variable (*const u32)
+/// - arg2: Expected value (u32)
+/// - arg3: Timeout in ticks (0 = infinite)
+pub fn sys_wait_for_alert_by_thread_id(
+    address: u64,
+    expected_val: u64,
+    timeout_ticks: u64,
+    _reserved: u64,
+) -> u32 {
+    if address == 0 || (address & 0x03) != 0 {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    let timeout = if timeout_ticks == 0 {
+        None
+    } else {
+        Some(timeout_ticks)
+    };
+
+    match crate::ipc::futex_wait(address as *const u32, expected_val as u32, timeout) {
+        Ok(()) => STATUS_SUCCESS,
+        Err(crate::ipc::FutexError::ValueMismatch) => 0xC000_0001, // STATUS_UNSUCCESSFUL
+        Err(crate::ipc::FutexError::InvalidAddress) => STATUS_INVALID_PARAMETER,
+        Err(crate::ipc::FutexError::Timeout) => 0x0000_0102, // STATUS_TIMEOUT
+        Err(crate::ipc::FutexError::QueueUnavailable) => 0xC000_0017,
+    }
+}
+
+/// NtAlertThreadByThreadId: Fast futex wake operation.
+/// - arg1: Thread ID or futex address
+/// - arg2: Wake count (if > 0, wakes futex address in arg1; if 0, wakes TID in arg1)
+pub fn sys_alert_thread_by_thread_id(
+    target: u64,
+    count: u64,
+) -> u32 {
+    if count > 0 && target != 0 {
+        crate::ipc::futex_wake(target as *const u32, count as u32);
+        STATUS_SUCCESS
+    } else if target != 0 {
+        if crate::ipc::futex_wake_tid(target) {
+            STATUS_SUCCESS
+        } else {
+            STATUS_INVALID_HANDLE
+        }
+    } else {
+        STATUS_INVALID_PARAMETER
+    }
+}

@@ -16,8 +16,12 @@ pub const NT_TEST_SYS: u64 = 0x0000;
 pub const NT_WRITE_FILE: u64 = 0x0008;
 pub const NT_READ_FILE: u64 = 0x000A;
 pub const NT_ALLOCATE_VIRTUAL_MEMORY: u64 = 0x0018;
+pub const NT_MAP_VIEW_OF_SECTION: u64 = 0x0028;
 pub const NT_TERMINATE_PROCESS: u64 = 0x002C;
 pub const NT_YIELD_EXECUTION: u64 = 0x0046;
+pub const NT_CREATE_SECTION: u64 = 0x004A;
+pub const NT_WAIT_FOR_ALERT_BY_THREAD_ID: u64 = 0x0182;
+pub const NT_ALERT_THREAD_BY_THREAD_ID: u64 = 0x0183;
 
 static DISPATCH_COUNT: AtomicU64 = AtomicU64::new(0);
 
@@ -28,8 +32,12 @@ pub const fn syscall_name(id: u64) -> &'static str {
         NT_WRITE_FILE => "NtWriteFile",
         NT_READ_FILE => "NtReadFile",
         NT_ALLOCATE_VIRTUAL_MEMORY => "NtAllocateVirtualMemory",
+        NT_MAP_VIEW_OF_SECTION => "NtMapViewOfSection",
         NT_TERMINATE_PROCESS => "NtTerminateProcess",
         NT_YIELD_EXECUTION => "NtYieldExecution",
+        NT_CREATE_SECTION => "NtCreateSection",
+        NT_WAIT_FOR_ALERT_BY_THREAD_ID => "NtWaitForAlertByThreadId",
+        NT_ALERT_THREAD_BY_THREAD_ID => "NtAlertThreadByThreadId",
         _ => "UnknownSyscall",
     }
 }
@@ -55,9 +63,14 @@ pub fn dispatch(id: u64, arg1: u64, arg2: u64, arg3: u64, arg4: u64) -> u32 {
         }
         NT_TERMINATE_PROCESS => handlers::sys_terminate_process(arg1, arg2),
         NT_YIELD_EXECUTION => handlers::sys_yield_execution(),
+        NT_CREATE_SECTION => handlers::sys_create_section(arg1, arg2, arg3, arg4),
+        NT_MAP_VIEW_OF_SECTION => handlers::sys_map_view_of_section(arg1, arg2, arg3, arg4),
+        NT_WAIT_FOR_ALERT_BY_THREAD_ID => {
+            handlers::sys_wait_for_alert_by_thread_id(arg1, arg2, arg3, arg4)
+        }
+        NT_ALERT_THREAD_BY_THREAD_ID => handlers::sys_alert_thread_by_thread_id(arg1, arg2),
         _ => {
             crate::serial_write_str("[KNT-SYSCALL] Unimplemented NT service ID: 0x");
-            // Log hex id
             STATUS_NOT_IMPLEMENTED
         }
     }

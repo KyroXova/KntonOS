@@ -13,6 +13,7 @@ pub mod drivers;
 pub mod compositor;
 pub mod net;
 pub mod shell;
+pub mod ipc;
 
 pub use memory::ALLOCATOR;
 
@@ -134,6 +135,12 @@ pub extern "C" fn kmain() -> ! {
     syscall::init();
     if !syscall::test_syscall_subsystem() {
         serial_write_str("[KNT-PANIC] Syscall subsystem self-test failed!\r\n");
+    }
+
+    // Initialize Inter-Process Communication (IPC) Shared Memory Rings & Fast Futex Engine
+    ipc::init();
+    if !ipc::test_ipc_subsystem() {
+        serial_write_str("[KNT-PANIC] IPC subsystem self-test failed!\r\n");
     }
 
     // Initialize VirtIO Driver Subsystem (PCI discovery, split virtqueue, block device)

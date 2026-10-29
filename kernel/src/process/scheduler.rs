@@ -10,6 +10,7 @@ use crate::serial_write_str;
 pub struct Scheduler {
     pub current: Option<Box<ThreadControlBlock>>,
     pub runqueues: [VecDeque<Box<ThreadControlBlock>>; 5],
+    pub blocked_threads: alloc::vec::Vec<Box<ThreadControlBlock>>,
     pub switch_count: u64,
 }
 
@@ -24,6 +25,7 @@ impl Scheduler {
                 VecDeque::new(),
                 VecDeque::new(),
             ],
+            blocked_threads: alloc::vec::Vec::new(),
             switch_count: 0,
         }
     }
@@ -92,8 +94,9 @@ pub fn yield_now() {
         };
 
         let is_terminated = prev.state == ThreadState::Terminated;
+        let is_blocked = prev.state == ThreadState::Blocked;
 
-        if !is_terminated {
+        if !is_terminated && !is_blocked {
             prev.state = ThreadState::Ready;
             prev.quantum_remaining = DEFAULT_TIME_QUANTUM;
         }
@@ -104,8 +107,10 @@ pub fn yield_now() {
         let prev_rsp_ptr = &raw mut prev.rsp;
         let next_rsp = next.rsp;
 
-        // Re-enqueue prev thread into its priority runqueue ONLY if not terminated
-        if !is_terminated {
+        // Re-enqueue prev thread into its priority runqueue ONLY if runnable
+        if is_blocked {
+            sched.blocked_threads.push(prev);
+        } else if !is_terminated {
             sched.runqueues[prev.priority as usize].push_back(prev);
         }
         sched.current = Some(next);
@@ -118,6 +123,82 @@ pub fn yield_now() {
     unsafe {
         switch_context(prev_rsp_ptr, next_rsp);
     }
+}
+
+/// Marks the current thread as Blocked and context switches to the next available thread.
+pub fn block_current_thread() {
+    let (prev_rsp_ptr, next_rsp) = {
+        let mut guard = SCHEDULER.lock();
+        let sched = match guard.as_mut() {
+            Some(s) => s,
+            None => return,
+        };
+
+        let mut next_opt = None;
+        for queue in sched.runqueues.iter_mut().rev() {
+            if let Some(t) = queue.pop_front() {
+                next_opt = Some(t);
+                break;
+            }
+        }
+
+        let mut next = match next_opt {
+            Some(t) => t,
+            None => return,
+        };
+
+        let mut prev = match sched.current.take() {
+            Some(p) => p,
+            None => return,
+        };
+
+        prev.state = ThreadState::Blocked;
+        next.state = ThreadState::Running;
+        next.quantum_remaining = DEFAULT_TIME_QUANTUM;
+
+        let prev_rsp_ptr = &raw mut prev.rsp;
+        let next_rsp = next.rsp;
+
+        sched.blocked_threads.push(prev);
+        sched.current = Some(next);
+        sched.switch_count += 1;
+
+        (prev_rsp_ptr, next_rsp)
+    };
+
+    unsafe {
+        switch_context(prev_rsp_ptr, next_rsp);
+    }
+}
+
+/// Unblocks a previously blocked thread by TID, re-enqueueing it into its priority runqueue.
+pub fn wake_thread(tid: u64) -> bool {
+    let mut guard = SCHEDULER.lock();
+    let sched = match guard.as_mut() {
+        Some(s) => s,
+        None => return false,
+    };
+
+    if let Some(idx) = sched.blocked_threads.iter().position(|t| t.tid == tid) {
+        let mut thread = sched.blocked_threads.remove(idx);
+        thread.state = ThreadState::Ready;
+        thread.quantum_remaining = DEFAULT_TIME_QUANTUM;
+        sched.enqueue(thread);
+        true
+    } else {
+        false
+    }
+}
+
+/// Returns the TID of the currently active thread.
+pub fn current_thread_id() -> u64 {
+    let guard = SCHEDULER.lock();
+    if let Some(ref sched) = *guard {
+        if let Some(ref current) = sched.current {
+            return current.tid;
+        }
+    }
+    0
 }
 
 /// Terminates the current thread and immediately switches to the next available thread.
