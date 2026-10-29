@@ -23,7 +23,10 @@ pub use cursor::{cursor_sprite_pixel, CursorState, CURSOR_HEIGHT, CURSOR_WIDTH};
 pub use dirty::{DamageRegion, Rect};
 pub use window::{Window, BORDER_WIDTH, BUTTON_WIDTH, TITLEBAR_HEIGHT};
 pub use compositor::{SceneCompositor, DEFAULT_TASKBAR_HEIGHT};
-pub use taskbar::{DesktopTaskbar, TaskbarItem, TaskbarClickAction, TASKBAR_HEIGHT, TASKBAR_TOP_BORDER_HIGHLIGHT};
+pub use taskbar::{
+    DesktopTaskbar, NetworkStatus, PowerStatus, SystemTray, TaskbarClickAction, TaskbarItem,
+    VolumeStatus, TASKBAR_HEIGHT, TASKBAR_TOP_BORDER_HIGHLIGHT, read_cmos_rtc,
+};
 
 /// Global compositor manager instance.
 pub static COMPOSITOR: Spinlock<Option<SceneCompositor>> = Spinlock::new(None);

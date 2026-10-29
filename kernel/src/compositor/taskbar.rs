@@ -1,9 +1,11 @@
 //! Desktop Taskbar and Window Task Item Renderer for KntonOS Compositor.
 //!
 //! Provides a 32px bottom taskbar layout, acrylic frosted glass background,
-//! top border highlight (0x33FFFFFF), and dynamic window task buttons with
-//! active/minimized visual indicators.
+//! top border highlight (0x33FFFFFF), dynamic window task buttons with
+//! active/minimized visual indicators, RTC digital clock widget (HH:MM:SS),
+//! and system tray status icons (Network, Volume, Battery/Power).
 
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use crate::display::color::Color;
@@ -25,6 +27,282 @@ pub enum TaskbarClickAction {
     ToggleStartMenu,
     /// Clicked a window taskbar button to activate or minimize window.
     SelectWindow(u32),
+    /// Clicked on system tray clock / calendar.
+    ToggleClockFlyout,
+}
+
+/// Network connectivity indicator state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetworkStatus {
+    Disconnected,
+    Connected,
+    Active,
+}
+
+/// System audio volume indicator state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VolumeStatus {
+    Muted,
+    Low,
+    Medium,
+    High,
+}
+
+/// System battery and power supply state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PowerStatus {
+    Battery(u8),
+    Charging(u8),
+    AcPower,
+}
+
+/// Reads the current hardware time (hours, minutes, seconds) from x86 CMOS RTC registers.
+pub fn read_cmos_rtc() -> (u8, u8, u8) {
+    unsafe {
+        // Read Status Register B to determine if values are binary or BCD
+        core::arch::asm!("out 0x70, al", in("al") 0x0Bu8, options(nomem, nostack, preserves_flags));
+        let mut status_b: u8;
+        core::arch::asm!("in al, 0x71", out("al") status_b, options(nomem, nostack, preserves_flags));
+
+        // Read seconds (reg 0x00)
+        core::arch::asm!("out 0x70, al", in("al") 0x00u8, options(nomem, nostack, preserves_flags));
+        let mut sec: u8;
+        core::arch::asm!("in al, 0x71", out("al") sec, options(nomem, nostack, preserves_flags));
+
+        // Read minutes (reg 0x02)
+        core::arch::asm!("out 0x70, al", in("al") 0x02u8, options(nomem, nostack, preserves_flags));
+        let mut min: u8;
+        core::arch::asm!("in al, 0x71", out("al") min, options(nomem, nostack, preserves_flags));
+
+        // Read hours (reg 0x04)
+        core::arch::asm!("out 0x70, al", in("al") 0x04u8, options(nomem, nostack, preserves_flags));
+        let mut hr: u8;
+        core::arch::asm!("in al, 0x71", out("al") hr, options(nomem, nostack, preserves_flags));
+
+        // If BCD bit (bit 2) is not set, convert BCD to binary
+        let is_binary = (status_b & 0x04) != 0;
+        if !is_binary {
+            sec = (sec & 0x0F) + ((sec / 16) * 10);
+            min = (min & 0x0F) + ((min / 16) * 10);
+            hr = ((hr & 0x0F) + (((hr & 0x70) / 16) * 10)) | (hr & 0x80);
+        }
+
+        // Convert 12-hour format to 24-hour if bit 1 is not set
+        let is_24hr = (status_b & 0x02) != 0;
+        if !is_24hr && (hr & 0x80) != 0 {
+            hr = ((hr & 0x7F) + 12) % 24;
+        }
+
+        (hr % 24, min % 60, sec % 60)
+    }
+}
+
+/// System tray managing digital clock timekeeping and status indicator icons.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemTray {
+    pub network: NetworkStatus,
+    pub volume: VolumeStatus,
+    pub power: PowerStatus,
+    pub hours: u8,
+    pub minutes: u8,
+    pub seconds: u8,
+}
+
+impl SystemTray {
+    /// Constructs a new system tray initialized to noon (12:00:00) on AC power.
+    pub fn new() -> Self {
+        Self {
+            network: NetworkStatus::Connected,
+            volume: VolumeStatus::High,
+            power: PowerStatus::AcPower,
+            hours: 12,
+            minutes: 0,
+            seconds: 0,
+        }
+    }
+
+    /// Sets the digital clock time components.
+    pub fn set_time(&mut self, hours: u8, minutes: u8, seconds: u8) {
+        self.hours = hours % 24;
+        self.minutes = minutes % 60;
+        self.seconds = seconds % 60;
+    }
+
+    /// Advances the clock by one second with minute and hour overflow rollover.
+    pub fn tick_second(&mut self) {
+        self.seconds += 1;
+        if self.seconds >= 60 {
+            self.seconds = 0;
+            self.minutes += 1;
+            if self.minutes >= 60 {
+                self.minutes = 0;
+                self.hours = (self.hours + 1) % 24;
+            }
+        }
+    }
+
+    /// Synchronizes the digital clock with the hardware CMOS RTC.
+    pub fn update_from_rtc(&mut self) {
+        let (h, m, s) = read_cmos_rtc();
+        self.set_time(h, m, s);
+    }
+
+    /// Formats the current time into `HH:MM:SS`.
+    pub fn format_time(&self) -> String {
+        format!("{:02}:{:02}:{:02}", self.hours, self.minutes, self.seconds)
+    }
+
+    /// Renders the system tray status icons and digital clock string into `buffer`.
+    pub fn render(
+        &self,
+        buffer: &mut [Color],
+        screen_width: usize,
+        screen_height: usize,
+        taskbar_y: usize,
+        clip: Option<&Rect>,
+    ) {
+        // 1. Digital Clock at far right
+        let clock_str = self.format_time();
+        let clock_w = clock_str.len() * FONT_WIDTH;
+        let clock_x = screen_width.saturating_sub(clock_w + 12);
+        let text_y = taskbar_y + (TASKBAR_HEIGHT.saturating_sub(FONT_HEIGHT)) / 2;
+
+        draw_string_clipped(
+            buffer,
+            screen_width,
+            screen_height,
+            clock_x,
+            text_y,
+            &clock_str,
+            Color::WIN11_TEXT_PRIMARY,
+            clip,
+        );
+
+        // 2. Battery / Power indicator (to the left of clock)
+        let power_x = clock_x.saturating_sub(24);
+        let icon_y = taskbar_y + 11;
+        self.render_power_icon(buffer, screen_width, screen_height, power_x, icon_y, clip);
+
+        // 3. Volume indicator (to the left of power)
+        let volume_x = power_x.saturating_sub(22);
+        self.render_volume_icon(buffer, screen_width, screen_height, volume_x, icon_y, clip);
+
+        // 4. Network indicator (to the left of volume)
+        let net_x = volume_x.saturating_sub(22);
+        self.render_network_icon(buffer, screen_width, screen_height, net_x, icon_y, clip);
+    }
+
+    fn render_network_icon(
+        &self,
+        buffer: &mut [Color],
+        screen_width: usize,
+        screen_height: usize,
+        x: usize,
+        y: usize,
+        clip: Option<&Rect>,
+    ) {
+        let fg = match self.network {
+            NetworkStatus::Active => Color::WIN11_ACCENT,
+            NetworkStatus::Connected => Color::WIN11_TEXT_PRIMARY,
+            NetworkStatus::Disconnected => Color::WIN11_TEXT_SECONDARY,
+        };
+
+        // 3 ascending signal bars (heights 4, 7, 10)
+        draw_rect_clipped(buffer, screen_width, screen_height, x, y + 6, 2, 4, fg, clip);
+        draw_rect_clipped(buffer, screen_width, screen_height, x + 4, y + 3, 2, 7, fg, clip);
+        draw_rect_clipped(buffer, screen_width, screen_height, x + 8, y, 2, 10, fg, clip);
+
+        if self.network == NetworkStatus::Disconnected {
+            // Draw small diagonal red slash
+            draw_rect_clipped(buffer, screen_width, screen_height, x, y, 10, 1, Color::WIN11_CLOSE_RED, clip);
+        }
+    }
+
+    fn render_volume_icon(
+        &self,
+        buffer: &mut [Color],
+        screen_width: usize,
+        screen_height: usize,
+        x: usize,
+        y: usize,
+        clip: Option<&Rect>,
+    ) {
+        let fg = if self.volume == VolumeStatus::Muted {
+            Color::WIN11_TEXT_SECONDARY
+        } else {
+            Color::WIN11_TEXT_PRIMARY
+        };
+
+        // Speaker rectangle box (3x6)
+        draw_rect_clipped(buffer, screen_width, screen_height, x, y + 2, 3, 6, fg, clip);
+        // Cone trapezoid
+        draw_rect_clipped(buffer, screen_width, screen_height, x + 3, y + 1, 2, 8, fg, clip);
+        draw_rect_clipped(buffer, screen_width, screen_height, x + 5, y, 2, 10, fg, clip);
+
+        // Sound arcs
+        match self.volume {
+            VolumeStatus::High => {
+                draw_rect_clipped(buffer, screen_width, screen_height, x + 8, y + 2, 1, 6, Color::WIN11_ACCENT, clip);
+                draw_rect_clipped(buffer, screen_width, screen_height, x + 10, y + 1, 1, 8, Color::WIN11_ACCENT, clip);
+            }
+            VolumeStatus::Medium => {
+                draw_rect_clipped(buffer, screen_width, screen_height, x + 8, y + 2, 1, 6, Color::WIN11_ACCENT, clip);
+            }
+            VolumeStatus::Low => {
+                draw_rect_clipped(buffer, screen_width, screen_height, x + 8, y + 3, 1, 4, Color::WIN11_ACCENT, clip);
+            }
+            VolumeStatus::Muted => {
+                // Red 'x'
+                draw_rect_clipped(buffer, screen_width, screen_height, x + 8, y + 2, 1, 2, Color::WIN11_CLOSE_RED, clip);
+                draw_rect_clipped(buffer, screen_width, screen_height, x + 10, y + 2, 1, 2, Color::WIN11_CLOSE_RED, clip);
+                draw_rect_clipped(buffer, screen_width, screen_height, x + 9, y + 4, 1, 2, Color::WIN11_CLOSE_RED, clip);
+                draw_rect_clipped(buffer, screen_width, screen_height, x + 8, y + 6, 1, 2, Color::WIN11_CLOSE_RED, clip);
+                draw_rect_clipped(buffer, screen_width, screen_height, x + 10, y + 6, 1, 2, Color::WIN11_CLOSE_RED, clip);
+            }
+        }
+    }
+
+    fn render_power_icon(
+        &self,
+        buffer: &mut [Color],
+        screen_width: usize,
+        screen_height: usize,
+        x: usize,
+        y: usize,
+        clip: Option<&Rect>,
+    ) {
+        // Battery body outline (12x7)
+        draw_rect_clipped(buffer, screen_width, screen_height, x, y + 1, 12, 1, Color::WIN11_TEXT_SECONDARY, clip);
+        draw_rect_clipped(buffer, screen_width, screen_height, x, y + 7, 12, 1, Color::WIN11_TEXT_SECONDARY, clip);
+        draw_rect_clipped(buffer, screen_width, screen_height, x, y + 1, 1, 7, Color::WIN11_TEXT_SECONDARY, clip);
+        draw_rect_clipped(buffer, screen_width, screen_height, x + 11, y + 1, 1, 7, Color::WIN11_TEXT_SECONDARY, clip);
+
+        // Terminal notch (2x3)
+        draw_rect_clipped(buffer, screen_width, screen_height, x + 12, y + 3, 2, 3, Color::WIN11_TEXT_SECONDARY, clip);
+
+        // Fill indicator
+        match self.power {
+            PowerStatus::AcPower => {
+                // Solid green / full
+                draw_rect_clipped(buffer, screen_width, screen_height, x + 2, y + 3, 8, 3, Color::rgb(16, 124, 65), clip);
+            }
+            PowerStatus::Charging(pct) => {
+                let fill_w = ((pct as usize * 8) / 100).max(1);
+                draw_rect_clipped(buffer, screen_width, screen_height, x + 2, y + 3, fill_w, 3, Color::WIN11_ACCENT, clip);
+            }
+            PowerStatus::Battery(pct) => {
+                let fill_w = ((pct as usize * 8) / 100).max(1);
+                let col = if pct < 20 {
+                    Color::WIN11_CLOSE_RED
+                } else if pct < 50 {
+                    Color::rgb(255, 185, 0)
+                } else {
+                    Color::rgb(16, 124, 65)
+                };
+                draw_rect_clipped(buffer, screen_width, screen_height, x + 2, y + 3, fill_w, 3, col, clip);
+            }
+        }
+    }
 }
 
 /// Represents an active window item displayed on the taskbar.
@@ -37,10 +315,11 @@ pub struct TaskbarItem {
     pub bounds: Rect,
 }
 
-/// Desktop taskbar managing bottom bar layout, window items, and background rendering.
+/// Desktop taskbar managing bottom bar layout, window items, system tray, and background rendering.
 pub struct DesktopTaskbar {
     pub height: usize,
     pub items: Vec<TaskbarItem>,
+    pub tray: SystemTray,
     pub top_border_color: Color,
     pub background_color: Color,
     pub acrylic_config: AcrylicConfig,
@@ -53,6 +332,7 @@ impl DesktopTaskbar {
         Self {
             height,
             items: Vec::new(),
+            tray: SystemTray::new(),
             top_border_color: TASKBAR_TOP_BORDER_HIGHLIGHT,
             background_color: Color::WIN11_TASKBAR,
             acrylic_config: AcrylicConfig::default_dark(),
@@ -76,7 +356,7 @@ impl DesktopTaskbar {
         let item_width = 100;
         let item_height = 24;
         let gap = 4;
-        let max_x = screen_width.saturating_sub(140); // reserve space for clock & tray
+        let max_x = screen_width.saturating_sub(160); // reserve space for clock & tray
 
         for (i, win) in windows.iter().enumerate() {
             let item_x = start_x + i * (item_width + gap);
@@ -110,7 +390,7 @@ impl DesktopTaskbar {
     }
 
     /// Renders the complete taskbar: acrylic background, top border highlight, Start button,
-    /// and window task buttons into the compositor backbuffer.
+    /// window task buttons, and system tray (indicators + clock) into the compositor backbuffer.
     pub fn render(
         &self,
         buffer: &mut [Color],
@@ -165,6 +445,9 @@ impl DesktopTaskbar {
         for item in &self.items {
             self.render_item(item, buffer, screen_width, screen_height, clip);
         }
+
+        // 5. System Tray (indicators + RTC digital clock)
+        self.tray.render(buffer, screen_width, screen_height, taskbar_y, clip);
     }
 
     /// Renders the Start button in the taskbar.
@@ -328,5 +611,26 @@ pub fn draw_char_clipped(
                 buffer[row_offset + tx] = fg;
             }
         }
+    }
+}
+
+/// Helper to render a text string clipped to `clip` and screen boundaries.
+pub fn draw_string_clipped(
+    buffer: &mut [Color],
+    screen_width: usize,
+    screen_height: usize,
+    x: usize,
+    y: usize,
+    s: &str,
+    fg: Color,
+    clip: Option<&Rect>,
+) {
+    let mut cur_x = x;
+    for c in s.chars() {
+        if cur_x + FONT_WIDTH > screen_width {
+            break;
+        }
+        draw_char_clipped(buffer, screen_width, screen_height, cur_x, y, c, fg, clip);
+        cur_x += FONT_WIDTH;
     }
 }
