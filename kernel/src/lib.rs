@@ -9,6 +9,7 @@ pub mod pe;
 pub mod fs;
 pub mod process;
 pub mod syscall;
+pub mod drivers;
 
 pub use memory::ALLOCATOR;
 
@@ -100,6 +101,12 @@ pub extern "C" fn kmain() -> ! {
     syscall::init();
     if !syscall::test_syscall_subsystem() {
         serial_write_str("[KNT-PANIC] Syscall subsystem self-test failed!\r\n");
+    }
+
+    // Initialize VirtIO Driver Subsystem (PCI discovery, split virtqueue, block device)
+    drivers::virtio::init();
+    if !drivers::virtio::test_virtio_subsystem() {
+        serial_write_str("[KNT-PANIC] VirtIO subsystem self-test failed!\r\n");
     }
 
     serial_write_str("[KNT-SUBSYSTEM] Display & Win32 PE64 loader modules active\r\n");
