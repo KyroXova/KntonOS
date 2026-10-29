@@ -55,7 +55,7 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-028 | VT Shell Pipelines, I/O Redirection, and Process Job Control | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-028-shell-pipelines.md) |
 | TASK-KNT-029 | POSIX Signal Handling & Process Exception Dispatch Engine | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-029-signals.md) |
 | TASK-KNT-030 | Embedded HTTP/1.1 Micro-Server & Kernel REST Telemetry API | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-030-http-server.md) |
-| TASK-KNT-031 | FAT32 Persistent File System Driver & VirtIO Block Mount Integration | Claimed | TASK-KNT-013 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-031-fat32.md) |
+| TASK-KNT-031 | FAT32 Persistent File System Driver & VirtIO Block Mount Integration | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-031-fat32.md) |
 | TASK-KNT-032 | Dynamic Linker & Shared Library Loader with GOT/PLT Relocations | Claimed | TASK-KNT-026 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-032-dynlink.md) |
 | TASK-KNT-033 | TLS 1.3 Cryptographic Handshake & AES-128-GCM AEAD Record Layer | Claimed | TASK-KNT-021 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-033-tls.md) |
 
