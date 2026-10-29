@@ -1,7 +1,7 @@
-//! Windows PE32+ (64-bit) Executable & COFF Loader Subsystem for KntonOS.
-
 pub mod header;
 pub mod loader;
+pub mod image;
 
 pub use header::*;
-pub use loader::{ParsedPe64, PeError};
+pub use loader::*;
+pub use image::*;
