@@ -5,6 +5,7 @@ pub mod pci_db;
 pub mod pci_scanner;
 pub mod audio;
 pub mod usb;
+pub mod gpu;
 
 use alloc::vec::Vec;
 use crate::memory::spinlock::Spinlock;
@@ -230,4 +231,8 @@ pub fn test_pci_subsystem() -> bool {
 
     serial_write_str("[KNT-PCI-TESTS-PASS] All PCI subsystem and xHCI controller checks passed\r\n");
     true
+}
+
+pub fn test_gpu_subsystem() -> bool {
+    gpu::test_virtio_gpu_subsystem()
 }
