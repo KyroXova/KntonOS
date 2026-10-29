@@ -18,7 +18,7 @@ These branches are managed by their respective developers with granular commit l
 | Contributor identity | Branch | Local workspace | Status |
 | --- | --- | --- | --- |
 | Ada Chen | `workspace/ada-chen` | `E:\Git Lab's\kntonOS-ada-chen` | Active (TASK-KNT-027) |
-| Jules Martin | `workspace/jules-martin` | `E:\Git Lab's\kntonOS-jules-martin` | Active (TASK-KNT-026) |
+| Jules Martin | `workspace/jules-martin` | `E:\Git Lab's\kntonOS-jules-martin` | Active (TASK-KNT-029) |
 | Priya Nair | `workspace/priya-nair` | `E:\Git Lab's\kntonOS-priya-nair` | Active (TASK-KNT-028) |
 
 ## Task index
@@ -53,9 +53,10 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-026 | ELF64 Executable Loader & Userland Execution Subsystem | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-026-elf64-loader.md) |
 | TASK-KNT-027 | BSD / WinSock Sockets Abstraction Layer & Event Readiness Polling | Claimed | TASK-KNT-024 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-027-socket-layer.md) |
 | TASK-KNT-028 | VT Shell Pipelines, I/O Redirection, and Process Job Control | Claimed | TASK-KNT-016 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-028-shell-pipelines.md) |
+| TASK-KNT-029 | POSIX Signal Handling & Process Exception Dispatch Engine | Claimed | TASK-KNT-026 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-029-signals.md) |
 
 ## Active reservations
 
 - `kernel/src/net/socket.rs`, `kernel/src/net/poll.rs`: reserved by Ada Chen for TASK-KNT-027.
-- `kernel/src/loader/elf.rs`: reserved by Jules Martin for TASK-KNT-026.
+- `kernel/src/process/signals.rs`: reserved by Jules Martin for TASK-KNT-029.
 - `kernel/src/shell/pipeline.rs`, `kernel/src/shell/jobs.rs`: reserved by Priya Nair for TASK-KNT-028.
