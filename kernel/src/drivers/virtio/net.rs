@@ -5,6 +5,11 @@
 //! - Dual Virtqueue architecture (Queue 0: Receive / RX, Queue 1: Transmit / TX)
 //! - Pre-allocated DMA receive buffer pools and zero-copy packet dispatch
 
+use super::pci::PciDevice;
+use super::virtqueue::{Virtqueue, VIRTQ_DESC_F_WRITE};
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+
 pub const VIRTIO_NET_HDR_F_NEEDS_CSUM: u8 = 1;
 pub const VIRTIO_NET_HDR_F_DATA_VALID: u8 = 2;
 pub const VIRTIO_NET_HDR_F_RSC_INFO: u8 = 4;
@@ -45,6 +50,57 @@ impl VirtioNetHeader {
             csum_start: 0,
             csum_offset: 0,
             num_buffers: 1,
+        }
+    }
+}
+
+/// VirtIO Network Device Instance managing RX and TX virtqueues.
+pub struct VirtioNetDevice {
+    pub pci: Option<PciDevice>,
+    pub mac_addr: [u8; ETH_ALEN],
+    pub rx_queue: Virtqueue,
+    pub tx_queue: Virtqueue,
+    pub rx_buffers: Box<[Box<[u8; NET_BUFFER_SIZE]>]>,
+    // In-memory loopback queue for simulated bare-metal and headless testing
+    pub mock_loopback_queue: Vec<Vec<u8>>,
+}
+
+impl VirtioNetDevice {
+    /// Creates a VirtIO Network Device with assigned queue sizes (e.g. 32 or 64).
+    pub fn new(pci: Option<PciDevice>, queue_size: u16, mac_addr: [u8; ETH_ALEN]) -> Self {
+        let mut rx_buf_vec = Vec::with_capacity(queue_size as usize);
+        for _ in 0..queue_size {
+            rx_buf_vec.push(Box::new([0u8; NET_BUFFER_SIZE]));
+        }
+
+        let mut dev = Self {
+            pci,
+            mac_addr,
+            rx_queue: Virtqueue::new(queue_size),
+            tx_queue: Virtqueue::new(queue_size),
+            rx_buffers: rx_buf_vec.into_boxed_slice(),
+            mock_loopback_queue: Vec::new(),
+        };
+
+        dev.populate_rx_buffers();
+        dev
+    }
+
+    /// Pre-allocates and submits receive buffers to the RX Virtqueue available ring.
+    pub fn populate_rx_buffers(&mut self) {
+        let count = self.rx_queue.queue_size();
+        for i in 0..count {
+            if let Some(desc_idx) = self.rx_queue.alloc_descriptor() {
+                let buf_ptr = self.rx_buffers[i as usize].as_mut_ptr() as usize as u64;
+                self.rx_queue.set_descriptor(
+                    desc_idx,
+                    buf_ptr,
+                    NET_BUFFER_SIZE as u32,
+                    VIRTQ_DESC_F_WRITE,
+                    0,
+                );
+                self.rx_queue.submit_chain(desc_idx);
+            }
         }
     }
 }
