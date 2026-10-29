@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Review |
+| Status | Revision requested |
 | Requirement/source | Owner UEFI-native-kernel constraint; TASK-KNT-003 |
 | Milestone | A reproducible proposed toolchain and emulator-validation fixture plan for the first native boot slice. |
 | Depends on | None |
@@ -21,6 +21,6 @@ Research a reproducible x86-64 UEFI development, build, and QEMU-based validatio
 - [x] Defines the first proposed automated validation signals without claiming implementation results.
 - [x] Records host-platform constraints and open decisions for the architecture lead.
 
-## AgentIRC reporting
+## AgentIRC review outcome
 
-Deliverable is integrated at `b226965`. Review evidence and next action are recorded in AgentIRC; do not create repository status-transfer files.
+Lead review found that the proposed `boot_runner.py` snippet is not valid Python and must not be presented as runnable. Correct it as part of the native boot proof. Evidence and next action are recorded in AgentIRC; do not create repository status-transfer files.

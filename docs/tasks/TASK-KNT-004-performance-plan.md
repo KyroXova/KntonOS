@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Review |
+| Status | Revision requested |
 | Requirement/source | `docs/project-scope.md`, owner decision 2026-10-29 |
 | Milestone | A measurable first-demo test plan for boot, RAM, ISO size, and real-game performance. |
 | Depends on | None |
@@ -28,6 +28,6 @@ Define how the first KntonOS demo will prove its low-resource claim and game-per
 - Consumers: platform, graphics, runtime, installer, and release-readiness tasks.
 - Validation: test procedure must be executable by a second contributor and must not claim results before an implementation exists.
 
-## AgentIRC reporting
+## AgentIRC review outcome
 
-Authored by Ada Chen on `workspace/ada-chen` at commit `a3a9711`. Integrated into `main` at commit `4c96fb8`. Review request, evidence, and next action are recorded in AgentIRC.
+Lead review requires source-verified game executable, renderer/API, benchmark command, and version details, plus an explicitly staged game-performance gate. The complete findings, evidence, and next action are recorded in AgentIRC `#reports`.

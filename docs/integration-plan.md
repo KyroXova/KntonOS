@@ -10,4 +10,4 @@ The eventual product needs at least a native x86-64 UEFI boot/platform layer, in
 
 ## Integration gate
 
-Product implementation remains blocked until TASK-KNT-002 has a measurable demonstration definition and TASK-KNT-003 establishes an approved architecture direction. Architecture research and performance-planning work may proceed within the scoped control in `TASKS.md`.
+The real-game performance demonstration remains blocked until TASK-KNT-002 has a measurable demonstration definition and TASK-KNT-003 establishes an approved architecture direction. A narrow native boot-slice proof may proceed under TASK-KNT-006: UEFI boot, kernel entry, serial output, QEMU/OVMF validation, and controlled halt. It must not claim `.exe` execution, graphics acceleration, game compatibility, or performance improvement.

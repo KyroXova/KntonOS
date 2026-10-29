@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Review |
+| Status | Revision requested |
 | Requirement/source | `docs/project-scope.md`, owner decisions 2026-10-29 |
 | Milestone | A reviewable architecture decision record for the first native KntonOS vertical slice. |
 | Depends on | None |
@@ -29,6 +29,6 @@ Compare feasible approaches for an independently developed x86-64 UEFI kernel an
 - Contract: recommendation must identify explicit component boundaries, interfaces to be specified next, and no use of a modified third-party kernel.
 - Validation: sources and assumptions must be cited; an independent reviewer validates that the recommendation meets owner constraints.
 
-## AgentIRC reporting
+## AgentIRC review outcome
 
-Deliverable committed to `main` at commit `394d482`. Companion research on emulation fixtures integrated at `b226965`. Review request, evidence, and next action are recorded in AgentIRC.
+Lead review requires a staged native boot-slice contract, explicit GPU-driver dependency for the game-performance milestone, and external dependency/license provenance. The complete findings, evidence, and next action are recorded in AgentIRC `#reports`.
