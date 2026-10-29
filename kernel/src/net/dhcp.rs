@@ -23,6 +23,7 @@ pub const DHCP_OPT_PAD: u8 = 0;
 pub const DHCP_OPT_SUBNET_MASK: u8 = 1;
 pub const DHCP_OPT_ROUTER: u8 = 3;
 pub const DHCP_OPT_DNS_SERVER: u8 = 6;
+pub const DHCP_OPT_REQUESTED_IP: u8 = 50;
 pub const DHCP_OPT_LEASE_TIME: u8 = 51;
 pub const DHCP_OPT_MESSAGE_TYPE: u8 = 53;
 pub const DHCP_OPT_SERVER_ID: u8 = 54;
@@ -312,6 +313,207 @@ impl DhcpPacket {
             }
         })
     }
+}
+
+/// DHCP Client State Machine (RFC 2131 Section 4.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DhcpState {
+    Init,
+    Selecting,
+    Requesting,
+    Bound,
+}
+
+/// Acquired DHCP Network Lease Parameters.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DhcpLease {
+    pub ip: [u8; 4],
+    pub netmask: [u8; 4],
+    pub router: [u8; 4],
+    pub dns_servers: Vec<[u8; 4]>,
+    pub server_id: [u8; 4],
+    pub lease_time: u32,
+}
+
+/// DHCP IPv4 Client State Machine & Dispatch Engine.
+#[derive(Debug, Clone)]
+pub struct DhcpClient {
+    pub state: DhcpState,
+    pub client_mac: [u8; 6],
+    pub xid: u32,
+    pub offered_ip: Option<[u8; 4]>,
+    pub server_id: Option<[u8; 4]>,
+    pub lease: Option<DhcpLease>,
+}
+
+impl DhcpClient {
+    /// Creates a new DHCP client bound to the specified Ethernet MAC address in Init state.
+    pub fn new(client_mac: [u8; 6]) -> Self {
+        // Deterministic transaction ID derived from MAC
+        let xid = 0x3903F326 ^ (client_mac[4] as u32) | ((client_mac[5] as u32) << 8);
+        Self {
+            state: DhcpState::Init,
+            client_mac,
+            xid,
+            offered_ip: None,
+            server_id: None,
+            lease: None,
+        }
+    }
+
+    /// Transitions to Selecting and builds an outgoing broadcast DHCPDISCOVER packet.
+    pub fn build_discover(&mut self) -> DhcpPacket {
+        self.state = DhcpState::Selecting;
+
+        let mut pkt = DhcpPacket::new_client_packet(self.xid, self.client_mac);
+        pkt.add_option(DHCP_OPT_MESSAGE_TYPE, &[DHCPDISCOVER]);
+        pkt.add_option(DHCP_OPT_PARAM_REQUEST_LIST, &[
+            DHCP_OPT_SUBNET_MASK,
+            DHCP_OPT_ROUTER,
+            DHCP_OPT_DNS_SERVER,
+            DHCP_OPT_LEASE_TIME,
+        ]);
+        pkt
+    }
+
+    /// Handles an incoming DHCPOFFER packet and produces a DHCPREQUEST packet.
+    pub fn handle_offer(&mut self, offer: &DhcpPacket) -> Result<DhcpPacket, DhcpError> {
+        if self.state != DhcpState::Selecting {
+            return Err(DhcpError::UnexpectedMessageType);
+        }
+        if offer.xid != self.xid || offer.op != BOOTREPLY {
+            return Err(DhcpError::UnexpectedMessageType);
+        }
+        if offer.message_type() != Some(DHCPOFFER) {
+            return Err(DhcpError::UnexpectedMessageType);
+        }
+
+        let offered_ip = offer.yiaddr;
+        let server_id = offer.server_id().unwrap_or(offer.siaddr);
+
+        self.offered_ip = Some(offered_ip);
+        self.server_id = Some(server_id);
+        self.state = DhcpState::Requesting;
+
+        let mut req = DhcpPacket::new_client_packet(self.xid, self.client_mac);
+        req.add_option(DHCP_OPT_MESSAGE_TYPE, &[DHCPREQUEST]);
+        req.add_option(DHCP_OPT_SERVER_ID, &server_id);
+        req.add_option(DHCP_OPT_REQUESTED_IP, &offered_ip);
+        req.add_option(DHCP_OPT_PARAM_REQUEST_LIST, &[
+            DHCP_OPT_SUBNET_MASK,
+            DHCP_OPT_ROUTER,
+            DHCP_OPT_DNS_SERVER,
+            DHCP_OPT_LEASE_TIME,
+        ]);
+
+        Ok(req)
+    }
+
+    /// Handles an incoming DHCPACK packet, transitions to Bound, and stores the lease parameters.
+    pub fn handle_ack(&mut self, ack: &DhcpPacket) -> Result<DhcpLease, DhcpError> {
+        if self.state != DhcpState::Requesting {
+            return Err(DhcpError::UnexpectedMessageType);
+        }
+        if ack.xid != self.xid || ack.op != BOOTREPLY {
+            return Err(DhcpError::UnexpectedMessageType);
+        }
+        if ack.message_type() != Some(DHCPACK) {
+            return Err(DhcpError::UnexpectedMessageType);
+        }
+
+        let ip = if ack.yiaddr != [0, 0, 0, 0] {
+            ack.yiaddr
+        } else {
+            self.offered_ip.ok_or(DhcpError::UnexpectedMessageType)?
+        };
+
+        let netmask = ack.subnet_mask().unwrap_or([255, 255, 255, 0]);
+        let router = ack.router().unwrap_or([ip[0], ip[1], ip[2], 1]);
+        let mut dns_servers = ack.dns_servers();
+        if dns_servers.is_empty() {
+            dns_servers.push(router);
+        }
+
+        let server_id = ack.server_id().unwrap_or(ack.siaddr);
+        let lease_time = ack.lease_time().unwrap_or(86400);
+
+        let lease = DhcpLease {
+            ip,
+            netmask,
+            router,
+            dns_servers,
+            server_id,
+            lease_time,
+        };
+
+        self.lease = Some(lease.clone());
+        self.state = DhcpState::Bound;
+
+        Ok(lease)
+    }
+}
+
+/// Self-test function verifying DHCP state transitions and lease acquisition.
+pub fn verify_dhcp_state_machine() -> bool {
+    let mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
+    let mut client = DhcpClient::new(mac);
+
+    if client.state != DhcpState::Init {
+        return false;
+    }
+
+    let discover = client.build_discover();
+    if client.state != DhcpState::Selecting || discover.message_type() != Some(DHCPDISCOVER) {
+        return false;
+    }
+
+    // Synthesize mock DHCPOFFER
+    let mut offer = DhcpPacket::new_client_packet(client.xid, mac);
+    offer.op = BOOTREPLY;
+    offer.yiaddr = [192, 168, 1, 150];
+    offer.siaddr = [192, 168, 1, 1];
+    offer.add_option(DHCP_OPT_MESSAGE_TYPE, &[DHCPOFFER]);
+    offer.add_option(DHCP_OPT_SERVER_ID, &[192, 168, 1, 1]);
+    offer.add_option(DHCP_OPT_SUBNET_MASK, &[255, 255, 255, 0]);
+    offer.add_option(DHCP_OPT_ROUTER, &[192, 168, 1, 1]);
+    offer.add_option(DHCP_OPT_DNS_SERVER, &[192, 168, 1, 1]);
+    offer.add_option(DHCP_OPT_LEASE_TIME, &3600u32.to_be_bytes());
+
+    let req = match client.handle_offer(&offer) {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+
+    if client.state != DhcpState::Requesting || req.message_type() != Some(DHCPREQUEST) {
+        return false;
+    }
+
+    // Synthesize mock DHCPACK
+    let mut ack = DhcpPacket::new_client_packet(client.xid, mac);
+    ack.op = BOOTREPLY;
+    ack.yiaddr = [192, 168, 1, 150];
+    ack.siaddr = [192, 168, 1, 1];
+    ack.add_option(DHCP_OPT_MESSAGE_TYPE, &[DHCPACK]);
+    ack.add_option(DHCP_OPT_SERVER_ID, &[192, 168, 1, 1]);
+    ack.add_option(DHCP_OPT_SUBNET_MASK, &[255, 255, 255, 0]);
+    ack.add_option(DHCP_OPT_ROUTER, &[192, 168, 1, 1]);
+    ack.add_option(DHCP_OPT_DNS_SERVER, &[192, 168, 1, 1]);
+    ack.add_option(DHCP_OPT_LEASE_TIME, &3600u32.to_be_bytes());
+
+    let lease = match client.handle_ack(&ack) {
+        Ok(l) => l,
+        Err(_) => return false,
+    };
+
+    if client.state != DhcpState::Bound
+        || lease.ip != [192, 168, 1, 150]
+        || lease.netmask != [255, 255, 255, 0]
+        || lease.router != [192, 168, 1, 1]
+    {
+        return false;
+    }
+
+    true
 }
 
 /// Self-test function verifying DHCP packet serialization, option TLVs, and parsing.
