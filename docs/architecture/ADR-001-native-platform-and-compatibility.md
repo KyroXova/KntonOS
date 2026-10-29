@@ -1,11 +1,11 @@
 # ADR-001: Native Platform Architecture and Windows Application Compatibility Boundary
 
-- **Status**: Proposed / In Review
+- **Status**: Proposed / Revised (Revision 2)
 - **Date**: 2026-10-29
 - **Authors**: Marcus (Senior Dev / Implementation Lead)
 - **Task Reference**: TASK-KNT-003
 - **Reviewers**: Nadia Mercer (Project Maintainer / Independent Lead Review)
-- **Scope**: Native x86-64 UEFI Kernel, Core User-space Architecture, and Windows PE/.EXE Compatibility Model
+- **Scope**: Native x86-64 UEFI Kernel, Core User-space Architecture, GPU Display Pipeline, and Windows PE/.EXE Compatibility Model
 
 ---
 
@@ -16,7 +16,7 @@ The owner has defined KntonOS as an independently developed operating system tar
 2. A lightweight, modern GUI environment delivering a Windows 11-like desktop feel with dramatically lower resource consumption (RAM, storage, background CPU cycles).
 3. The strategic capability to run Windows `.exe` applications, specifically focusing on games and everyday productivity software.
 
-This architecture decision record (ADR) analyzes the native platform design, kernel/user-space separation, component language selections, and a staged compatibility boundary to achieve a credible first vertical slice without making unbounded claims.
+This architecture decision record (ADR) analyzes the native platform design, kernel/user-space separation, component language selections, explicit GPU driver dependencies, dependency licensing provenance, and a staged compatibility boundary to achieve a credible first vertical slice without making unbounded claims.
 
 ---
 
@@ -61,16 +61,16 @@ This architecture decision record (ADR) analyzes the native platform design, ker
 ### 2.3 Kernel / User-space Responsibility Boundary
 
 - **Kernel Core (Ring 0)**:
-  - Memory Management: Physical page allocation, virtual address space management (PML4 paging), user-space page fault handlers, copy-on-write mappings.
-  - Preemption & Threading: SMP-aware round-robin with dynamic priority boosts, cooperative yield, thread contexts (`RSP`, `RIP`, registers, SSE/AVX state saving via `FXSAVE`/`XSAVE`).
-  - Synchronization: Spinlocks (irq-safe, kernel internal), Mutexes, Semaphores, Event objects.
-  - IPC: Fast synchronous and asynchronous message-passing ports utilizing shared-memory ring buffers and futex-like wake primitives.
-  - Driver Interface: Modular kernel driver interface for critical low-latency hardware (Timers, LAPIC/IOAPIC, NVMe/AHCI storage, Framebuffer/GPU command submission).
+  - **Memory Management**: Physical page allocation, virtual address space management (PML4 paging), user-space page fault handlers, copy-on-write mappings.
+  - **Preemption & Threading**: SMP-aware round-robin with dynamic priority boosts, cooperative yield, thread contexts (`RSP`, `RIP`, registers, SSE/AVX state saving via `FXSAVE`/`XSAVE`).
+  - **Synchronization**: Spinlocks (irq-safe, kernel internal), Mutexes, Semaphores, Event objects.
+  - **IPC**: Fast synchronous and asynchronous message-passing ports utilizing shared-memory ring buffers and futex-like wake primitives.
+  - **Driver Interface**: Modular kernel driver interface for critical low-latency hardware (Timers, LAPIC/IOAPIC, NVMe/AHCI storage, GPU command submission).
 - **User Space (Ring 3)**:
-  - File System Daemons: Modular VFS servers running as isolated processes.
-  - Graphics Compositor: Hardware-accelerated desktop compositing engine managing surface windows, input events, and rendering.
-  - Desktop Shell: UI framework rendering taskbar, start menu, system tray, and window decorations.
-  - Windows Compatibility Subsystem (KWin Subsystem): User-mode translation servers, PE loader, and Win32/DirectX bridging runtimes.
+  - **File System Daemons**: Modular VFS servers running as isolated processes.
+  - **Graphics Compositor**: Hardware-accelerated desktop compositing engine managing surface windows, input events, and rendering.
+  - **Desktop Shell**: UI framework rendering taskbar, start menu, system tray, and window decorations.
+  - **Windows Compatibility Subsystem (KWin Subsystem)**: User-mode translation servers, PE loader, and Win32/DirectX bridging runtimes.
 
 ---
 
@@ -85,11 +85,99 @@ This architecture decision record (ADR) analyzes the native platform design, ker
 
 ---
 
-## 4. Windows `.exe` and Game Compatibility Strategy
+## 4. Display Pipeline and Explicit GPU Driver Dependencies
 
-### 4.1 Fundamental Architecture of the Compatibility Subsystem
+A critical architectural distinction exists between **2D desktop rendering** and **3D hardware-accelerated game execution**:
 
-Running Windows `.exe` binaries on an independent native kernel requires solving four distinct layers:
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                        2D Desktop Environment                          │
+│         (Windows 11-style Desktop Shell, Taskbar, Menus, Windows)      │
+└────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│             Linear Framebuffer Pipeline (UEFI GOP / Direct)            │
+│  - Zero GPU vendor driver dependency                                   │
+│  - Fully functional on all UEFI 2.x x86-64 machines out of the box     │
+│  - Fast CPU SIMD/AVX-accelerated 2D blitting & double-buffering        │
+└────────────────────────────────────────────────────────────────────────┘
+
+──────────────────────────────────────────────────────────────────────────
+
+┌────────────────────────────────────────────────────────────────────────┐
+│                    Windows 3D Games & Applications                     │
+│                  (.EXE, Direct3D 9/11/12, Vulkan, OpenGL)              │
+└────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│             Hardware-Accelerated GPU Driver Stack (MANDATORY)          │
+│  - Hardware-specific kernel GPU drivers (AMD RADV/amdgpu, Intel ANV)   │
+│  - Virtualized GPU drivers for CI/emulation (VirtIO-GPU)               │
+│  - DirectX-to-Vulkan translation runtime (DXVK / VKD3D architecture)   │
+│  - Direct hardware command-ring submission & VRAM page management      │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+### 4.1 2D Desktop Pipeline (Zero Vendor GPU Driver Dependency)
+1. **UEFI GOP Handover**: During boot, `kboot.efi` queries the UEFI Graphics Output Protocol (GOP) for physical framebuffer base address, resolution, pixel format, and stride.
+2. **Kernel Framebuffer Driver**: The kernel retains this linear framebuffer, mapping it as Write-Combining (`PAT`/`MTRR`) memory.
+3. **Software Compositor**: The desktop compositor renders windows, taskbars, and animations using SIMD/AVX2 blitting directly into a double-buffered memory region before flipping to the GOP buffer.
+4. **Architectural Benefit**: Allows KntonOS to boot to a fully functional, responsive, beautiful Windows 11-like desktop on **any modern UEFI x86-64 PC** without needing proprietary NVIDIA/AMD/Intel drivers.
+
+### 4.2 3D Game Acceleration Pipeline (Explicit Hardware GPU Driver Dependency)
+1. **Hard Dependency**: 3D games and DirectX/Vulkan applications **cannot execute on a linear GOP framebuffer**. They require direct access to GPU compute engines, rasterizers, and VRAM.
+2. **Driver Staging Strategy**:
+   - **Virtual Target (CI / First Proof)**: VirtIO-GPU driver in KntonOS kernel, enabling automated 3D testing inside QEMU.
+   - **Physical Target (Demo Tier)**: Open command submission driver targeting AMD Radeon (GCN/RDNA via open AMDGPU spec) and Intel Iris Xe/Arc (via open Intel Xe/i915 spec), avoiding closed proprietary binary blobs.
+   - **Vulkan Interface**: The native graphics driver presents a standard Vulkan 1.3 entry-point.
+3. **DirectX-to-Vulkan Translation**: Win32 DirectX calls are translated in user space directly into Vulkan command buffers, allowing Windows games to render at native speeds.
+
+---
+
+## 5. Staged Native Boot Slices
+
+To avoid an unbounded implementation scope, native development is divided into discrete, verifiable slices:
+
+| Slice | Name | Goal & Capability | Validation Criterion | Driver Dependency |
+| :--- | :--- | :--- | :--- | :--- |
+| **Slice 0** | **UEFI Boot Fixture** | Minimal `kboot.efi` executing under UEFI/OVMF. Initializes COM1 serial port at 115200 baud, reads memory map, logs sentinel `[KNT-BOOT-OK]`, exits boot services cleanly. | Headless QEMU script exits 0 on serial sentinel within 3 seconds. | Firmware GOP only |
+| **Slice 1** | **Ring 0 Kernel Core** | `kntonk` sets up 4-level PML4 paging, GDT, IDT (with dedicated `#DF` stack), physical frame allocator, and APIC timer interrupts. | Serial logs demonstrate dynamic memory allocation and preemption. | None |
+| **Slice 2** | **Ring 3 Transition** | Kernel executes `sysret` / `iretq` into a user-space task with separate page tables and non-privileged Ring 3 execution rights. | User process triggers a syscall and receives response without Ring 0 fault. | None |
+| **Slice 3** | **Interactive 2D Desktop** | Native compositor initializes GOP framebuffer and renders Windows 11-style taskbar, start menu, and draggable window with mouse input. | Visual verification in QEMU and bare-metal PC; idle RAM $\le 300\text{ MB}$. | Linear GOP Framebuffer (Zero vendor drivers) |
+| **Slice 4** | **PE/COFF Console Loader** | User-space PE loader parses 64-bit Windows console executable, binds minimal `ntdll`/`kernel32` shims, and executes entry point. | Headless Windows `.exe` executes and writes output to stdout/serial. | None |
+| **Slice 5** | **GPU 3D Gaming Demonstration** | GPU driver initializes 3D pipeline; user-space DirectX/Vulkan translation runtime executes a real game binary. | *SuperTuxKart* / *vkQuake* renders and runs at $\ge 100\%$ Windows 11 baseline FPS. | **Explicit Hardware GPU Driver (AMD/Intel/VirtIO-GPU)** |
+
+---
+
+## 6. Dependency and License Provenance
+
+KntonOS adheres to strict intellectual property and license cleanliness standards:
+
+### 6.1 Monorepo Licensing
+- **Repository Posture**: The KntonOS repository is **All Rights Reserved (ARR)** by Snatch.
+- **Selective Open Source**: Specific public API headers, client SDKs, or ABI definitions may be released under **MIT** only when explicitly approved by the project owner.
+
+### 6.2 Clean-Room Windows Compatibility
+- **Zero Proprietary Code**: No Windows binaries, disassembled proprietary binaries, leaked Microsoft source code, or proprietary headers are permitted.
+- **Zero Viral Copyleft in Kernel/Core**: Wine and ReactOS code contains LGPL and GPL licenses. To protect KntonOS's intellectual property, **no Wine or ReactOS code may be copied into the kernel or proprietary core services**.
+- **Specification-Based Implementation**: PE loader, TEB/PEB layout, and Win32 shims must be implemented cleanly based on:
+  - Official Microsoft Open Specifications (e.g., *Microsoft Portable Executable and Common Object File Format Specification*).
+  - Open, permissively licensed crates and headers (e.g., Microsoft's official `windows-sys` and `windows-rs` published under MIT/Apache-2.0).
+
+### 6.3 Third-Party Dependency Audit
+All external crates included in bare-metal and core packages must strictly hold permissive licenses (MIT, Apache-2.0, or 3-Clause BSD). Every dependency must be pinned with exact versions and verified checksums:
+- `x86_64` (MIT / Apache-2.0)
+- `uefi` / `uefi-services` (Mozilla Public License 2.0 / Apache-2.0)
+- `bootloader_api` (MIT / Apache-2.0)
+- `spin` (MIT)
+- `volatile` (MIT / Apache-2.0)
+- `bitflags` (MIT / Apache-2.0)
+
+---
+
+## 7. Windows `.exe` and Game Compatibility Strategy
 
 ```
 ┌────────────────────────────────────────────────────────┐
@@ -129,57 +217,21 @@ Running Windows `.exe` binaries on an independent native kernel requires solving
    - System calls from Windows applications do not directly enter the KntonOS kernel; instead, Windows DLLs call user-space translation wrappers that invoke native KntonOS IPC/syscall interfaces.
 3. **Graphics and Shader Execution**:
    - Games rely heavily on DirectX (D3D9, D3D11, D3D12) or Vulkan.
-   - Direct translation of D3D commands into Vulkan shaders/command buffers (leveraging open translation architectures akin to DXVK/VKD3D) allows native GPU drivers to execute game draw calls without running Windows kernel graphics drivers.
-4. **Legal & Intellectual Property Boundaries**:
-   - **Zero Proprietary Code**: No Windows binaries, leaked Microsoft source code, or proprietary DLLs will be incorporated.
-   - **Clean-room Interface Specifications**: Reimplementation will be strictly based on publicly documented Microsoft Win32/PE specifications and open API definitions.
-
-### 4.2 Staged Compatibility Plan
-
-- **Stage 1 (Vertical Slice Proof-of-Concept)**:
-  - Run a 64-bit console `.exe` (e.g., standard C runtime "Hello World" or computational benchmark) compiled with MSVC/MinGW.
-  - Scope: PE loader, basic `ntdll`/`kernel32` shims (`ExitProcess`, `WriteFile` to stdout, `GetStdHandle`, `VirtualAlloc`).
-- **Stage 2 (Graphical Win32 Application)**:
-  - Run a standard 2D Win32 GUI application (e.g., Notepad-style utility or simple GDI demo).
-  - Scope: Basic `user32` event loop (`GetMessage`, `DispatchMessage`, window creation, mouse/keyboard input mapped to the Knton compositor).
-- **Stage 3 (Hardware-Accelerated 3D / Real Game Demo)**:
-  - Run a targeted lightweight 3D game (e.g., a real open-source/indie game target or benchmark using DX9/DX11/Vulkan).
-  - Scope: XInput controller support, DirectSound/WASAPI audio output, GPU command queue integration via Vulkan.
+   - Direct translation of D3D commands into Vulkan shaders/command buffers allows native GPU drivers to execute game draw calls without running Windows kernel graphics drivers.
 
 ---
 
-## 5. First Credible Native Vertical Slice
-
-To prove the core value proposition without premature overextension, the first milestone must demonstrate:
-1. **Bare-metal UEFI Boot**: `kboot.efi` loads `kntonk` on an x86-64 machine (or QEMU/OVMF) without any host OS.
-2. **Native Kernel Ring 0 Setup**: Page tables active, preemptive scheduler switching between multiple kernel worker threads, timer interrupts firing.
-3. **Transition to Ring 3**: First user-space process spawned with clean memory protection.
-4. **Interactive GUI Compositor**: Framebuffer initialized, displaying a clean, responsive desktop panel and window frame (Windows 11 inspired).
-5. **Execution of First Windows .EXE**: The PE loader parses and executes a self-contained 64-bit Windows executable, rendering its output on screen.
-
----
-
-## 6. Validation Fixtures and Testing Strategy
-
-- **Emulation Tier (CI/CD Automated)**:
-  - QEMU (`qemu-system-x86_64`) with OVMF UEFI firmware, executing headlessly in automated test passes.
-  - Serial port (COM1) telemetry capturing assertions, benchmark metrics, and boot checkpoints.
-- **Hardware Tier (Acceptance Verification)**:
-  - Dedicated reference physical x86-64 test machines (UEFI mode, NVMe/USB boot).
-  - Power and memory measurement fixtures for validating idle consumption.
-
----
-
-## 7. Open Decisions for Owner Review
+## 8. Open Decisions for Owner Review
 
 1. **First-Demo Benchmark Game Selection**: Confirmation of the specific title or benchmark to target for the first public demonstration (detailed in SPEC-001 by Ada Chen).
-2. **GPU Driver Integration Pathway**: Confirmation whether native GPU driver development will prioritize Intel/AMD open command submission specs or a universal Vulkan bare-metal driver model.
+2. **GPU Driver Development Priority**: Confirmation whether physical GPU driver implementation will target AMD Radeon (GCN/RDNA) first due to publicly available open documentation.
 
 ---
 
-## 8. Summary of Recommendations
+## 9. Summary of Recommendations
 
 1. Adopt a **Hybrid Modular Kernel** in **Rust (`no_std`)** for maximum safety, performance, and fault isolation.
 2. Retain **UEFI long-mode boot** via a custom boot executive (`kboot.efi`).
-3. Implement the **Windows compatibility boundary entirely in Ring 3** via a clean-room PE loader and user-space API shims.
-4. Target a **staged 3-phase compatibility rollout**, proving console PE execution first before advancing to complex 3D graphics pipelines.
+3. Build the **2D Windows 11-like desktop on linear GOP framebuffer first**, deferring complex GPU hardware drivers to the 3D gaming slice.
+4. Enforce an **explicit GPU driver dependency for 3D gaming**, isolating it from early boot and 2D UI stability.
+5. Strictly enforce **clean-room provenance** and permissive licensing for all kernel and Win32 compatibility code.
