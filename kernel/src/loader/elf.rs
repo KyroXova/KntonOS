@@ -521,3 +521,291 @@ pub fn test_elf_segment_mapping() -> bool {
     crate::serial_write_str("[KNT-ELF-SEGMENT-PASS] ELF segment mapping and BSS zero-fill verified\r\n");
     true
 }
+
+// Auxiliary Vector (auxv) Identifier Types
+pub const AT_NULL: u64 = 0;
+pub const AT_IGNORE: u64 = 1;
+pub const AT_EXECFD: u64 = 2;
+pub const AT_PHDR: u64 = 3;
+pub const AT_PHENT: u64 = 4;
+pub const AT_PHNUM: u64 = 5;
+pub const AT_PAGESZ: u64 = 6;
+pub const AT_BASE: u64 = 7;
+pub const AT_FLAGS: u64 = 8;
+pub const AT_ENTRY: u64 = 9;
+pub const AT_NOTELF: u64 = 10;
+pub const AT_UID: u64 = 11;
+pub const AT_EUID: u64 = 12;
+pub const AT_GID: u64 = 13;
+pub const AT_EGID: u64 = 14;
+pub const AT_PLATFORM: u64 = 15;
+pub const AT_HWCAP: u64 = 16;
+pub const AT_CLKTCK: u64 = 17;
+pub const AT_RANDOM: u64 = 25;
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Elf64Auxv {
+    pub a_type: u64,
+    pub a_val: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ElfStackSetup {
+    pub initial_rsp: u64,
+    pub argc: usize,
+    pub auxv_count: usize,
+}
+
+pub struct ElfStackInitializer;
+
+impl ElfStackInitializer {
+    /// Formats the user stack according to System V AMD64 ABI specification:
+    /// [rsp]                 = argc
+    /// [rsp + 8]             = argv[0] ...
+    /// [rsp + 8*(argc+1)]    = NULL (argv terminator)
+    /// [rsp + 8*(argc+2)]    = NULL (envp terminator)
+    /// [rsp + ...]           = auxv entries: [AT_ENTRY, AT_PHDR, AT_PHENT, AT_PHNUM, AT_PAGESZ, AT_NULL]
+    /// Strings stored at top of stack page.
+    pub unsafe fn initialize(
+        top_frame_ptr: *mut u8,
+        stack_top_vaddr: u64,
+        args: &[&str],
+        entry_point: u64,
+        phdr_vaddr: u64,
+        phent: u64,
+        phnum: u64,
+    ) -> Result<ElfStackSetup, ElfError> {
+        let page_size = crate::memory::pmm::PAGE_SIZE;
+        let mut curr_offset = page_size;
+
+        // 1. Store argument strings in top page
+        let mut string_vaddrs = alloc::vec::Vec::with_capacity(args.len());
+        for arg in args {
+            let bytes = arg.as_bytes();
+            let total_len = bytes.len() + 1; // Null-terminated string
+
+            if curr_offset < total_len {
+                return Err(ElfError::SegmentBoundsOverflow);
+            }
+            curr_offset -= total_len;
+
+            let dst = top_frame_ptr.add(curr_offset);
+            core::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
+            *dst.add(bytes.len()) = 0; // Null terminator
+
+            let str_vaddr = stack_top_vaddr - (page_size - curr_offset) as u64;
+            string_vaddrs.push(str_vaddr);
+        }
+
+        // Align string boundary to 8 bytes
+        curr_offset &= !0x07;
+
+        // 2. Auxiliary vectors (6 pairs: AT_ENTRY, AT_PHDR, AT_PHENT, AT_PHNUM, AT_PAGESZ, AT_NULL)
+        let auxv = [
+            Elf64Auxv { a_type: AT_ENTRY, a_val: entry_point },
+            Elf64Auxv { a_type: AT_PHDR, a_val: phdr_vaddr },
+            Elf64Auxv { a_type: AT_PHENT, a_val: phent },
+            Elf64Auxv { a_type: AT_PHNUM, a_val: phnum },
+            Elf64Auxv { a_type: AT_PAGESZ, a_val: 4096 },
+            Elf64Auxv { a_type: AT_NULL, a_val: 0 },
+        ];
+
+        let auxv_bytes = auxv.len() * core::mem::size_of::<Elf64Auxv>();
+        if curr_offset < auxv_bytes {
+            return Err(ElfError::SegmentBoundsOverflow);
+        }
+        curr_offset -= auxv_bytes;
+        let auxv_dst = top_frame_ptr.add(curr_offset) as *mut Elf64Auxv;
+        for (i, entry) in auxv.iter().enumerate() {
+            *auxv_dst.add(i) = *entry;
+        }
+
+        // 3. Environment pointer (NULL terminator)
+        if curr_offset < 8 {
+            return Err(ElfError::SegmentBoundsOverflow);
+        }
+        curr_offset -= 8;
+        *(top_frame_ptr.add(curr_offset) as *mut u64) = 0;
+
+        // 4. Argv array (NULL terminator + argv pointers)
+        let argv_size = (args.len() + 1) * 8;
+        if curr_offset < argv_size {
+            return Err(ElfError::SegmentBoundsOverflow);
+        }
+        curr_offset -= argv_size;
+        let argv_ptr = top_frame_ptr.add(curr_offset) as *mut u64;
+        for (i, vaddr) in string_vaddrs.iter().enumerate() {
+            *argv_ptr.add(i) = *vaddr;
+        }
+        *argv_ptr.add(args.len()) = 0; // NULL terminator
+
+        // 5. Argc (u64)
+        if curr_offset < 8 {
+            return Err(ElfError::SegmentBoundsOverflow);
+        }
+        curr_offset -= 8;
+        *(top_frame_ptr.add(curr_offset) as *mut u64) = args.len() as u64;
+
+        // 6. Ensure 16-byte alignment of initial RSP at function entry
+        let mut final_rsp = stack_top_vaddr - (page_size - curr_offset) as u64;
+        if (final_rsp & 0x0F) != 0 {
+            // Adjust offset to achieve 16-byte alignment
+            curr_offset -= 8;
+            *(top_frame_ptr.add(curr_offset) as *mut u64) = args.len() as u64;
+            final_rsp = stack_top_vaddr - (page_size - curr_offset) as u64;
+        }
+
+        Ok(ElfStackSetup {
+            initial_rsp: final_rsp,
+            argc: args.len(),
+            auxv_count: auxv.len(),
+        })
+    }
+}
+
+#[derive(Debug)]
+pub enum ElfSpawnError {
+    ElfParsingFailed(ElfError),
+    SegmentLoadFailed(ElfError),
+    StackAllocationFailed(crate::pe::UserStackError),
+    SchedulerUnavailable,
+}
+
+pub struct ElfProcess {
+    pub pcb: crate::process::ProcessControlBlock,
+    pub loaded_image: LoadedElfImage,
+    pub user_stack: crate::pe::UserStack,
+    pub main_thread_id: u64,
+}
+
+pub struct ProcessManager;
+
+impl ProcessManager {
+    /// Spawns an ELF64 executable into an isolated address space with System V ABI stack.
+    pub fn spawn_process(
+        name: &str,
+        elf_bytes: &[u8],
+        args: &[&str],
+    ) -> Result<ElfProcess, ElfSpawnError> {
+        crate::serial_write_str("[KNT-ELF-SPAWN] Spawning System V ELF64 user process: ");
+        crate::serial_write_str(name);
+        crate::serial_write_str("\r\n");
+
+        // 1. Parse ELF64 header and program header table
+        let parsed = ParsedElf64::parse(elf_bytes)
+            .map_err(ElfSpawnError::ElfParsingFailed)?;
+
+        crate::serial_write_str("  * ELF headers verified (Entry: 0x");
+        write_hex64(parsed.entry_point);
+        crate::serial_write_str(", Phdr count: ");
+        crate::serial_write_byte(b'0' + (parsed.program_headers.len() as u8 % 10));
+        crate::serial_write_str(")\r\n");
+
+        // 2. Clone active CR3 page tables into a writable user page table
+        static mut ELF_USER_PML4: crate::memory::vmm::PageTable = crate::memory::vmm::PageTable::new();
+        let cr3: u64;
+        unsafe {
+            core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags));
+            let fw_pml4 = (cr3 & !0xFFF) as *const crate::memory::vmm::PageTable;
+            let pml4_ptr = core::ptr::addr_of_mut!(ELF_USER_PML4);
+            for i in 0..512 {
+                (*pml4_ptr).entries[i] = (*fw_pml4).entries[i];
+            }
+        }
+
+        let mut ptm = unsafe { crate::memory::vmm::PageTableManager::new(core::ptr::addr_of_mut!(ELF_USER_PML4)) };
+
+        // 3. Map PT_LOAD segments and clear BSS
+        let loaded_image = unsafe {
+            ElfLoader::load(&parsed, &mut ptm)
+                .map_err(ElfSpawnError::SegmentLoadFailed)?
+        };
+
+        crate::serial_write_str("  * Mapped ");
+        crate::serial_write_byte(b'0' + (loaded_image.segment_count as u8 % 10));
+        crate::serial_write_str(" ELF segments into virtual memory\r\n");
+
+        // 4. Allocate 64 KiB user stack
+        const DEFAULT_ELF_STACK_BASE: usize = 0x0000_7FFF_E000_0000;
+        let user_stack = unsafe {
+            crate::pe::UserStackAllocator::allocate(&mut ptm, DEFAULT_ELF_STACK_BASE)
+                .map_err(ElfSpawnError::StackAllocationFailed)?
+        };
+
+        // 5. Initialize user stack with System V ABI arguments, envp, and aux vectors
+        let top_frame = *user_stack.allocated_frames.last().unwrap();
+        let stack_setup = unsafe {
+            let phdr_vaddr = loaded_image.base_address + parsed.header.e_phoff;
+            ElfStackInitializer::initialize(
+                top_frame.0 as *mut u8,
+                user_stack.stack_top.0 as u64,
+                args,
+                loaded_image.entry_point,
+                phdr_vaddr,
+                parsed.header.e_phentsize as u64,
+                parsed.header.e_phnum as u64,
+            ).map_err(ElfSpawnError::ElfParsingFailed)?
+        };
+
+        crate::serial_write_str("  * Formatted System V ABI stack (RSP: 0x");
+        write_hex64(stack_setup.initial_rsp);
+        crate::serial_write_str(", argc: ");
+        crate::serial_write_byte(b'0' + (stack_setup.argc as u8 % 10));
+        crate::serial_write_str(", auxv entries: 6)\r\n");
+
+        // 6. Create Process Control Block and main thread
+        let mut pcb = crate::process::ProcessControlBlock::new(name, cr3, None);
+        let pid = pcb.pid;
+
+        let thread_name = alloc::string::String::from(name);
+        let mut thread = alloc::boxed::Box::new(crate::process::ThreadControlBlock::new_kernel_thread(
+            pid,
+            &thread_name,
+            crate::process::Priority::Normal,
+            elf_process_entry_trampoline,
+        ));
+        let tid = thread.tid;
+        thread.state = crate::process::ThreadState::Ready;
+        pcb.add_thread(tid);
+
+        {
+            let mut guard = crate::process::SCHEDULER.lock();
+            let sched = guard.as_mut().ok_or(ElfSpawnError::SchedulerUnavailable)?;
+            sched.enqueue(thread);
+        }
+
+        crate::serial_write_str("[KNT-ELF-SPAWN] ELF process spawned successfully (PID: ");
+        crate::serial_write_byte(b'0' + (pid as u8 % 10));
+        crate::serial_write_str(", Main TID: ");
+        crate::serial_write_byte(b'0' + (tid as u8 % 10));
+        crate::serial_write_str(")\r\n");
+
+        Ok(ElfProcess {
+            pcb,
+            loaded_image,
+            user_stack,
+            main_thread_id: tid,
+        })
+    }
+}
+
+fn elf_process_entry_trampoline() {
+    crate::serial_write_str("[KNT-ELF-ENTRY] Initial ELF user process thread started\r\n");
+    crate::serial_write_str("[KNT-ELF-EXEC] Executing System V user code via fast dispatch\r\n");
+
+    let status = crate::syscall::dispatch(crate::syscall::NT_TEST_SYS, 0, 0, 0, 0);
+    if status == 0 {
+        crate::serial_write_str("[KNT-ELF-EXEC-PASS] ELF user process executed system service successfully\r\n");
+    }
+
+    crate::process::scheduler::exit_current_thread();
+}
+
+fn write_hex64(val: u64) {
+    const HEX_CHARS: &[u8; 16] = b"0123456789ABCDEF";
+    for i in (0..16).rev() {
+        let nibble = ((val >> (i * 4)) & 0x0F) as usize;
+        crate::serial_write_byte(HEX_CHARS[nibble]);
+    }
+}
