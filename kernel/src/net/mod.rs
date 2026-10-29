@@ -43,8 +43,9 @@ pub use poll::{
     POLLOUT, POLLPRI,
 };
 pub use server::{
-    guess_mime_type, verify_http_server_routing, verify_vfs_file_handler, vfs_static_handler,
-    HttpServer, RouteHandler, ServerRequest, ServerResponse,
+    guess_mime_type, ps_telemetry_handler, sysinfo_telemetry_handler, verify_http_server_routing,
+    verify_telemetry_endpoints, verify_vfs_file_handler, vfs_static_handler, HttpServer,
+    RouteHandler, ServerRequest, ServerResponse,
 };
 pub use socket::{
     accept, bind, close, connect, listen, recv, recvfrom, send, sendto, set_nonblocking, socket,
