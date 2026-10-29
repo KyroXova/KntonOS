@@ -5,6 +5,10 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
+use crate::memory::spinlock::Spinlock;
+use crate::memory::vmm::{PageTableFlags, PageTableManager, VirtAddr};
+use crate::memory::{PAGE_SIZE, PMM};
+use super::elf::{ParsedElf64, PF_W, PF_X, PT_DYNAMIC, PT_LOAD};
 
 pub const DT_NULL: i64 = 0;
 pub const DT_NEEDED: i64 = 1;
@@ -570,6 +574,283 @@ pub fn test_relocation_engine() -> bool {
         compute_relocation(base_address, &rela_unsupported, &symtab, &strtab, &libraries),
         Err(DynLinkError::UnsupportedRelocation(0xFE))
     );
+
+    true
+}
+
+pub struct DynamicLinker {
+    pub loaded_libraries: Vec<SharedLibrary>,
+    pub next_lib_base: u64,
+}
+
+impl DynamicLinker {
+    pub const fn new() -> Self {
+        Self {
+            loaded_libraries: Vec::new(),
+            next_lib_base: 0x0000_7FFF_A000_0000,
+        }
+    }
+
+    pub fn register_library(&mut self, lib: SharedLibrary) {
+        if !self.loaded_libraries.iter().any(|l| l.name == lib.name) {
+            self.loaded_libraries.push(lib);
+        }
+    }
+
+    pub fn get_library(&self, name: &str) -> Option<&SharedLibrary> {
+        self.loaded_libraries.iter().find(|l| l.name == name)
+    }
+
+    /// Maps PT_LOAD segments for a shared library into the active page table,
+    /// parses dynamic section tags, extracts exported symbols, and registers the library.
+    pub fn load_library(
+        &mut self,
+        name: &str,
+        elf_bytes: &[u8],
+        ptm: &mut PageTableManager,
+    ) -> Result<&SharedLibrary, DynLinkError> {
+        let parsed = ParsedElf64::parse(elf_bytes).map_err(|_| DynLinkError::InvalidDynamicEntry)?;
+
+        let base_vaddr = self.next_lib_base;
+        self.next_lib_base += 0x0020_0000;
+
+        let mut total_size = 0u64;
+
+        let cr0: u64;
+        unsafe {
+            core::arch::asm!("mov {}, cr0", out(reg) cr0, options(nomem, nostack, preserves_flags));
+            core::arch::asm!("mov cr0, {}", in(reg) cr0 & !(1 << 16), options(nomem, nostack, preserves_flags));
+        }
+
+        let mut pmm_guard = PMM.lock();
+
+        // 1. Map PT_LOAD segments
+        for phdr in &parsed.program_headers {
+            if phdr.p_type != PT_LOAD {
+                continue;
+            }
+
+            let seg_vaddr = base_vaddr + phdr.p_vaddr;
+            let seg_memsz = phdr.p_memsz;
+            let seg_filesz = phdr.p_filesz;
+            let seg_offset = phdr.p_offset;
+
+            let start_page = seg_vaddr & !0xFFF;
+            let end_page = (seg_vaddr + seg_memsz + PAGE_SIZE as u64 - 1) & !0xFFF;
+            let page_count = ((end_page - start_page) / PAGE_SIZE as u64) as usize;
+
+            let mut flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
+            if (phdr.p_flags & PF_W) != 0 {
+                flags |= PageTableFlags::WRITABLE;
+            }
+            if (phdr.p_flags & PF_X) == 0 {
+                flags |= PageTableFlags::NO_EXECUTE;
+            }
+
+            for page_idx in 0..page_count {
+                let vaddr = VirtAddr::new((start_page + page_idx as u64 * PAGE_SIZE as u64) as usize);
+                let frame = match pmm_guard.allocate_frame() {
+                    Some(f) => f,
+                    None => {
+                        unsafe {
+                            core::arch::asm!("mov cr0, {}", in(reg) cr0, options(nomem, nostack, preserves_flags));
+                        }
+                        return Err(DynLinkError::SegmentMappingFailed);
+                    }
+                };
+
+                let phys_addr = frame.start_address();
+                let is_unmapped = unsafe { ptm.translate(vaddr).is_none() };
+                if is_unmapped {
+                    unsafe {
+                        let _ = ptm.map_page(vaddr, phys_addr, flags, &mut *pmm_guard);
+                    }
+                }
+
+                let frame_ptr = phys_addr.0 as *mut u8;
+                unsafe {
+                    core::ptr::write_bytes(frame_ptr, 0, PAGE_SIZE);
+                }
+
+                let page_vaddr = vaddr.0 as u64;
+                let page_end_vaddr = page_vaddr + PAGE_SIZE as u64;
+                let seg_file_end = seg_vaddr + seg_filesz;
+
+                let copy_start = core::cmp::max(page_vaddr, seg_vaddr);
+                let copy_end = core::cmp::min(page_end_vaddr, seg_file_end);
+
+                if copy_start < copy_end {
+                    let dest_offset = (copy_start - page_vaddr) as usize;
+                    let src_offset = (seg_offset + (copy_start - seg_vaddr)) as usize;
+                    let copy_len = (copy_end - copy_start) as usize;
+
+                    if src_offset + copy_len <= elf_bytes.len() {
+                        unsafe {
+                            core::ptr::copy_nonoverlapping(
+                                elf_bytes[src_offset..].as_ptr(),
+                                frame_ptr.add(dest_offset),
+                                copy_len,
+                            );
+                        }
+                    }
+                }
+            }
+
+            if phdr.p_vaddr + phdr.p_memsz > total_size {
+                total_size = phdr.p_vaddr + phdr.p_memsz;
+            }
+        }
+
+        drop(pmm_guard);
+        unsafe {
+            core::arch::asm!("mov cr0, {}", in(reg) cr0, options(nomem, nostack, preserves_flags));
+        }
+
+        let mut lib = SharedLibrary::new(name, base_vaddr, total_size);
+
+        // 2. Parse PT_DYNAMIC if present
+        for phdr in &parsed.program_headers {
+            if phdr.p_type == PT_DYNAMIC {
+                let dyn_offset = phdr.p_offset as usize;
+                let dyn_count = phdr.p_filesz as usize / core::mem::size_of::<Elf64Dyn>();
+                if dyn_offset + phdr.p_filesz as usize <= elf_bytes.len() {
+                    let dyn_ptr = elf_bytes[dyn_offset..].as_ptr() as *const Elf64Dyn;
+                    let dyn_slice = unsafe { core::slice::from_raw_parts(dyn_ptr, dyn_count) };
+
+                    let dyn_info = DynamicSectionInfo::parse(dyn_slice, None)?;
+
+                    if dyn_info.strtab_vaddr != 0 && dyn_info.strtab_size > 0 {
+                        let strtab_offset = (dyn_info.strtab_vaddr - phdr.p_vaddr) as usize;
+                        let strtab_slice = if strtab_offset + dyn_info.strtab_size as usize <= elf_bytes.len() {
+                            &elf_bytes[strtab_offset..strtab_offset + dyn_info.strtab_size as usize]
+                        } else {
+                            &[]
+                        };
+
+                        if dyn_info.symtab_vaddr != 0 {
+                            let symtab_offset = (dyn_info.symtab_vaddr - phdr.p_vaddr) as usize;
+                            let syment = if dyn_info.syment_size > 0 { dyn_info.syment_size as usize } else { 24 };
+                            let sym_count = 32;
+                            if symtab_offset + (sym_count * syment) <= elf_bytes.len() {
+                                let sym_ptr = elf_bytes[symtab_offset..].as_ptr() as *const Elf64Sym;
+                                let sym_slice = unsafe { core::slice::from_raw_parts(sym_ptr, sym_count) };
+                                for s in sym_slice {
+                                    if s.st_shndx != SHN_UNDEF && (elf64_st_bind(s.st_info) == STB_GLOBAL || elf64_st_bind(s.st_info) == STB_WEAK) {
+                                        if let Some(sname) = extract_string(strtab_slice, s.st_name as usize) {
+                                            lib.add_export(&sname, s.st_value, s.st_size, elf64_st_type(s.st_info) == STT_FUNC);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        self.register_library(lib);
+        Ok(self.loaded_libraries.last().unwrap())
+    }
+
+    /// Links an executable or shared library by applying all RELA records and binding GOT/PLT stubs.
+    pub fn link_image(
+        &self,
+        base_address: u64,
+        relas: &[Elf64Rela],
+        symtab: &[Elf64Sym],
+        strtab: &[u8],
+    ) -> Result<usize, DynLinkError> {
+        apply_relocations(base_address, relas, symtab, strtab, &self.loaded_libraries)
+    }
+}
+
+pub static DYNAMIC_LINKER: Spinlock<DynamicLinker> = Spinlock::new(DynamicLinker::new());
+
+fn mock_lib_add(a: u64, b: u64) -> u64 {
+    a + b
+}
+
+fn mock_lib_mul(a: u64, b: u64) -> u64 {
+    a * b
+}
+
+/// Verification unit test ensuring shared library registration, GOT/PLT slot patching,
+/// and cross-library function invocation.
+pub fn test_shared_library_loading_and_got_plt() -> bool {
+    let mut linker = DynamicLinker::new();
+
+    // 1. Create mock shared library "libcalc.so"
+    let mut libcalc = SharedLibrary::new("libcalc.so", 0x0000_7FFF_8000_0000, 0x10000);
+    let add_fn_ptr = mock_lib_add as *const () as usize as u64;
+    let mul_fn_ptr = mock_lib_mul as *const () as usize as u64;
+    libcalc.add_export("calc_add", add_fn_ptr - 0x0000_7FFF_8000_0000, 32, true);
+    libcalc.add_export("calc_mul", mul_fn_ptr - 0x0000_7FFF_8000_0000, 32, true);
+
+    linker.register_library(libcalc);
+
+    assert!(linker.get_library("libcalc.so").is_some());
+
+    // 2. Create mock executable with GOT table slots
+    let mut mock_got_table = [0u64; 4];
+    let got_base = mock_got_table.as_mut_ptr() as u64;
+
+    let mut strtab = Vec::new();
+    strtab.push(0);
+    strtab.extend_from_slice(b"calc_add\0"); // offset 1
+    strtab.extend_from_slice(b"calc_mul\0"); // offset 10
+
+    let symtab = [
+        Elf64Sym::default(),
+        Elf64Sym {
+            st_name: 1, // calc_add
+            st_info: elf64_st_info(STB_GLOBAL, STT_FUNC),
+            st_other: 0,
+            st_shndx: SHN_UNDEF,
+            st_value: 0,
+            st_size: 0,
+        },
+        Elf64Sym {
+            st_name: 10, // calc_mul
+            st_info: elf64_st_info(STB_GLOBAL, STT_FUNC),
+            st_other: 0,
+            st_shndx: SHN_UNDEF,
+            st_value: 0,
+            st_size: 0,
+        },
+    ];
+
+    // JUMP_SLOT relocations targeting GOT slots 0 and 1
+    let relas = [
+        Elf64Rela::new(0, 1, R_X86_64_JUMP_SLOT, 0),      // got[0] -> calc_add
+        Elf64Rela::new(8, 2, R_X86_64_JUMP_SLOT, 0),      // got[1] -> calc_mul
+        Elf64Rela::new(16, 0, R_X86_64_RELATIVE, 0x1234), // got[2] -> relative
+    ];
+
+    // Apply relocations targeting mock_got_table
+    for rela in &relas {
+        let (target_vaddr, val) = compute_relocation(got_base, rela, &symtab, &strtab, &linker.loaded_libraries)
+            .expect("Relocation computation must succeed");
+        unsafe {
+            *(target_vaddr as *mut u64) = val;
+        }
+    }
+
+    // 3. Verify GOT slot pointers match resolved function addresses
+    assert_eq!(mock_got_table[0], add_fn_ptr);
+    assert_eq!(mock_got_table[1], mul_fn_ptr);
+    assert_eq!(mock_got_table[2], got_base + 0x1234);
+
+    // 4. Execute function call across library boundary via patched GOT slot
+    unsafe {
+        let add_call: fn(u64, u64) -> u64 = core::mem::transmute(mock_got_table[0]);
+        let mul_call: fn(u64, u64) -> u64 = core::mem::transmute(mock_got_table[1]);
+
+        let sum = add_call(15, 27);
+        assert_eq!(sum, 42);
+
+        let prod = mul_call(6, 7);
+        assert_eq!(prod, 42);
+    }
 
     true
 }

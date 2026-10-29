@@ -9,8 +9,9 @@ pub mod dynlink;
 pub use dynlink::{
     apply_relocations, compute_relocation, extract_string, find_symbol_in_symtab,
     resolve_symbol_in_libraries, resolve_symbol_value, test_dynamic_parser_and_symbols,
-    test_relocation_engine, DynamicSectionInfo, DynLinkError, Elf64Dyn, Elf64Rela, Elf64Sym,
-    ExportedSymbol, SharedLibrary, DT_BIND_NOW, DT_DEBUG, DT_FINI, DT_FINI_ARRAY,
+    test_relocation_engine, test_shared_library_loading_and_got_plt, DynamicLinker,
+    DynamicSectionInfo, DynLinkError, Elf64Dyn, Elf64Rela, Elf64Sym, ExportedSymbol,
+    SharedLibrary, DYNAMIC_LINKER, DT_BIND_NOW, DT_DEBUG, DT_FINI, DT_FINI_ARRAY,
     DT_FINI_ARRAYSZ, DT_FLAGS, DT_HASH, DT_INIT, DT_INIT_ARRAY, DT_INIT_ARRAYSZ, DT_JMPREL,
     DT_NEEDED, DT_NULL, DT_PLTGOT, DT_PLTREL, DT_PLTRELSZ, DT_REL, DT_RELA, DT_RELAENT,
     DT_RELASZ, DT_RELENT, DT_RELSZ, DT_RPATH, DT_SONAME, DT_STRSZ, DT_STRTAB, DT_SYMBOLIC,
