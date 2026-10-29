@@ -67,10 +67,14 @@ impl ShellSession {
 
     pub fn handle_scancode(&mut self, scancode: u8) {
         if let Some(event) = self.input_decoder.process_scancode_set1(scancode) {
-            if event.action == KeyAction::Press {
-                if let Some(c) = event.char_code {
-                    self.handle_char(c);
-                }
+            self.handle_key_event(event);
+        }
+    }
+
+    pub fn handle_key_event(&mut self, event: KeyEvent) {
+        if event.action == KeyAction::Press {
+            if let Some(c) = event.char_code {
+                self.handle_char(c);
             }
         }
     }
@@ -97,6 +101,14 @@ impl ShellSession {
 }
 
 pub static SHELL: Spinlock<Option<ShellSession>> = Spinlock::new(None);
+
+/// Push a decoded key event into the active virtual terminal shell session.
+pub fn push_key_event(event: KeyEvent) {
+    let mut guard = SHELL.lock();
+    if let Some(ref mut shell) = *guard {
+        shell.handle_key_event(event);
+    }
+}
 
 /// Initialize the global shell session.
 pub fn init(cols: usize, rows: usize) {

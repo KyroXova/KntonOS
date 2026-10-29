@@ -70,6 +70,7 @@ pub struct CursorState {
     pub visible: bool,
     pub hotspot_x: usize,
     pub hotspot_y: usize,
+    pub buttons: u8,
 }
 
 impl CursorState {
@@ -80,6 +81,7 @@ impl CursorState {
             visible: true,
             hotspot_x: 0,
             hotspot_y: 0,
+            buttons: 0,
         }
     }
 

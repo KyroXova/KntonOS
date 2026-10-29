@@ -166,6 +166,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Shell subsystem self-test failed!\r\n");
     }
 
+    // Initialize and verify USB 3.0 xHCI & HID Keyboard/Mouse Input Pipeline
+    if !drivers::usb::test_usb_hid_subsystem() {
+        serial_write_str("[KNT-PANIC] USB HID subsystem self-test failed!\r\n");
+    }
+
     // Spawn and execute initial Win32 PE64 userland process (/bin/init.exe)
     if !pe::run_init_process() {
         serial_write_str("[KNT-PANIC] Initial Win32 user process execution failed!\r\n");

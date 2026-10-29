@@ -38,6 +38,13 @@ where
     guard.as_mut().map(f)
 }
 
+/// Update mouse cursor from relative motion delta and button states.
+pub fn update_cursor(dx: i32, dy: i32, buttons: u8) {
+    with_compositor(|comp| {
+        comp.update_cursor(dx, dy, buttons);
+    });
+}
+
 /// Verification self-test suite for the KntonOS compositor subsystem.
 pub fn test_compositor_subsystem() -> bool {
     serial_write_str("[KNT-COMPOSITOR-TEST] Running compositor verification suite...\r\n");
