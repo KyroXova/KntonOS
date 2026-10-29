@@ -24,7 +24,7 @@ const SBOX: [u8; 256] = [
     0x51, 0xa3, 0x40, 0x8f, 0x92, 0x9d, 0x38, 0xf5, 0xbc, 0xb6, 0xda, 0x21, 0x10, 0xff, 0xf3, 0xd2,
     0xcd, 0x0c, 0x13, 0xec, 0x5f, 0x97, 0x44, 0x17, 0xc4, 0xa7, 0x7e, 0x3d, 0x64, 0x5d, 0x19, 0x73,
     0x60, 0x81, 0x4f, 0xdc, 0x22, 0x2a, 0x90, 0x88, 0x46, 0xee, 0xb8, 0x14, 0xde, 0x5e, 0x0b, 0xdb,
-    0xe0, 0x32, 0x3a, 0x0a, 0x49, 0x06, 0x24, 0x5e, 0xc2, 0xd3, 0xac, 0x62, 0x91, 0x95, 0xe4, 0x79,
+    0xe0, 0x32, 0x3a, 0x0a, 0x49, 0x06, 0x24, 0x5c, 0xc2, 0xd3, 0xac, 0x62, 0x91, 0x95, 0xe4, 0x79,
     0xe7, 0xc8, 0x37, 0x6d, 0x8d, 0xd5, 0x4e, 0xa9, 0x6c, 0x56, 0xf4, 0xea, 0x65, 0x7a, 0xae, 0x08,
     0xba, 0x78, 0x25, 0x2e, 0x1c, 0xa6, 0xb4, 0xc6, 0xe8, 0xdd, 0x74, 0x1f, 0x4b, 0xbd, 0x8b, 0x8a,
     0x70, 0x3e, 0xb5, 0x66, 0x48, 0x03, 0xf6, 0x0e, 0x61, 0x35, 0x57, 0xb9, 0x86, 0xc1, 0x1d, 0x9e,
@@ -129,29 +129,29 @@ impl Aes128 {
             let s15 = block[11];
 
             // MixColumns
-            // Col 0
-            block[0] = xtime(s0) ^ (s4 ^ xtime(s4)) ^ s8 ^ s12;
-            block[4] = s0 ^ xtime(s4) ^ (s8 ^ xtime(s8)) ^ s12;
-            block[8] = s0 ^ s4 ^ xtime(s8) ^ (s12 ^ xtime(s12));
-            block[12] = (s0 ^ xtime(s0)) ^ s4 ^ s8 ^ xtime(s12);
+            // Col 0 (s0, s1, s2, s3)
+            block[0] = xtime(s0) ^ (s1 ^ xtime(s1)) ^ s2 ^ s3;
+            block[1] = s0 ^ xtime(s1) ^ (s2 ^ xtime(s2)) ^ s3;
+            block[2] = s0 ^ s1 ^ xtime(s2) ^ (s3 ^ xtime(s3));
+            block[3] = (s0 ^ xtime(s0)) ^ s1 ^ s2 ^ xtime(s3);
 
-            // Col 1
-            block[1] = xtime(s13) ^ (s1 ^ xtime(s1)) ^ s5 ^ s9;
-            block[5] = s13 ^ xtime(s1) ^ (s5 ^ xtime(s5)) ^ s9;
-            block[9] = s13 ^ s1 ^ xtime(s5) ^ (s9 ^ xtime(s9));
-            block[13] = (s13 ^ xtime(s13)) ^ s1 ^ s5 ^ xtime(s9);
+            // Col 1 (s4, s5, s6, s7)
+            block[4] = xtime(s4) ^ (s5 ^ xtime(s5)) ^ s6 ^ s7;
+            block[5] = s4 ^ xtime(s5) ^ (s6 ^ xtime(s6)) ^ s7;
+            block[6] = s4 ^ s5 ^ xtime(s6) ^ (s7 ^ xtime(s7));
+            block[7] = (s4 ^ xtime(s4)) ^ s5 ^ s6 ^ xtime(s7);
 
-            // Col 2
-            block[2] = xtime(s10) ^ (s14 ^ xtime(s14)) ^ s2 ^ s6;
-            block[6] = s10 ^ xtime(s14) ^ (s2 ^ xtime(s2)) ^ s6;
-            block[10] = s10 ^ s14 ^ xtime(s2) ^ (s6 ^ xtime(s6));
-            block[14] = (s10 ^ xtime(s10)) ^ s14 ^ s2 ^ xtime(s6);
+            // Col 2 (s8, s9, s10, s11)
+            block[8] = xtime(s8) ^ (s9 ^ xtime(s9)) ^ s10 ^ s11;
+            block[9] = s8 ^ xtime(s9) ^ (s10 ^ xtime(s10)) ^ s11;
+            block[10] = s8 ^ s9 ^ xtime(s10) ^ (s11 ^ xtime(s11));
+            block[11] = (s8 ^ xtime(s8)) ^ s9 ^ s10 ^ xtime(s11);
 
-            // Col 3
-            block[3] = xtime(s7) ^ (s11 ^ xtime(s11)) ^ s15 ^ s3;
-            block[7] = s7 ^ xtime(s11) ^ (s15 ^ xtime(s15)) ^ s3;
-            block[11] = s7 ^ s11 ^ xtime(s15) ^ (s3 ^ xtime(s3));
-            block[15] = (s7 ^ xtime(s7)) ^ s11 ^ s15 ^ xtime(s3);
+            // Col 3 (s12, s13, s14, s15)
+            block[12] = xtime(s12) ^ (s13 ^ xtime(s13)) ^ s14 ^ s15;
+            block[13] = s12 ^ xtime(s13) ^ (s14 ^ xtime(s14)) ^ s15;
+            block[14] = s12 ^ s13 ^ xtime(s14) ^ (s15 ^ xtime(s15));
+            block[15] = (s12 ^ xtime(s12)) ^ s13 ^ s14 ^ xtime(s15);
 
             // AddRoundKey
             for i in 0..16 {
@@ -183,21 +183,21 @@ impl Aes128 {
         let s15 = block[11];
 
         block[0] = s0;
-        block[1] = s13;
-        block[2] = s10;
-        block[3] = s7;
+        block[1] = s1;
+        block[2] = s2;
+        block[3] = s3;
         block[4] = s4;
-        block[5] = s1;
-        block[6] = s14;
-        block[7] = s11;
+        block[5] = s5;
+        block[6] = s6;
+        block[7] = s7;
         block[8] = s8;
-        block[9] = s5;
-        block[10] = s2;
-        block[11] = s15;
+        block[9] = s9;
+        block[10] = s10;
+        block[11] = s11;
         block[12] = s12;
-        block[13] = s9;
-        block[14] = s6;
-        block[15] = s3;
+        block[13] = s13;
+        block[14] = s14;
+        block[15] = s15;
 
         // AddRoundKey for round 10
         for i in 0..16 {

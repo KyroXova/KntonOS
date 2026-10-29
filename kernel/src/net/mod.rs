@@ -1151,6 +1151,85 @@ pub fn test_network_stack() -> bool {
         crate::serial_write_str("[KNT-NET-SERVER-PASS] Embedded HTTP/1.1 micro-server and REST telemetry API verified\r\n");
     }
 
+    // 9. TLS 1.3 Cryptographic Handshake & AES-128-GCM AEAD Record Layer Verification
+    {
+        crate::serial_write_str("[KNT-NET] Verifying TLS 1.3 cryptographic handshake & AEAD record layer...\r\n");
+
+        // 9.1 Verify core cryptographic primitives (SHA-256, HMAC-SHA256, HKDF, AES-128-GCM)
+        if !crate::crypto::verify_crypto_primitives() {
+            crate::serial_write_str("[KNT-PANIC] Core cryptographic primitives verification failed!\r\n");
+            return false;
+        }
+
+        // 9.2 Verify ClientHello and ServerHello formatting & parser
+        if !verify_tls_handshake() {
+            crate::serial_write_str("[KNT-PANIC] TLS 1.3 handshake message verification failed!\r\n");
+            return false;
+        }
+
+        // 9.3 Verify TLS 1.3 key schedule & record encryption / decryption
+        if !verify_tls_key_schedule() {
+            crate::serial_write_str("[KNT-PANIC] TLS 1.3 key schedule & record protection verification failed!\r\n");
+            return false;
+        }
+
+        // 9.4 End-to-end integration: synthesize ClientHello, ServerHello, derive traffic keys, protect records
+        let client_hello = TlsClientHello::new(Some("telemetry.knton.os"));
+        let ch_wire = client_hello.serialize();
+        let parsed_ch = match TlsClientHello::parse(&ch_wire) {
+            Ok(c) => c,
+            Err(_) => {
+                crate::serial_write_str("[KNT-PANIC] Failed to parse synthesized ClientHello!\r\n");
+                return false;
+            }
+        };
+
+        let server_hello = TlsServerHello::new(&parsed_ch.session_id, parsed_ch.key_share.as_deref());
+        let sh_wire = server_hello.serialize();
+
+        // Calculate Hello transcript hash
+        let mut transcript_hasher = crate::crypto::Sha256::new();
+        transcript_hasher.update(&ch_wire);
+        transcript_hasher.update(&sh_wire);
+        let transcript_hash = transcript_hasher.finalize();
+
+        // Initialize key schedule with shared secret (e.g. from ECDHE key exchange)
+        let mock_shared_key = [0x5au8; 32];
+        let key_schedule = TlsKeySchedule::init(&mock_shared_key, &transcript_hash);
+
+        let mut client_traffic = TlsKeySchedule::derive_traffic_keys(&key_schedule.client_app_traffic_secret);
+        let mut server_traffic = TlsKeySchedule::derive_traffic_keys(&key_schedule.client_app_traffic_secret);
+
+        // Encrypt telemetry payload in TLS 1.3 application data record
+        let telemetry_payload = b"{\"tls\":\"1.3\",\"cipher\":\"TLS_AES_128_GCM_SHA256\",\"status\":\"secure\"}";
+        let protected_record = client_traffic.encrypt_record(CONTENT_TYPE_APPLICATION_DATA, telemetry_payload);
+
+        // Decrypt and verify on server side
+        let (inner_type, decrypted_payload) = match server_traffic.decrypt_record(&protected_record) {
+            Ok(res) => res,
+            Err(_) => {
+                crate::serial_write_str("[KNT-PANIC] Failed to decrypt protected TLS 1.3 record!\r\n");
+                return false;
+            }
+        };
+
+        if inner_type != CONTENT_TYPE_APPLICATION_DATA || decrypted_payload != telemetry_payload {
+            crate::serial_write_str("[KNT-PANIC] Decrypted TLS 1.3 payload mismatch!\r\n");
+            return false;
+        }
+
+        // Verify tampering detection: alter ciphertext byte -> decryption must fail
+        let mut tampered_record = protected_record.clone();
+        tampered_record[10] ^= 0x40;
+        let mut tamper_server = TlsKeySchedule::derive_traffic_keys(&key_schedule.client_app_traffic_secret);
+        if tamper_server.decrypt_record(&tampered_record).is_ok() {
+            crate::serial_write_str("[KNT-PANIC] AEAD decryption succeeded on tampered TLS record!\r\n");
+            return false;
+        }
+
+        crate::serial_write_str("[KNT-NET-TLS-PASS] TLS 1.3 cryptographic handshake & AES-128-GCM AEAD record layer verified\r\n");
+    }
+
     crate::serial_write_str("[KNT-NET-TESTS-PASS] All embedded network protocol stack checks passed\r\n");
     true
 }
