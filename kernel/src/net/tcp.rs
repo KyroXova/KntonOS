@@ -1,7 +1,8 @@
 //! Transmission Control Protocol (TCP, RFC 793) Header Parser and Builder.
 //!
 //! Implements RFC 793 20-byte standard TCP header layout, control flags (SYN, ACK, FIN, RST, PSH),
-//! data offset parsing, window size, pseudo-header checksum calculation, and connection state machine.
+//! data offset parsing, window size, pseudo-header checksum calculation, connection state machine,
+//! and stream socket 3-way handshake generation.
 
 use super::ipv4::compute_checksum;
 use alloc::vec::Vec;
@@ -209,5 +210,160 @@ impl TcpState {
 
         *self = next_state;
         Ok(())
+    }
+}
+
+/// TCP Stream Socket tracking sequence numbers, sliding windows, and 3-way handshake.
+#[derive(Debug, Clone)]
+pub struct TcpSocket {
+    pub local_ip: [u8; 4],
+    pub local_port: u16,
+    pub remote_ip: [u8; 4],
+    pub remote_port: u16,
+    pub state: TcpState,
+    pub local_seq: u32,
+    pub remote_seq: u32,
+    pub window_size: u16,
+    pub rx_buffer: Vec<u8>,
+}
+
+impl TcpSocket {
+    /// Creates a new TCP socket bound to a local endpoint in the Closed state.
+    pub fn new(local_ip: [u8; 4], local_port: u16) -> Self {
+        Self {
+            local_ip,
+            local_port,
+            remote_ip: [0; 4],
+            remote_port: 0,
+            state: TcpState::Closed,
+            local_seq: 1000, // Initial Sequence Number (ISN)
+            remote_seq: 0,
+            window_size: DEFAULT_TCP_WINDOW,
+            rx_buffer: Vec::new(),
+        }
+    }
+
+    /// Puts the socket into the Listen state to await incoming SYN connections.
+    pub fn listen(&mut self) -> Result<(), TcpError> {
+        self.state.transition(TcpEvent::PassiveOpen)
+    }
+
+    /// Initiates a 3-way handshake (Active Open) by transitioning to SynSent and building a SYN segment.
+    pub fn connect(&mut self, remote_ip: [u8; 4], remote_port: u16) -> Result<TcpHeader, TcpError> {
+        self.remote_ip = remote_ip;
+        self.remote_port = remote_port;
+        self.state.transition(TcpEvent::ActiveOpen)?;
+
+        let syn_header = TcpHeader::new(
+            self.local_port,
+            self.remote_port,
+            self.local_seq,
+            0,
+            TCP_FLAG_SYN,
+            self.window_size,
+        );
+        self.local_seq = self.local_seq.wrapping_add(1);
+        Ok(syn_header)
+    }
+
+    /// Ingests an incoming TCP segment, updates connection state, and produces an immediate response segment if required.
+    pub fn handle_segment(&mut self, header: &TcpHeader, payload: &[u8]) -> Option<TcpHeader> {
+        match self.state {
+            TcpState::Listen => {
+                if (header.flags & TCP_FLAG_SYN) != 0 {
+                    self.remote_port = header.src_port;
+                    self.remote_seq = header.seq_num.wrapping_add(1);
+                    let _ = self.state.transition(TcpEvent::RecvSyn);
+
+                    let syn_ack = TcpHeader::new(
+                        self.local_port,
+                        self.remote_port,
+                        self.local_seq,
+                        self.remote_seq,
+                        TCP_FLAG_SYN | TCP_FLAG_ACK,
+                        self.window_size,
+                    );
+                    self.local_seq = self.local_seq.wrapping_add(1);
+                    return Some(syn_ack);
+                }
+            }
+            TcpState::SynSent => {
+                if (header.flags & (TCP_FLAG_SYN | TCP_FLAG_ACK)) == (TCP_FLAG_SYN | TCP_FLAG_ACK) {
+                    if header.ack_num == self.local_seq {
+                        self.remote_seq = header.seq_num.wrapping_add(1);
+                        let _ = self.state.transition(TcpEvent::RecvSynAck);
+
+                        let ack = TcpHeader::new(
+                            self.local_port,
+                            self.remote_port,
+                            self.local_seq,
+                            self.remote_seq,
+                            TCP_FLAG_ACK,
+                            self.window_size,
+                        );
+                        return Some(ack);
+                    }
+                }
+            }
+            TcpState::SynReceived => {
+                if (header.flags & TCP_FLAG_ACK) != 0 {
+                    if header.ack_num == self.local_seq {
+                        let _ = self.state.transition(TcpEvent::RecvAck);
+                    }
+                }
+            }
+            TcpState::Established => {
+                if !payload.is_empty() {
+                    self.rx_buffer.extend_from_slice(payload);
+                    self.remote_seq = self.remote_seq.wrapping_add(payload.len() as u32);
+
+                    let ack = TcpHeader::new(
+                        self.local_port,
+                        self.remote_port,
+                        self.local_seq,
+                        self.remote_seq,
+                        TCP_FLAG_ACK,
+                        self.window_size,
+                    );
+                    return Some(ack);
+                }
+
+                if (header.flags & TCP_FLAG_FIN) != 0 {
+                    self.remote_seq = self.remote_seq.wrapping_add(1);
+                    let _ = self.state.transition(TcpEvent::RecvFin);
+
+                    let ack = TcpHeader::new(
+                        self.local_port,
+                        self.remote_port,
+                        self.local_seq,
+                        self.remote_seq,
+                        TCP_FLAG_ACK,
+                        self.window_size,
+                    );
+                    return Some(ack);
+                }
+            }
+            _ => {}
+        }
+
+        None
+    }
+
+    /// Formats an outgoing data segment with ACK and PSH flags over an established connection.
+    pub fn send_data(&mut self, data: &[u8]) -> Result<(TcpHeader, Vec<u8>), TcpError> {
+        if !self.state.is_established() {
+            return Err(TcpError::UnexpectedState);
+        }
+
+        let header = TcpHeader::new(
+            self.local_port,
+            self.remote_port,
+            self.local_seq,
+            self.remote_seq,
+            TCP_FLAG_ACK | TCP_FLAG_PSH,
+            self.window_size,
+        );
+        self.local_seq = self.local_seq.wrapping_add(data.len() as u32);
+        Ok((header, data.to_vec()))
     }
 }
