@@ -321,3 +321,10 @@ pub fn init() {
         );
     }
 }
+
+/// Registers an interrupt handler gate at a specified IDT vector.
+pub fn register_handler(vector: u8, handler: usize) {
+    unsafe {
+        IDT[vector as usize].set_handler(handler, 0);
+    }
+}

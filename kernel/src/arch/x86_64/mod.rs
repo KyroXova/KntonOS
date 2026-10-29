@@ -4,6 +4,7 @@ pub mod idt;
 pub mod syscall;
 pub mod acpi;
 pub mod apic;
+pub mod timer;
 
 use crate::serial_write_str;
 
