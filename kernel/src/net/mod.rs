@@ -17,6 +17,7 @@ pub mod poll;
 pub mod server;
 pub mod socket;
 pub mod tcp;
+pub mod tls;
 pub mod udp;
 
 pub use arp::{ArpCache, ArpPacket, ARP_OP_REPLY, ARP_OP_REQUEST};
@@ -55,6 +56,12 @@ pub use socket::{
 pub use tcp::{
     compute_tcp_checksum, TcpError, TcpHeader, TcpSocket, TcpState, TCP_FLAG_ACK, TCP_FLAG_FIN,
     TCP_FLAG_PSH, TCP_FLAG_RST, TCP_FLAG_SYN,
+};
+pub use tls::{
+    verify_tls_handshake, verify_tls_key_schedule, TlsClientHello, TlsKeySchedule, TlsRecord,
+    TlsServerHello, TlsTrafficKeys, CIPHER_SUITE_TLS_AES_128_GCM_SHA256,
+    CONTENT_TYPE_APPLICATION_DATA, CONTENT_TYPE_HANDSHAKE, HANDSHAKE_CLIENT_HELLO,
+    HANDSHAKE_SERVER_HELLO, TLS_VERSION_1_3,
 };
 pub use udp::{UdpDatagram, UdpHeader, UdpSocketRegistry};
 
