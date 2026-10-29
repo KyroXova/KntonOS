@@ -2,6 +2,7 @@
 
 pub mod commands;
 pub mod input;
+pub mod pipeline;
 pub mod terminal;
 
 use alloc::string::String;
@@ -11,6 +12,10 @@ use crate::serial_write_str;
 
 pub use commands::execute_command;
 pub use input::{KeyAction, KeyBuffer, KeyboardDecoder, KeyEvent, ModifierState, poll_ps2_hardware};
+pub use pipeline::{
+    ExecutionMode, ParseError, ParsedPipeline, PipelineParser, PipelineStage, RedirectionSource,
+    RedirectionTarget,
+};
 pub use terminal::{TerminalBuffer, TerminalCell, DEFAULT_COLS, DEFAULT_ROWS};
 
 /// Stateful interactive virtual terminal shell session.
