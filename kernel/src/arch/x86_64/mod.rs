@@ -2,6 +2,12 @@ pub mod gdt;
 pub mod tss;
 pub mod idt;
 pub mod syscall;
+pub mod acpi;
+pub mod apic;
+pub mod timer;
+pub mod smp;
+
+pub use smp::{test_smp_and_timer_subsystem, SMP};
 
 use crate::serial_write_str;
 
@@ -28,4 +34,8 @@ pub fn init() {
     serial_write_str("  * Fast system call MSRs (STAR, LSTAR, FMASK, EFER.SCE) configured\r\n");
 
     serial_write_str("[KNT-ARCH] CPU infrastructure initialization complete\r\n");
+}
+
+pub fn init_smp() {
+    smp::SMP.lock().init();
 }

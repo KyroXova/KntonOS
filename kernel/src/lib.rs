@@ -88,6 +88,14 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Memory subsystem self-test failed!\r\n");
     }
 
+    // Initialize SMP multi-core discovery and Local APIC timer
+    arch::init_smp();
+
+    // Verify SMP multi-core topology and Local APIC timer operations
+    if !arch::test_smp_and_timer_subsystem() {
+        serial_write_str("[KNT-PANIC] SMP and Local APIC timer self-test failed!\r\n");
+    }
+
     // Initialize Virtual File System & mount demo initramfs
     fs::init();
     if !fs::test_vfs_subsystem() {
@@ -112,7 +120,7 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] VirtIO subsystem self-test failed!\r\n");
     }
 
-    // Initialize Embedded Network Protocol Stack (ARP, IPv4, ICMP, UDP)
+    // Initialize Embedded Network Protocol Stack (ARP, IPv4, ICMP, UDP, TCP)
     net::init();
     if !net::test_network_stack() {
         serial_write_str("[KNT-PANIC] Network stack self-test failed!\r\n");
