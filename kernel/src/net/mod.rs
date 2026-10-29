@@ -13,6 +13,7 @@ pub mod dns;
 pub mod http;
 pub mod icmp;
 pub mod ipv4;
+pub mod poll;
 pub mod socket;
 pub mod tcp;
 pub mod udp;
@@ -36,6 +37,10 @@ pub use http::{
 };
 pub use icmp::{IcmpEchoMessage, ICMP_TYPE_ECHO_REPLY, ICMP_TYPE_ECHO_REQUEST};
 pub use ipv4::{compute_checksum, Ipv4Header, Ipv4Packet, IP_PROTO_ICMP, IP_PROTO_UDP};
+pub use poll::{
+    poll, select, verify_poll_multiplexer, PollFd, POLLERR, POLLHUP, POLLIN, POLLNVAL,
+    POLLOUT, POLLPRI,
+};
 pub use socket::{
     accept, bind, close, connect, listen, recv, recvfrom, send, sendto, set_nonblocking, socket,
     verify_socket_table, Socket, SocketDomain, SocketError, SocketHandle, SocketProtocol,
