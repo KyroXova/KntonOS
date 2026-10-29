@@ -445,7 +445,8 @@ impl PowerManager {
             return Ok(());
         }
 
-        if self.fadt.smi_cmd != 0 && self.fadt.acpi_enable != 0 {
+        // Only send ACPI_ENABLE to SMI_CMD if discovered from genuine firmware ACPI tables
+        if self.fadt.dsdt_address != 0 && self.fadt.smi_cmd != 0 && self.fadt.acpi_enable != 0 {
             unsafe {
                 crate::outb(self.fadt.smi_cmd as u16, self.fadt.acpi_enable);
                 for _ in 0..1000 {
@@ -658,5 +659,28 @@ pub fn test_cpu_throttling() -> bool {
     assert_eq!(get_cpu_throttling(), 0);
 
     cpu_relax();
+    true
+}
+
+/// Comprehensive ACPI power management verification suite emitting [KNT-POWER-MGMT-PASS].
+pub fn test_power_subsystem() -> bool {
+    serial_write_str("[KNT-TEST] Executing ACPI Power Management Subsystem self-tests...\r\n");
+
+    if !test_fadt_parser_and_power_structures() {
+        serial_write_str("[KNT-TEST-FAIL] FADT parser and register structures test failed!\r\n");
+        return false;
+    }
+
+    if !test_sleep_and_reset_engine() {
+        serial_write_str("[KNT-TEST-FAIL] Sleep transition and reset engine test failed!\r\n");
+        return false;
+    }
+
+    if !test_cpu_throttling() {
+        serial_write_str("[KNT-TEST-FAIL] CPU throttling and idle scaling test failed!\r\n");
+        return false;
+    }
+
+    serial_write_str("[KNT-POWER-MGMT-PASS] ACPI Power Management Subsystem operational\r\n");
     true
 }

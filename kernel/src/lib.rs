@@ -123,6 +123,11 @@ pub extern "C" fn kmain() -> ! {
     // Initialize ACPI Power Management Subsystem (FADT/DSDT S3/S5, CPU Throttling, Reset & Shutdown)
     arch::init_power_management();
 
+    // Verify ACPI Power Management Subsystem
+    if !arch::test_power_subsystem() {
+        serial_write_str("[KNT-PANIC] ACPI Power Management self-test failed!\r\n");
+    }
+
     // Initialize Virtual File System & mount demo initramfs
     fs::init();
     if !fs::test_vfs_subsystem() {
