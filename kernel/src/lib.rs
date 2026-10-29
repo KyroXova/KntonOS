@@ -41,6 +41,28 @@ pub unsafe fn inb(port: u16) -> u8 {
     val
 }
 
+#[inline(always)]
+pub unsafe fn outl(port: u16, val: u32) {
+    core::arch::asm!(
+        "out dx, eax",
+        in("dx") port,
+        in("eax") val,
+        options(nomem, nostack, preserves_flags)
+    );
+}
+
+#[inline(always)]
+pub unsafe fn inl(port: u16) -> u32 {
+    let val: u32;
+    core::arch::asm!(
+        "in eax, dx",
+        out("eax") val,
+        in("dx") port,
+        options(nomem, nostack, preserves_flags)
+    );
+    val
+}
+
 pub fn serial_init() {
     unsafe {
         outb(COM1_PORT + 1, 0x00); // Disable interrupts
@@ -118,6 +140,12 @@ pub extern "C" fn kmain() -> ! {
     drivers::virtio::init();
     if !drivers::virtio::test_virtio_subsystem() {
         serial_write_str("[KNT-PANIC] VirtIO subsystem self-test failed!\r\n");
+    }
+
+    // Initialize PCI Device Subsystem & USB xHCI Host Controller Discovery
+    drivers::init_pci();
+    if !drivers::test_pci_subsystem() {
+        serial_write_str("[KNT-PANIC] PCI subsystem self-test failed!\r\n");
     }
 
     // Initialize Embedded Network Protocol Stack (ARP, IPv4, ICMP, UDP, TCP)
