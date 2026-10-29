@@ -96,6 +96,12 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Syscall subsystem self-test failed!\r\n");
     }
 
+    // Initialize VirtIO Driver Subsystem (PCI discovery, split virtqueue, block device)
+    drivers::virtio::init();
+    if !drivers::virtio::test_virtio_subsystem() {
+        serial_write_str("[KNT-PANIC] VirtIO subsystem self-test failed!\r\n");
+    }
+
     serial_write_str("[KNT-SUBSYSTEM] Display & Win32 PE64 loader modules active\r\n");
     serial_write_str("[KNT-BOOT-SUCCESS] Native UEFI-to-kernel boot verified\r\n");
 
