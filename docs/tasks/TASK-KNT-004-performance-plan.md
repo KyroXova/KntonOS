@@ -2,11 +2,11 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Ready |
+| Status | Claimed |
 | Requirement/source | `docs/project-scope.md`, owner decision 2026-10-29 |
 | Milestone | A measurable first-demo test plan for boot, RAM, ISO size, and real-game performance. |
 | Depends on | None |
-| Owner/session | Unclaimed |
+| Owner/session | Ada Chen / dev |
 | Components | Benchmark and resource-budget specification under `docs/architecture/` |
 | Review | Lead review; benchmarks must be reproducible |
 

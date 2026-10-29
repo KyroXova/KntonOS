@@ -2,11 +2,11 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Ready |
+| Status | Claimed |
 | Requirement/source | `docs/project-scope.md`, owner decisions 2026-10-29 |
 | Milestone | A reviewable architecture decision record for the first native KntonOS vertical slice. |
 | Depends on | None |
-| Owner/session | Unclaimed |
+| Owner/session | Marcus / senior-dev |
 | Components | Architecture decision record under `docs/architecture/`; scope/integration links as needed |
 | Review | Independent lead review; high-risk platform and compatibility decision |
 

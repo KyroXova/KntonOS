@@ -1,20 +1,20 @@
 # Commit handover
 
-- UTC / human and agent session: 2026-10-29 / KyroXova / NadiaMercer
-- Task and idea IDs: TASK-KNT-002, TASK-KNT-003, TASK-KNT-004
-- Base/parents and purpose: Record product constraints and create the first architecture and performance discovery packages.
+- UTC / human and agent session: 2026-10-29 / KyroXova / Marcus
+- Task and idea IDs: TASK-KNT-003, TASK-KNT-004
+- Base/parents and purpose: Claim TASK-KNT-003 and TASK-KNT-004 and establish component reservations under docs/architecture/.
 
 ## Change and effect
 
-Recorded the owner-confirmed general-purpose/gaming focus, independently developed kernel requirement, x86-64 UEFI initial platform, real-game performance demo, private monorepo, and ARR/MIT licensing posture. Added TASK-KNT-003 for architecture/compatibility feasibility and TASK-KNT-004 for a measurable resource/performance plan. Both are research packages; no implementation has started.
+Recorded the formal claim of TASK-KNT-003 by Marcus (Senior Dev) for the Native Platform & Compatibility Architecture Decision Record, and TASK-KNT-004 by Ada Chen for the First-Demo Resource & Performance Acceptance Plan. Recorded companion research reservation for Jules Martin covering UEFI toolchains and emulation fixtures.
 
 ## Validation and review
 
-Documentation-only planning change. No application tests exist because no application code or toolchain exists. TASK-KNT-003 requires independent review when a recommendation is produced; TASK-KNT-004 requires lead review of reproducibility.
+Claims and reservations are strictly non-overlapping under `docs/architecture/`. Workspaces are isolated across worktree branches.
 
 ## Remaining and next
 
-TASK-KNT-002 awaits exact game, hardware, Windows baseline, and measurable success thresholds. TASK-KNT-003 and TASK-KNT-004 are Ready. The three workspace branches remain free until formally claimed.
+Marcus authors ADR-001 under TASK-KNT-003. Ada Chen authors SPEC-001 in `workspace/ada-chen` under TASK-KNT-004. Jules Martin authors RESEARCH-001 in `workspace/jules-martin`. Once branch deliverables are ready, lead review and clean integration into `main` will proceed.
 
 ## Current control and flags
 
