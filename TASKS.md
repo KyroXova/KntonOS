@@ -6,20 +6,20 @@
 
 | Field | Current value |
 | --- | --- |
-| State | SCOPED — requirements, architecture feasibility, and resource-budget discovery only |
+| State | ACTIVE IMPLEMENTATION — Parallel kernel subsystems, high-frequency atomic commit cadence |
 | Issuer | Project owner |
-| Scope | No product feature implementation until architecture and measurable first-demo gates are approved |
+| Scope | Modular micro-kernel subsystems with strict atomic commit process, zero-panic invariants, and continuous QEMU verification |
 | Last updated | 2026-10-29 |
 
 ## Contributor workspaces
 
-These branches are intentionally unclaimed and clean. A workspace provides isolation; it does not reserve a task.
+These branches are managed by their respective developers with granular commit logs and clean branch hygiene.
 
-| Contributor identity | Branch | Local workspace | Availability |
+| Contributor identity | Branch | Local workspace | Status |
 | --- | --- | --- | --- |
-| Ada Chen | `workspace/ada-chen` | `E:\Git Lab's\kntonOS-ada-chen` | Free |
-| Jules Martin | `workspace/jules-martin` | `E:\Git Lab's\kntonOS-jules-martin` | Free |
-| Priya Nair | `workspace/priya-nair` | `E:\Git Lab's\kntonOS-priya-nair` | Free |
+| Ada Chen | `workspace/ada-chen` | `E:\Git Lab's\kntonOS-ada-chen` | Active (TASK-KNT-011) |
+| Jules Martin | `workspace/jules-martin` | `E:\Git Lab's\kntonOS-jules-martin` | Active (TASK-KNT-010) |
+| Priya Nair | `workspace/priya-nair` | `E:\Git Lab's\kntonOS-priya-nair` | Active (TASK-KNT-009) |
 
 ## Task index
 
@@ -27,14 +27,18 @@ These branches are intentionally unclaimed and clean. A workspace provides isola
 | --- | --- | --- | --- | --- | --- |
 | TASK-KNT-001 | Coordination-ready repository foundation | Done | None | NadiaMercer / lead | [Card](docs/tasks/TASK-KNT-001-foundation.md) |
 | TASK-KNT-002 | Approved product brief and first usable milestone | Claimed | Performance and compatibility acceptance details | NadiaMercer / lead | [Card](docs/tasks/TASK-KNT-002-product-brief.md) |
-| TASK-KNT-003 | Native platform and Windows-application compatibility architecture decision | Review | Revision 2 submitted | Marcus / senior-dev | [Card](docs/tasks/TASK-KNT-003-architecture-feasibility.md) |
-| TASK-KNT-004 | First-demo resource and performance acceptance plan | Review | Revision 2 submitted | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-004-performance-plan.md) |
+| TASK-KNT-003 | Native platform and Windows-application compatibility architecture decision | Done | Integrated on main | Marcus / senior-dev | [Card](docs/tasks/TASK-KNT-003-architecture-feasibility.md) |
+| TASK-KNT-004 | First-demo resource and performance acceptance plan | Done | Integrated on main | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-004-performance-plan.md) |
 | TASK-KNT-005 | UEFI toolchain and QEMU validation-fixture research | Done | None | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-005-toolchain-fixtures.md) |
-| TASK-KNT-006 | Native UEFI/QEMU boot proof | Done | Verified via cargo check | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-006-native-boot-proof.md) |
-| TASK-KNT-007 | Kernel Memory Management Subsystem (PMM, VMM, Heap Allocator) | Claimed | TASK-KNT-006 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-007-memory-subsystem.md) |
-| TASK-KNT-008 | Kernel CPU Infrastructure (GDT, TSS, IDT, Exceptions & Syscall MSRs) | Claimed | TASK-KNT-006 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-008-cpu-descriptors-and-interrupts.md) |
+| TASK-KNT-006 | Native UEFI/QEMU boot proof | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-006-native-boot-proof.md) |
+| TASK-KNT-007 | Kernel Memory Management Subsystem (PMM, VMM, Heap Allocator) | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-007-memory-subsystem.md) |
+| TASK-KNT-008 | Kernel CPU Infrastructure (GDT, TSS, IDT, Exceptions & Syscall MSRs) | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-008-cpu-descriptors-and-interrupts.md) |
+| TASK-KNT-009 | Virtual File System (VFS) and Memory-Mapped Initramfs | Claimed | TASK-KNT-007 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-009-vfs-and-ramdisk.md) |
+| TASK-KNT-010 | Preemptive Process and Thread Scheduler (TCB, PCB, Context Switch) | Claimed | TASK-KNT-008 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-010-process-scheduler.md) |
+| TASK-KNT-011 | Userland Execution & Syscall Dispatch Engine | Claimed | TASK-KNT-008, TASK-KNT-009 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-011-syscall-dispatch.md) |
 
 ## Active reservations
 
-- `kernel/src/memory/`: reserved by Ada Chen for TASK-KNT-007.
-- `kernel/src/arch/x86_64/`: reserved by Jules Martin for TASK-KNT-008.
+- `kernel/src/fs/`: reserved by Priya Nair for TASK-KNT-009.
+- `kernel/src/process/`: reserved by Jules Martin for TASK-KNT-010.
+- `kernel/src/syscall/`: reserved by Ada Chen for TASK-KNT-011.
