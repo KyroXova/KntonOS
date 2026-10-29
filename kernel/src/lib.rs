@@ -8,6 +8,7 @@ pub mod display;
 pub mod pe;
 pub mod fs;
 pub mod syscall;
+pub mod drivers;
 
 pub use memory::ALLOCATOR;
 
