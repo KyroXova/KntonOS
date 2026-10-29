@@ -8,12 +8,17 @@
 //! - TCP (RFC 793): Connection-oriented stream sockets, state machine, and 3-way handshake
 
 pub mod arp;
+pub mod dns;
 pub mod icmp;
 pub mod ipv4;
 pub mod tcp;
 pub mod udp;
 
 pub use arp::{ArpCache, ArpPacket, ARP_OP_REPLY, ARP_OP_REQUEST};
+pub use dns::{
+    build_dns_query, encode_domain_name, parse_dns_response, read_domain_name, DnsAnswer,
+    DnsError, DnsHeader, DnsQuestion, DNS_CLASS_IN, DNS_HEADER_LEN, DNS_TYPE_A,
+};
 pub use icmp::{IcmpEchoMessage, ICMP_TYPE_ECHO_REPLY, ICMP_TYPE_ECHO_REQUEST};
 pub use ipv4::{compute_checksum, Ipv4Header, Ipv4Packet, IP_PROTO_ICMP, IP_PROTO_UDP};
 pub use tcp::{
