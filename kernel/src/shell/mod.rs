@@ -2,6 +2,7 @@
 
 pub mod commands;
 pub mod input;
+pub mod pipe;
 pub mod pipeline;
 pub mod terminal;
 
@@ -12,6 +13,7 @@ use crate::serial_write_str;
 
 pub use commands::execute_command;
 pub use input::{KeyAction, KeyBuffer, KeyboardDecoder, KeyEvent, ModifierState, poll_ps2_hardware};
+pub use pipe::AnonymousPipe;
 pub use pipeline::{
     ExecutionMode, ParseError, ParsedPipeline, PipelineParser, PipelineStage, RedirectionSource,
     RedirectionTarget,

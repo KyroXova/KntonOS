@@ -13,6 +13,13 @@ pub fn execute_command(line: &str, term: &mut TerminalBuffer) {
         return;
     }
 
+    if trimmed.contains('|') || trimmed.contains('>') || trimmed.contains('<') || trimmed.ends_with('&') {
+        if let Ok(pipeline) = super::pipeline::PipelineParser::parse(trimmed) {
+            pipeline.execute(term);
+            return;
+        }
+    }
+
     let mut parts = trimmed.split_whitespace();
     let cmd = parts.next().unwrap_or("");
     let args: Vec<&str> = parts.collect();

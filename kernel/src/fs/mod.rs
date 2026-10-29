@@ -22,15 +22,28 @@ use crate::serial_write_str;
 
 pub struct VfsManager {
     root_fs: Option<Arc<dyn FileSystem>>,
+    dynamic_files: alloc::collections::BTreeMap<alloc::string::String, Vec<u8>>,
 }
 
 impl VfsManager {
     pub const fn new() -> Self {
-        Self { root_fs: None }
+        Self {
+            root_fs: None,
+            dynamic_files: alloc::collections::BTreeMap::new(),
+        }
     }
 
     pub fn set_root(&mut self, fs: Arc<dyn FileSystem>) {
         self.root_fs = Some(fs);
+    }
+
+    pub fn write_file(&mut self, path: &str, data: &[u8]) {
+        self.dynamic_files.insert(alloc::string::String::from(path), data.to_vec());
+    }
+
+    pub fn append_file(&mut self, path: &str, data: &[u8]) {
+        let entry = self.dynamic_files.entry(alloc::string::String::from(path)).or_insert_with(Vec::new);
+        entry.extend_from_slice(data);
     }
 
     pub fn open(&self, path: &str) -> Result<Arc<dyn Inode>, FsError> {
@@ -47,6 +60,9 @@ impl VfsManager {
     }
 
     pub fn read_file(&self, path: &str) -> Result<Vec<u8>, FsError> {
+        if let Some(data) = self.dynamic_files.get(path) {
+            return Ok(data.clone());
+        }
         let inode = self.open(path)?;
         let meta = inode.metadata();
         if meta.file_type != FileType::File {

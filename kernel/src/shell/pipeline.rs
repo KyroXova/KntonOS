@@ -252,3 +252,137 @@ impl PipelineParser {
         tokens
     }
 }
+
+use super::pipe::AnonymousPipe;
+use super::terminal::TerminalBuffer;
+use crate::fs::VFS;
+
+impl ParsedPipeline {
+    /// Execute pipeline stages chained via anonymous pipes and file redirections.
+    pub fn execute(&self, term: &mut TerminalBuffer) {
+        if self.stages.is_empty() {
+            return;
+        }
+
+        let stage_count = self.stages.len();
+        let mut pipes = Vec::with_capacity(stage_count);
+        for _ in 0..stage_count {
+            pipes.push(AnonymousPipe::new());
+        }
+
+        for (i, stage) in self.stages.iter().enumerate() {
+            // 1. Resolve input data for this stage
+            let input_bytes = match &stage.stdin_source {
+                RedirectionSource::Pipe(prev_idx) => {
+                    if *prev_idx < pipes.len() {
+                        pipes[*prev_idx].read_all()
+                    } else {
+                        Vec::new()
+                    }
+                }
+                RedirectionSource::File(path) => {
+                    VFS.lock().read_file(path).unwrap_or_default()
+                }
+                RedirectionSource::StandardInput => Vec::new(),
+            };
+
+            // 2. Execute command stage, capturing output
+            let stage_output = Self::run_stage_command(stage, &input_bytes, term);
+
+            // 3. Direct output to destination
+            match &stage.stdout_target {
+                RedirectionTarget::Pipe(_next_idx) => {
+                    if i < pipes.len() {
+                        pipes[i].write(&stage_output);
+                        pipes[i].close_write();
+                    }
+                }
+                RedirectionTarget::FileTruncate(path) => {
+                    VFS.lock().write_file(path, &stage_output);
+                }
+                RedirectionTarget::FileAppend(path) => {
+                    VFS.lock().append_file(path, &stage_output);
+                }
+                RedirectionTarget::StandardOutput => {
+                    if let Ok(text) = core::str::from_utf8(&stage_output) {
+                        term.write_str(text);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Internal executor for an individual stage command with standard input/output.
+    pub fn run_stage_command(
+        stage: &PipelineStage,
+        input: &[u8],
+        _term: &mut TerminalBuffer,
+    ) -> Vec<u8> {
+        let mut out = Vec::new();
+        let args_ref: Vec<&str> = stage.args.iter().map(|s| s.as_str()).collect();
+
+        match stage.command.as_str() {
+            "ver" | "version" => {
+                out.extend_from_slice(b"KntonOS Micro-Kernel Shell\r\nVersion: 0.1.0-alpha (x86_64-unknown-uefi)\r\nSubsystems: PMM, VMM, VFS, Scheduler, Syscall NT, VirtIO, Acrylic Compositor\r\n");
+            }
+            "cat" | "type" => {
+                if args_ref.is_empty() || args_ref[0] == "-" {
+                    out.extend_from_slice(input);
+                } else {
+                    let vfs = VFS.lock();
+                    for path in args_ref {
+                        if let Ok(data) = vfs.read_file(path) {
+                            out.extend_from_slice(&data);
+                        } else {
+                            let err_msg = alloc::format!("cat: {}: No such file\r\n", path);
+                            out.extend_from_slice(err_msg.as_bytes());
+                        }
+                    }
+                }
+            }
+            "echo" => {
+                let mut first = true;
+                for a in &stage.args {
+                    if !first {
+                        out.push(b' ');
+                    }
+                    first = false;
+                    out.extend_from_slice(a.as_bytes());
+                }
+                out.extend_from_slice(b"\r\n");
+            }
+            "ls" | "dir" => {
+                let path = if args_ref.is_empty() { "/" } else { args_ref[0] };
+                let vfs = VFS.lock();
+                if let Ok(node) = vfs.open(path) {
+                    let meta = node.metadata();
+                    if meta.file_type == crate::fs::FileType::Directory {
+                        if let Ok(entries) = node.readdir() {
+                            out.extend_from_slice(b"TYPE     NAME\r\n");
+                            for entry in entries {
+                                let line = alloc::format!("{:<8} {}\r\n", if entry.file_type == crate::fs::FileType::Directory { "<DIR>" } else { "<FILE>" }, entry.name);
+                                out.extend_from_slice(line.as_bytes());
+                            }
+                        }
+                    } else {
+                        let line = alloc::format!("[FILE] {} B {}\r\n", meta.size, path);
+                        out.extend_from_slice(line.as_bytes());
+                    }
+                } else {
+                    let err = alloc::format!("ls: cannot access '{}': No such file or directory\r\n", path);
+                    out.extend_from_slice(err.as_bytes());
+                }
+            }
+            "help" => {
+                out.extend_from_slice(b"KntonOS Virtual Terminal Shell Commands:\r\n  help, ver, ls, cat, echo, ps, jobs, fg, bg, kill, clear\r\n");
+            }
+            unknown => {
+                let err = alloc::format!("Unknown command: {}\r\n", unknown);
+                out.extend_from_slice(err.as_bytes());
+            }
+        }
+
+        out
+    }
+}
+
