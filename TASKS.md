@@ -27,11 +27,12 @@ These branches are intentionally unclaimed and clean. A workspace provides isola
 | --- | --- | --- | --- | --- | --- |
 | TASK-KNT-001 | Coordination-ready repository foundation | Done | None | NadiaMercer / lead | [Card](docs/tasks/TASK-KNT-001-foundation.md) |
 | TASK-KNT-002 | Approved product brief and first usable milestone | Claimed | Performance and compatibility acceptance details | NadiaMercer / lead | [Card](docs/tasks/TASK-KNT-002-product-brief.md) |
-| TASK-KNT-003 | Native platform and Windows-application compatibility architecture decision | Claimed | None | Marcus / senior-dev | [Card](docs/tasks/TASK-KNT-003-architecture-feasibility.md) |
-| TASK-KNT-004 | First-demo resource and performance acceptance plan | Claimed | None | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-004-performance-plan.md) |
+| TASK-KNT-003 | Native platform and Windows-application compatibility architecture decision | Review | Independent lead review | Marcus / senior-dev | [Card](docs/tasks/TASK-KNT-003-architecture-feasibility.md) |
+| TASK-KNT-004 | First-demo resource and performance acceptance plan | Review | Lead review | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-004-performance-plan.md) |
 
 ## Active reservations
 
-- `docs/architecture/ADR-001-native-platform-and-compatibility.md`: reserved by Marcus / senior-dev for TASK-KNT-003.
-- `docs/architecture/SPEC-001-performance-and-resource-plan.md`: reserved by Ada Chen / dev for TASK-KNT-004.
-- `docs/architecture/RESEARCH-001-toolchain-and-emulation-fixtures.md`: reserved by Jules Martin / dev for companion toolchain research.
+None. Deliverables integrated into `main`. Architectural specifications awaiting lead review:
+- `docs/architecture/ADR-001-native-platform-and-compatibility.md`
+- `docs/architecture/SPEC-001-performance-and-resource-plan.md`
+- `docs/architecture/RESEARCH-001-toolchain-and-emulation-fixtures.md`

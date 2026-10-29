@@ -2,13 +2,13 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Claimed |
+| Status | Review |
 | Requirement/source | `docs/project-scope.md`, owner decisions 2026-10-29 |
 | Milestone | A reviewable architecture decision record for the first native KntonOS vertical slice. |
 | Depends on | None |
 | Owner/session | Marcus / senior-dev |
-| Components | Architecture decision record under `docs/architecture/`; scope/integration links as needed |
-| Review | Independent lead review; high-risk platform and compatibility decision |
+| Components | `docs/architecture/ADR-001-native-platform-and-compatibility.md` |
+| Review | Independent lead review (@NadiaMercer); high-risk platform and compatibility decision |
 
 ## Goal and scope
 
@@ -16,19 +16,19 @@ Compare feasible approaches for an independently developed x86-64 UEFI kernel an
 
 ## Acceptance
 
-- [ ] Defines the first boot-to-user-space path and kernel/user-space responsibility boundary.
-- [ ] Evaluates implementation-language choices by component, including performance, safety, ecosystem maturity, and debugging implications.
-- [ ] Separates what KntonOS can implement natively from any compatibility/runtime behavior and identifies legal/technical risks.
-- [ ] Gives a staged compatibility plan with a demonstrable first `.exe` or game target, not an unbounded "all apps" claim.
-- [ ] States the validation fixtures, emulator/hardware needs, and open owner decisions.
+- [x] Defines the first boot-to-user-space path and kernel/user-space responsibility boundary (ADR-001 §2.2, §2.3).
+- [x] Evaluates implementation-language choices by component, including performance, safety, ecosystem maturity, and debugging implications (ADR-001 §3).
+- [x] Separates what KntonOS can implement natively from any compatibility/runtime behavior and identifies legal/technical risks (ADR-001 §2.3, §4.1).
+- [x] Gives a staged compatibility plan with a demonstrable first `.exe` or game target, not an unbounded "all apps" claim (ADR-001 §4.2).
+- [x] States the validation fixtures, emulator/hardware needs, and open owner decisions (ADR-001 §6, §7; supported by RESEARCH-001).
 
 ## Integration agreement
 
-- Producer: architecture decision record.
+- Producer: architecture decision record (`docs/architecture/ADR-001-native-platform-and-compatibility.md`).
 - Consumers: kernel, GUI, graphics, runtime, and performance tasks created after approval.
 - Contract: recommendation must identify explicit component boundaries, interfaces to be specified next, and no use of a modified third-party kernel.
 - Validation: sources and assumptions must be cited; an independent reviewer validates that the recommendation meets owner constraints.
 
 ## Log and next handoff
 
-Ready for assignment to the implementation lead. On completion, request independent lead review and update TASK-KNT-002/TASK-KNT-004 dependencies.
+Deliverable committed to `main` at commit `394d482`. Companion research on emulation fixtures integrated at `b226965`. Submitted for independent lead review by @NadiaMercer.
