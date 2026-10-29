@@ -8,6 +8,7 @@
 //! - TCP (RFC 793): Connection-oriented stream sockets, state machine, and 3-way handshake
 
 pub mod arp;
+pub mod dhcp;
 pub mod dns;
 pub mod http;
 pub mod icmp;
@@ -16,6 +17,13 @@ pub mod tcp;
 pub mod udp;
 
 pub use arp::{ArpCache, ArpPacket, ARP_OP_REPLY, ARP_OP_REQUEST};
+pub use dhcp::{
+    verify_dhcp_wire_protocol, DhcpError, DhcpOption, DhcpPacket, BOOTREPLY, BOOTREQUEST,
+    DHCPACK, DHCPDECLINE, DHCPDISCOVER, DHCPINFORM, DHCPNAK, DHCPOFFER, DHCPRELEASE,
+    DHCPREQUEST, DHCP_CLIENT_PORT, DHCP_MAGIC_COOKIE, DHCP_OPT_DNS_SERVER, DHCP_OPT_END,
+    DHCP_OPT_LEASE_TIME, DHCP_OPT_MESSAGE_TYPE, DHCP_OPT_PAD, DHCP_OPT_PARAM_REQUEST_LIST,
+    DHCP_OPT_ROUTER, DHCP_OPT_SERVER_ID, DHCP_OPT_SUBNET_MASK, DHCP_SERVER_PORT,
+};
 pub use dns::{
     build_dns_query, encode_domain_name, parse_dns_response, read_domain_name,
     verify_dns_wire_protocol, DnsAnswer, DnsError, DnsHeader, DnsQuestion, DNS_CLASS_IN,
