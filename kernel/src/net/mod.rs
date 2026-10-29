@@ -451,7 +451,7 @@ pub fn configure_from_dhcp() -> Result<(), &'static str> {
 
 /// Initializes the embedded network stack.
 pub fn init() {
-    crate::serial_write_str("[KNT-NET-INIT] Initializing embedded network protocol stack (ARP, IPv4, ICMP, UDP, TCP, DNS, HTTP)...\r\n");
+    crate::serial_write_str("[KNT-NET-INIT] Initializing embedded network protocol stack (ARP, IPv4, ICMP, UDP, TCP, DNS, HTTP, DHCP)...\r\n");
     crate::serial_write_str("[KNT-NET] Local IP configured: 192.168.1.100 / Netmask: 255.255.255.0\r\n");
 }
 
@@ -745,6 +745,99 @@ pub fn test_network_stack() -> bool {
         }
 
         crate::serial_write_str("[KNT-NET-HTTP-PASS] DNS resolution (RFC 1035) and HTTP/1.1 GET micro-client verified\r\n");
+    }
+
+    // --- TEST 6: DHCP IPv4 Lease Client & Network Auto-Configuration ---
+    {
+        if !verify_dhcp_wire_protocol() {
+            crate::serial_write_str("[KNT-PANIC] DHCP wire protocol verification failed!\r\n");
+            return false;
+        }
+
+        if !verify_dhcp_state_machine() {
+            crate::serial_write_str("[KNT-PANIC] DHCP state machine verification failed!\r\n");
+            return false;
+        }
+
+        let mut stack = NET_STACK.lock();
+
+        let client_mac = stack.local_mac;
+        let xid = 0x3903F326 ^ (client_mac[4] as u32) | ((client_mac[5] as u32) << 8);
+
+        // Build mock DHCPOFFER packet
+        let mut offer = DhcpPacket::new_client_packet(xid, client_mac);
+        offer.op = BOOTREPLY;
+        offer.yiaddr = [192, 168, 1, 188];
+        offer.siaddr = [192, 168, 1, 1];
+        offer.add_option(DHCP_OPT_MESSAGE_TYPE, &[DHCPOFFER]);
+        offer.add_option(DHCP_OPT_SERVER_ID, &[192, 168, 1, 1]);
+        offer.add_option(DHCP_OPT_SUBNET_MASK, &[255, 255, 255, 0]);
+        offer.add_option(DHCP_OPT_ROUTER, &[192, 168, 1, 1]);
+        offer.add_option(DHCP_OPT_DNS_SERVER, &[192, 168, 1, 254]);
+        offer.add_option(DHCP_OPT_LEASE_TIME, &86400u32.to_be_bytes());
+
+        let offer_wire = offer.serialize();
+        let offer_udp = UdpHeader::new(DHCP_SERVER_PORT, DHCP_CLIENT_PORT, offer_wire.len());
+        let mut offer_packet = Vec::new();
+        offer_packet.extend_from_slice(&offer_udp.serialize());
+        offer_packet.extend_from_slice(&offer_wire);
+
+        let offer_ip = Ipv4Header::new([192, 168, 1, 1], [255, 255, 255, 255], IP_PROTO_UDP, offer_packet.len());
+        let mut offer_frame = Vec::new();
+        offer_frame.extend_from_slice(&client_mac);
+        offer_frame.extend_from_slice(&[0x00, 0x50, 0x56, 0xAA, 0xBB, 0xCC]);
+        offer_frame.extend_from_slice(&[0x08, 0x00]);
+        offer_frame.extend_from_slice(&offer_ip.serialize());
+        offer_frame.extend_from_slice(&offer_packet);
+
+        // Build mock DHCPACK packet
+        let mut ack = DhcpPacket::new_client_packet(xid, client_mac);
+        ack.op = BOOTREPLY;
+        ack.yiaddr = [192, 168, 1, 188];
+        ack.siaddr = [192, 168, 1, 1];
+        ack.add_option(DHCP_OPT_MESSAGE_TYPE, &[DHCPACK]);
+        ack.add_option(DHCP_OPT_SERVER_ID, &[192, 168, 1, 1]);
+        ack.add_option(DHCP_OPT_SUBNET_MASK, &[255, 255, 255, 0]);
+        ack.add_option(DHCP_OPT_ROUTER, &[192, 168, 1, 1]);
+        ack.add_option(DHCP_OPT_DNS_SERVER, &[192, 168, 1, 254]);
+        ack.add_option(DHCP_OPT_LEASE_TIME, &86400u32.to_be_bytes());
+
+        let ack_wire = ack.serialize();
+        let ack_udp = UdpHeader::new(DHCP_SERVER_PORT, DHCP_CLIENT_PORT, ack_wire.len());
+        let mut ack_packet = Vec::new();
+        ack_packet.extend_from_slice(&ack_udp.serialize());
+        ack_packet.extend_from_slice(&ack_wire);
+
+        let ack_ip = Ipv4Header::new([192, 168, 1, 1], [255, 255, 255, 255], IP_PROTO_UDP, ack_packet.len());
+        let mut ack_frame = Vec::new();
+        ack_frame.extend_from_slice(&client_mac);
+        ack_frame.extend_from_slice(&[0x00, 0x50, 0x56, 0xAA, 0xBB, 0xCC]);
+        ack_frame.extend_from_slice(&[0x08, 0x00]);
+        ack_frame.extend_from_slice(&ack_ip.serialize());
+        ack_frame.extend_from_slice(&ack_packet);
+
+        // Bind client port and feed offer & ack frames into stack
+        let _ = stack.udp_sockets.bind(DHCP_CLIENT_PORT);
+        stack.process_frame(&offer_frame);
+        stack.process_frame(&ack_frame);
+
+        // Execute auto-configuration
+        if stack.configure_from_dhcp().is_err() {
+            crate::serial_write_str("[KNT-PANIC] DHCP configure_from_dhcp failed to acquire lease!\r\n");
+            return false;
+        }
+
+        if stack.local_ip != [192, 168, 1, 188]
+            || stack.netmask != [255, 255, 255, 0]
+            || stack.gateway != [192, 168, 1, 1]
+            || stack.dns_server != [192, 168, 1, 254]
+            || stack.dhcp_lease.is_none()
+        {
+            crate::serial_write_str("[KNT-PANIC] Network stack parameters not updated from DHCP lease!\r\n");
+            return false;
+        }
+
+        crate::serial_write_str("[KNT-NET-DHCP-PASS] DHCP 4-way DORA lease exchange and network auto-configuration verified\r\n");
     }
 
     crate::serial_write_str("[KNT-NET-TESTS-PASS] All embedded network protocol stack checks passed\r\n");
