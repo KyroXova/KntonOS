@@ -52,7 +52,7 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-025 | Desktop GUI Controls & Acrylic Backdrop Surface Renderer | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-025-gui-controls.md) |
 | TASK-KNT-026 | ELF64 Executable Loader & Userland Execution Subsystem | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-026-elf64-loader.md) |
 | TASK-KNT-027 | BSD / WinSock Sockets Abstraction Layer & Event Readiness Polling | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-027-socket-layer.md) |
-| TASK-KNT-028 | VT Shell Pipelines, I/O Redirection, and Process Job Control | Claimed | TASK-KNT-016 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-028-shell-pipelines.md) |
+| TASK-KNT-028 | VT Shell Pipelines, I/O Redirection, and Process Job Control | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-028-shell-pipelines.md) |
 | TASK-KNT-029 | POSIX Signal Handling & Process Exception Dispatch Engine | Claimed | TASK-KNT-026 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-029-signals.md) |
 | TASK-KNT-030 | Embedded HTTP/1.1 Micro-Server & Kernel REST Telemetry API | Claimed | TASK-KNT-027 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-030-http-server.md) |
 
