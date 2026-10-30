@@ -302,6 +302,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Compositor subsystem self-test failed!\r\n");
     }
 
+    // Initialize and verify Hardware-Accelerated Frame Capture & Direct DRM Video Streamer Engine
+    if !compositor::test_frame_streamer_subsystem() {
+        serial_write_str("[KNT-PANIC] Frame capture and video streamer self-test failed!\r\n");
+    }
+
     // Initialize Interactive Virtual Terminal (VT) Shell & Key-Event Engine
     shell::init(34, 9);
     if !shell::test_shell_subsystem() {

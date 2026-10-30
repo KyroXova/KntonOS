@@ -15,6 +15,8 @@ pub mod launcher;
 pub mod wayland;
 pub mod overlay;
 pub mod hud;
+pub mod capture;
+pub mod stream;
 
 use crate::display::color::Color;
 use crate::display::framebuffer::{FramebufferInfo, LinearFramebuffer};
@@ -35,6 +37,8 @@ pub use launcher::{
     StartMenuLauncher, LauncherAppEntry, LauncherAppId, LauncherClickAction,
     LAUNCHER_HEIGHT, LAUNCHER_WIDTH,
 };
+pub use capture::*;
+pub use stream::*;
 
 /// Global compositor manager instance.
 pub static COMPOSITOR: Spinlock<Option<SceneCompositor>> = Spinlock::new(None);
@@ -613,6 +617,98 @@ pub fn test_hardware_overlay_and_hud_subsystem() -> bool {
 
     // 4. Emit deterministic boot sentinel
     crate::serial_write_str("[KNT-OVERLAY-HUD-PASS] Hardware plane overlay and performance HUD verified\r\n");
+
+    true
+}
+
+
+/// Comprehensive verification self-test suite for Hardware-Accelerated Frame Capture
+/// & Direct DRM Dumb-Buffer Video Streamer Subsystem.
+pub fn test_frame_streamer_subsystem() -> bool {
+    crate::serial_write_str("[KNT-FRAME-STREAM-TEST] Running Frame Capture & Direct DRM Video Streamer verification...\r\n");
+
+    // 1. Verify direct scanout frame grabber and timestamped capture ring
+    if !capture::test_frame_grabber_and_ring() {
+        crate::serial_write_str("[KNT-PANIC] Frame grabber and capture ring self-test failed!\r\n");
+        return false;
+    }
+    crate::serial_write_str("  * Direct scanout frame grabber and timestamped capture ring verified\r\n");
+
+    // 2. Verify zero-copy dirty rect extraction and backpressure drop tracker
+    if !capture::test_dirty_rect_and_backpressure() {
+        crate::serial_write_str("[KNT-PANIC] Zero-copy dirty rect and drop tracker self-test failed!\r\n");
+        return false;
+    }
+    crate::serial_write_str("  * Zero-copy dirty rect extraction and backpressure drop tracker verified\r\n");
+
+    // 3. Verify ARGB8888 to NV12/YUV planar conversion and FPS frame pacer
+    if !stream::test_video_streamer_and_pacer() {
+        crate::serial_write_str("[KNT-PANIC] Video format converter and frame pacer self-test failed!\r\n");
+        return false;
+    }
+    crate::serial_write_str("  * ARGB8888 to NV12/YUV planar conversion and FPS frame pacer verified\r\n");
+
+    // 4. End-to-end integration: capture frame from compositor backbuffer and stream via NV12 pipeline
+    let mut grabber = FrameGrabber::new();
+    let mut ring = CaptureRingBuffer::new(4);
+    let mut tracker = BackpressureDropTracker::new();
+    let mut streamer = DumbBufferStreamer::new(VideoEncoderFormat::Nv12, 60, 30);
+
+    // Create a 4x4 test pattern in compositor backbuffer
+    let mut test_surface = [Color::rgb(0, 0, 0); 16];
+    for y in 0..4 {
+        for x in 0..4 {
+            test_surface[y * 4 + x] = Color::rgb((x * 60) as u8, (y * 60) as u8, 128);
+        }
+    }
+
+    let ts1 = 1_000_000_000u64;
+    let frame1 = match grabber.grab_from_backbuffer(&test_surface, 4, 4, ts1) {
+        Ok(f) => f,
+        Err(_) => {
+            crate::serial_write_str("[KNT-PANIC] End-to-end backbuffer grab failed!\r\n");
+            return false;
+        }
+    };
+
+    if frame1.width != 4 || frame1.height != 4 || frame1.pixels.len() != 16 {
+        crate::serial_write_str("[KNT-PANIC] Captured frame dimension mismatch!\r\n");
+        return false;
+    }
+
+    if ring.push_with_policy(frame1, DropPolicy::DropOldest, &mut tracker).is_err() {
+        crate::serial_write_str("[KNT-PANIC] Frame enqueue failed!\r\n");
+        return false;
+    }
+
+    let popped_frame = match ring.pop() {
+        Some(f) => f,
+        None => {
+            crate::serial_write_str("[KNT-PANIC] No frame dequeued from ring!\r\n");
+            return false;
+        }
+    };
+
+    let packet = match streamer.process_frame(&popped_frame) {
+        Ok(Some(pkt)) => pkt,
+        Ok(None) => {
+            crate::serial_write_str("[KNT-PANIC] Initial frame was unexpectedly throttled!\r\n");
+            return false;
+        }
+        Err(_) => {
+            crate::serial_write_str("[KNT-PANIC] Streamer NV12 encoding failed!\r\n");
+            return false;
+        }
+    };
+
+    // NV12 payload for 4x4: 16 (Y) + 8 (UV) = 24 bytes
+    if packet.format != VideoEncoderFormat::Nv12 || packet.payload.len() != 24 || !packet.is_keyframe {
+        crate::serial_write_str("[KNT-PANIC] Streamer output packet validation failed!\r\n");
+        return false;
+    }
+
+    crate::serial_write_str("  * End-to-end compositor backbuffer to NV12 video stream pipeline verified\r\n");
+    crate::serial_write_str("[KNT-FRAME-STREAM-PASS] Hardware-accelerated frame capture and DRM video streamer operational\r\n");
 
     true
 }
