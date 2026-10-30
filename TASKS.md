@@ -89,13 +89,16 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-062 | In-Game Quick-Access Hardware Plane Overlay & Performance Telemetry HUD | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-062-overlay-hud.md) |
 | TASK-KNT-063 | High-Performance S0i3 / S3 Instant-Resume Freeze & Wakeup Controller | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-063-suspend-resume.md) |
 | TASK-KNT-064 | Zero-Overhead Kernel Trace Ring Buffer & Performance Profiling Event Engine | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-064-perf-events.md) |
-| TASK-KNT-065 | eBPF-Style Bytecode In-Kernel Packet & Event Filter Engine | Claimed | TASK-KNT-064 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-065-bpf-filter.md) |
-| TASK-KNT-066 | Kernel-Direct Hardware Gamepad Haptic / Dual-Rumble Driver & Waveform Synthesizer | Claimed | TASK-KNT-051 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-066-gamepad-haptics.md) |
-| TASK-KNT-067 | High-Speed NVMe Overlapped Async I/O (io_uring Style) Completion Engine | Claimed | TASK-KNT-046 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-067-nvme-uring.md) |
+| TASK-KNT-065 | eBPF-Style Bytecode In-Kernel Packet & Event Filter Engine | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-065-bpf-filter.md) |
+| TASK-KNT-066 | Kernel-Direct Hardware Gamepad Haptic / Dual-Rumble Driver & Waveform Synthesizer | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-066-gamepad-haptics.md) |
+| TASK-KNT-067 | High-Speed NVMe Overlapped Async I/O (io_uring Style) Completion Engine | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-067-nvme-uring.md) |
+| TASK-KNT-068 | Unified Handheld PC Thermal & Fan Profile Controller (Multi-Point Curves & Acoustic Pacing) | Claimed | TASK-KNT-059 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-068-thermal-fan.md) |
+| TASK-KNT-069 | Hardware-Accelerated Frame Capture & Direct DRM Dumb-Buffer Video Streamer Engine | Claimed | TASK-KNT-058 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-069-frame-capture.md) |
+| TASK-KNT-070 | Multi-Queue Network Packet Transmission & Zero-Copy DMA RX/TX Ring Engine | Claimed | TASK-KNT-065 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-070-net-multiqueue.md) |
 
 ## Active reservations
 
 - `kernel/src/pkg/`: reserved by ArdenKestrel for TASK-KNT-045.
-- `kernel/src/bpf/`: reserved by Ada Chen for TASK-KNT-065.
-- `kernel/src/drivers/input/haptic.rs`: reserved by Jules Martin for TASK-KNT-066.
-- `kernel/src/drivers/storage/uring.rs`: reserved by Priya Nair for TASK-KNT-067.
+- `kernel/src/power/fan.rs`, `kernel/src/power/thermal.rs`: reserved by Jules Martin for TASK-KNT-068.
+- `kernel/src/compositor/capture.rs`, `kernel/src/compositor/stream.rs`: reserved by Ada Chen for TASK-KNT-069.
+- `kernel/src/net/multiqueue.rs`, `kernel/src/net/ring.rs`: reserved by Priya Nair for TASK-KNT-070.
