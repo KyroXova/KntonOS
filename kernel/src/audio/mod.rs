@@ -13,6 +13,7 @@ pub mod simd_mix;
 pub mod voice_dsp;
 pub mod spatial_ear;
 pub mod drc;
+pub mod occlusion;
 
 pub use hrtf::*;
 pub use drc::*;
