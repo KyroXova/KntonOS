@@ -1,7 +1,4 @@
-//! Shell Process Job Control and Background Execution Tracking for KntonOS.
-//!
-//! Provides a stateful Job Table tracking active shell tasks, background pipelines,
-//! process identifiers, execution status (`Running`, `Stopped`, `Done`), and job control primitives.
+//! Shell process job control and background execution tracking.
 
 use alloc::format;
 use alloc::string::String;
