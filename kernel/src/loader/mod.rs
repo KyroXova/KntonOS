@@ -1,7 +1,5 @@
 //! Executable Binary Loader Subsystem for KntonOS.
-//!
 //! Provides parsing, segment mapping, System V AMD64 ABI user stack setup,
-//! and process execution for standard ELF64 binaries.
 
 pub mod elf;
 pub mod dynlink;

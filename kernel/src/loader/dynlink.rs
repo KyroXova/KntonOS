@@ -1,7 +1,5 @@
 //! Dynamic Linker & Shared Library Loader Subsystem.
-//!
 //! Provides parsing of ELF64 PT_DYNAMIC section tags, dynamic symbol table
-//! resolution, and shared library dependency tracking.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -306,10 +304,6 @@ pub fn find_symbol_in_symtab<'a>(
 pub fn test_dynamic_parser_and_symbols() -> bool {
     // 1. Build mock dynamic string table:
     // Offset 0: \0
-    // Offset 1: libc.so.6\0
-    // Offset 11: libm.so.6\0
-    // Offset 21: printf\0
-    // Offset 28: sqrt\0
     let mut strtab = Vec::new();
     strtab.push(0);
     strtab.extend_from_slice(b"libc.so.6\0"); // offset 1
