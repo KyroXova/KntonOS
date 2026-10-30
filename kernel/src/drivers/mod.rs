@@ -7,6 +7,7 @@ pub mod audio;
 pub mod usb;
 pub mod gpu;
 pub mod storage;
+pub mod input;
 
 use alloc::vec::Vec;
 use crate::memory::spinlock::Spinlock;
