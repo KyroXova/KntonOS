@@ -9,6 +9,9 @@ pub mod parking;
 pub mod cstate;
 pub mod epb;
 pub mod freeze;
+pub mod s3_resume;
+
+pub use s3_resume::*;
 
 pub use freeze::*;
 
