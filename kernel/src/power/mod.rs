@@ -12,6 +12,9 @@ pub mod freeze;
 pub mod s3_resume;
 pub mod fan;
 pub mod thermal;
+pub mod hibernate;
+
+pub use hibernate::*;
 
 pub use s3_resume::*;
 pub use fan::*;
