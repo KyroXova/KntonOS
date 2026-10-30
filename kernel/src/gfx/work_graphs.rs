@@ -1,10 +1,5 @@
 //! Direct3D 12 Work Graphs & Autonomous GPU Shader Execution Engine.
-//!
 //! Provides hardware-accelerated autonomous GPU-driven work scheduling without CPU intervention:
-//! - Work Graph Node Descriptors (Broadcasting, Coalescing, Threadgroup nodes)
-//! - Node input and output records with bounded payload buffers
-//! - Memory backing store layout and scratch requirements calculation
-//! - GPU-autonomous downstream node dispatch, dynamic record rings, and recursive node expansion tracking
 
 use alloc::vec::Vec;
 
@@ -64,7 +59,6 @@ pub enum WorkGraphNodeType {
 pub struct NodeId(pub u32);
 
 /// Work Graph Node Record containing a header and payload.
-///
 /// Records are the fundamental units of data flowing through the work graph edges.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(C)]
@@ -130,9 +124,7 @@ impl NodeRecord {
 }
 
 /// Work Graph Node Descriptor.
-///
 /// Defines the shader execution model, threadgroup dimensions, input record contracts,
-/// and downstream output targets.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WorkGraphNodeDescriptor {
     /// Unique node identifier.
@@ -334,7 +326,6 @@ impl NodeRecordRing {
 }
 
 /// Accumulation buffer for a Coalescing work graph node.
-///
 /// Collects multiple input records until `max_records` is reached or a flush is initiated.
 #[derive(Debug, Clone)]
 pub struct CoalescingBuffer {
@@ -399,9 +390,7 @@ pub struct WorkGraphSchedulerStats {
 }
 
 /// Work Graph Scheduler Engine.
-///
 /// Orchestrates registered node pipelines, routes incoming records to destination queues,
-/// buffers coalescing node batches, and monitors pending GPU work.
 #[derive(Debug)]
 pub struct WorkGraphScheduler {
     nodes: Vec<WorkGraphNodeDescriptor>,
@@ -577,11 +566,7 @@ pub struct WorkGraphExecutionResult {
 }
 
 /// Autonomous GPU Work Graph Execution Engine.
-///
 /// Orchestrates autonomous GPU shader graphs without CPU synchronization:
-/// processes entry points, expands broadcasting/coalescing/threadgroup nodes,
-/// routes dynamic records across edges, tracks recursion depth, and executes
-/// work to completion.
 #[derive(Debug)]
 pub struct WorkGraphEngine {
     scheduler: WorkGraphScheduler,
@@ -620,10 +605,7 @@ impl WorkGraphEngine {
     }
 
     /// Executes an autonomous Work Graph dispatch (`DispatchGraph`).
-    ///
     /// Seeds the graph with `entry_records` at `entry_node_id` and processes all
-    /// downstream node expansions on the simulated GPU scheduler until all record
-    /// queues and coalescing buffers are drained.
     pub fn dispatch_graph(
         &mut self,
         desc: &DispatchGraphDesc,
