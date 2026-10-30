@@ -1,7 +1,5 @@
 //! Zero-Overhead Kernel Trace Ring Buffer & Performance Profiling Event Engine.
-//!
 //! Provides lockless per-core circular event ring buffers, nanosecond timestamping,
-//! dynamic event filtering, and shared-memory userspace exporter.
 
 pub mod events;
 
@@ -27,7 +25,6 @@ pub use filter::{
     test_filter_and_export_engine, GlobalTraceCoordinator, TraceExportHeader, TraceFilterEngine,
     ENGINE_RING_CAPACITY, MAX_TRACE_CORES, TRACE_EXPORT_MAGIC, TRACE_EXPORT_VERSION,
 };
-
 
 /// Comprehensive verification self-test suite for Zero-Overhead Kernel Trace Ring Buffer
 /// & Performance Profiling Event Engine.
@@ -81,7 +78,6 @@ pub fn test_trace_subsystem() -> bool {
     crate::serial_write_str("[KNT-TRACE-PERF-PASS] Zero-overhead kernel trace ring buffer and event engine operational\r\n");
     true
 }
-
 
 /// Comprehensive verification self-test suite for Kernel Dynamic Instrumentation Probes
 /// (kprobes / ftrace Style) & Instruction Detour Engine.

@@ -1,8 +1,5 @@
 //! Lockless Circular Kernel Trace Ring Buffer.
-//!
 //! Provides per-core, bounded circular ring buffers storing 32-byte `TraceRecord` events.
-//! Implements atomic write cursor advancement, overwrite-oldest semantics on wrap,
-//! and batch reader draining without blocking kernel execution paths.
 
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use crate::trace::events::{TraceEventType, TraceRecord};
