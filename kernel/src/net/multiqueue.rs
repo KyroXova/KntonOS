@@ -233,3 +233,277 @@ pub fn verify_toeplitz_and_rss_steering() -> bool {
 
     true
 }
+
+pub const NUM_QOS_PRIORITIES: usize = 4; // High (Gaming/VoIP), Medium, Low, Background (Bulk/Updates)
+
+/// QoS Priority Classes for Multi-Queue transmission scheduling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PacketQosPriority {
+    HighUrgent = 0,    // Sub-1ms real-time audio, competitive gaming UDP
+    MediumNormal = 1,  // Interactive HTTP/TLS, shell PTY
+    LowStandard = 2,   // Streaming video/assets
+    BackgroundBulk = 3,// File download, background OS telemetry
+}
+
+/// Outbound packet metadata for TX submission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TxPacketRequest {
+    pub buf_phys: u64,
+    pub length: u16,
+    pub priority: PacketQosPriority,
+    pub csum_offload: bool,
+    pub token: u64,
+}
+
+impl TxPacketRequest {
+    pub const fn empty() -> Self {
+        Self {
+            buf_phys: 0,
+            length: 0,
+            priority: PacketQosPriority::MediumNormal,
+            csum_offload: false,
+            token: 0,
+        }
+    }
+}
+
+/// Dedicated per-core TX Submission Queue eliminating cross-core lock contention.
+pub struct PerCoreTxQueue<const QUEUE_DEPTH: usize = 32> {
+    pub core_id: usize,
+    pub high_queue: [TxPacketRequest; QUEUE_DEPTH],
+    pub normal_queue: [TxPacketRequest; QUEUE_DEPTH],
+    pub low_queue: [TxPacketRequest; QUEUE_DEPTH],
+    pub bulk_queue: [TxPacketRequest; QUEUE_DEPTH],
+    pub high_count: usize,
+    pub normal_count: usize,
+    pub low_count: usize,
+    pub bulk_count: usize,
+    pub total_submitted: u64,
+    pub total_scheduled: u64,
+}
+
+impl<const QUEUE_DEPTH: usize> PerCoreTxQueue<QUEUE_DEPTH> {
+    pub const fn new(core_id: usize) -> Self {
+        Self {
+            core_id,
+            high_queue: [TxPacketRequest::empty(); QUEUE_DEPTH],
+            normal_queue: [TxPacketRequest::empty(); QUEUE_DEPTH],
+            low_queue: [TxPacketRequest::empty(); QUEUE_DEPTH],
+            bulk_queue: [TxPacketRequest::empty(); QUEUE_DEPTH],
+            high_count: 0,
+            normal_count: 0,
+            low_count: 0,
+            bulk_count: 0,
+            total_submitted: 0,
+            total_scheduled: 0,
+        }
+    }
+
+    /// Enqueues a packet request without acquiring locks.
+    pub fn enqueue_tx(&mut self, req: TxPacketRequest) -> bool {
+        let (q, count) = match req.priority {
+            PacketQosPriority::HighUrgent => (&mut self.high_queue, &mut self.high_count),
+            PacketQosPriority::MediumNormal => (&mut self.normal_queue, &mut self.normal_count),
+            PacketQosPriority::LowStandard => (&mut self.low_queue, &mut self.low_count),
+            PacketQosPriority::BackgroundBulk => (&mut self.bulk_queue, &mut self.bulk_count),
+        };
+
+        if *count >= QUEUE_DEPTH {
+            return false;
+        }
+
+        q[*count] = req;
+        *count += 1;
+        self.total_submitted += 1;
+        true
+    }
+
+    /// Strict priority QoS scheduler: always drains higher priority queues before lower priority.
+    pub fn schedule_next(&mut self) -> Option<TxPacketRequest> {
+        if self.high_count > 0 {
+            let req = self.high_queue[0];
+            for i in 1..self.high_count {
+                self.high_queue[i - 1] = self.high_queue[i];
+            }
+            self.high_count -= 1;
+            self.total_scheduled += 1;
+            return Some(req);
+        }
+
+        if self.normal_count > 0 {
+            let req = self.normal_queue[0];
+            for i in 1..self.normal_count {
+                self.normal_queue[i - 1] = self.normal_queue[i];
+            }
+            self.normal_count -= 1;
+            self.total_scheduled += 1;
+            return Some(req);
+        }
+
+        if self.low_count > 0 {
+            let req = self.low_queue[0];
+            for i in 1..self.low_count {
+                self.low_queue[i - 1] = self.low_queue[i];
+            }
+            self.low_count -= 1;
+            self.total_scheduled += 1;
+            return Some(req);
+        }
+
+        if self.bulk_count > 0 {
+            let req = self.bulk_queue[0];
+            for i in 1..self.bulk_count {
+                self.bulk_queue[i - 1] = self.bulk_queue[i];
+            }
+            self.bulk_count -= 1;
+            self.total_scheduled += 1;
+            return Some(req);
+        }
+
+        None
+    }
+
+    #[inline(always)]
+    pub fn pending_count(&self) -> usize {
+        self.high_count + self.normal_count + self.low_count + self.bulk_count
+    }
+}
+
+/// Multi-Queue TX Scheduler managing dedicated per-core submission channels.
+pub struct MultiQueueTxScheduler {
+    pub core_queues: [PerCoreTxQueue<32>; MAX_QUEUES],
+    pub core_count: usize,
+    pub total_dma_dispatched: u64,
+}
+
+impl MultiQueueTxScheduler {
+    pub const fn new(core_count: usize) -> Self {
+        let count = if core_count > MAX_QUEUES { MAX_QUEUES } else { core_count };
+        Self {
+            core_queues: [
+                PerCoreTxQueue::new(0),
+                PerCoreTxQueue::new(1),
+                PerCoreTxQueue::new(2),
+                PerCoreTxQueue::new(3),
+                PerCoreTxQueue::new(4),
+                PerCoreTxQueue::new(5),
+                PerCoreTxQueue::new(6),
+                PerCoreTxQueue::new(7),
+            ],
+            core_count: count,
+            total_dma_dispatched: 0,
+        }
+    }
+
+    /// Submits a packet from a specific CPU core into its private TX queue.
+    pub fn submit_core_packet(&mut self, core_id: usize, req: TxPacketRequest) -> bool {
+        let c = core_id % self.core_count;
+        self.core_queues[c].enqueue_tx(req)
+    }
+
+    /// Drains a core's queue directly into its corresponding hardware DMA TX ring.
+    pub fn drain_core_to_ring<const N: usize>(
+        &mut self,
+        core_id: usize,
+        tx_ring: &mut super::ring::DmaRingBuffer<N>,
+        max_batch: usize,
+    ) -> usize {
+        let c = core_id % self.core_count;
+        let mut dispatched = 0;
+
+        while dispatched < max_batch {
+            if tx_ring.available() == 0 {
+                break;
+            }
+
+            if let Some(req) = self.core_queues[c].schedule_next() {
+                if tx_ring.submit_tx(req.buf_phys, req.length, req.csum_offload) {
+                    dispatched += 1;
+                    self.total_dma_dispatched += 1;
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+
+        dispatched
+    }
+}
+
+/// Unit test verifying per-core lockless TX queues and priority QoS scheduling.
+pub fn verify_per_core_tx_and_qos() -> bool {
+    let mut scheduler = MultiQueueTxScheduler::new(4);
+    let mut dma_ring = super::ring::DmaRingBuffer::<8>::new();
+
+    // 1. Submit 4 packets from Core 0 with out-of-order priorities:
+    // Packet 0: Bulk (Background)
+    // Packet 1: Normal (Interactive)
+    // Packet 2: High (Urgent Game packet)
+    // Packet 3: Low (Standard)
+    let p_bulk = TxPacketRequest {
+        buf_phys: 0x3000_0000,
+        length: 1500,
+        priority: PacketQosPriority::BackgroundBulk,
+        csum_offload: false,
+        token: 100,
+    };
+    let p_normal = TxPacketRequest {
+        buf_phys: 0x3000_1000,
+        length: 256,
+        priority: PacketQosPriority::MediumNormal,
+        csum_offload: true,
+        token: 101,
+    };
+    let p_high = TxPacketRequest {
+        buf_phys: 0x3000_2000,
+        length: 64,
+        priority: PacketQosPriority::HighUrgent,
+        csum_offload: true,
+        token: 102,
+    };
+    let p_low = TxPacketRequest {
+        buf_phys: 0x3000_3000,
+        length: 1024,
+        priority: PacketQosPriority::LowStandard,
+        csum_offload: false,
+        token: 103,
+    };
+
+    assert!(scheduler.submit_core_packet(0, p_bulk));
+    assert!(scheduler.submit_core_packet(0, p_normal));
+    assert!(scheduler.submit_core_packet(0, p_high));
+    assert!(scheduler.submit_core_packet(0, p_low));
+
+    if scheduler.core_queues[0].pending_count() != 4 {
+        return false;
+    }
+
+    // 2. Drain Core 0 to DMA TX Ring
+    let dispatched = scheduler.drain_core_to_ring(0, &mut dma_ring, 4);
+    if dispatched != 4 || scheduler.core_queues[0].pending_count() != 0 {
+        return false;
+    }
+
+    // 3. Verify that QoS scheduler prioritized High -> Normal -> Low -> Bulk in the DMA ring
+    let d0 = dma_ring.descriptors[0]; // High
+    let d1 = dma_ring.descriptors[1]; // Normal
+    let d2 = dma_ring.descriptors[2]; // Low
+    let d3 = dma_ring.descriptors[3]; // Bulk
+
+    if d0.buffer_addr != 0x3000_2000 || d0.length != 64 {
+        return false;
+    }
+    if d1.buffer_addr != 0x3000_1000 || d1.length != 256 {
+        return false;
+    }
+    if d2.buffer_addr != 0x3000_3000 || d2.length != 1024 {
+        return false;
+    }
+    if d3.buffer_addr != 0x3000_0000 || d3.length != 1500 {
+        return false;
+    }
+
+    true
+}
