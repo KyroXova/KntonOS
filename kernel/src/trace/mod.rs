@@ -9,3 +9,10 @@ pub use events::{
     test_trace_record_serialization, TraceEventMask, TraceEventType, TraceRecord,
     TRACE_RECORD_MAGIC,
 };
+
+pub mod ring;
+
+pub use ring::{
+    test_trace_ring_buffer, CachelineCursor, TraceRingBuffer, TraceRingHeader,
+    DEFAULT_RING_CAPACITY,
+};
