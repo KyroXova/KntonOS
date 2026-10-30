@@ -1,8 +1,5 @@
 //! Windows 11 Fluent Start Menu Application Launcher Flyout for KntonOS.
-//!
 //! Provides a 200x260px frosted acrylic glass flyout panel positioned above the bottom
-//! taskbar, listing system applications (Terminal, Process Manager, File Explorer,
-//! and Telemetry Monitor) with click-outside dismiss and window spawn routing.
 
 use alloc::string::String;
 use alloc::vec::Vec;

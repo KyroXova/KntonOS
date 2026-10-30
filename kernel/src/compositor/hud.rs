@@ -1,17 +1,11 @@
 //! Real-Time In-Game Performance Telemetry HUD Renderer.
-//!
 //! Tracks frame presentation timestamps, calculates running framerate (FPS),
-//! computes 99th percentile frame time variance (frametime spikes / microstutter),
-//! queries GPU engine load and system thermal telemetry, and renders a compact
-//! semi-transparent heads-up display into Plane #2.
 
 use alloc::vec::Vec;
 use crate::compositor::dirty::Rect;
 use crate::compositor::overlay::HardwareOverlayPlane;
 
-// -----------------------------------------------------------------------------
 // Constants and Telemetry Bounds
-// -----------------------------------------------------------------------------
 
 /// Number of historical frame durations preserved for statistical variance & 99th percentile.
 pub const TELEMETRY_HISTORY_CAPACITY: usize = 120;
@@ -28,9 +22,7 @@ pub const HUD_COLOR_TEXT_ACCENT: u32 = 0xFF00FF7F;  // Spring Green (FPS OK)
 pub const HUD_COLOR_TEXT_WARN: u32 = 0xFFFFD700;    // Gold / Warning
 pub const HUD_COLOR_TEXT_ALERT: u32 = 0xFFFF4500;   // OrangeRed / Alert
 
-// -----------------------------------------------------------------------------
 // Telemetry Data Aggregator
-// -----------------------------------------------------------------------------
 
 /// Performance and hardware sensor snapshot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -169,9 +161,7 @@ impl PerformanceTelemetryTracker {
     }
 }
 
-// -----------------------------------------------------------------------------
 // In-Game Performance HUD Renderer
-// -----------------------------------------------------------------------------
 
 /// Telemetry HUD overlay widget that draws into Plane #2.
 pub struct TelemetryHudRenderer {
@@ -246,9 +236,7 @@ impl TelemetryHudRenderer {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Unit Tests & Verification
-// -----------------------------------------------------------------------------
 
 /// Unit test verifying telemetry tracking, 99th percentile frametime calculation, and HUD rendering.
 pub fn verify_telemetry_hud_tracking() -> bool {
