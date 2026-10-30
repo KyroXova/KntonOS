@@ -357,3 +357,206 @@ pub fn test_psychoacoustic_harmonic_synthesizer() -> bool {
 
     true
 }
+
+// -----------------------------------------------------------------------------
+// Dynamic Soft-Saturation Limiter
+// -----------------------------------------------------------------------------
+
+/// Soft-knee saturation limiter preventing digital clipping and micro-speaker bottoming out.
+#[derive(Debug, Clone, Copy)]
+pub struct SoftSaturationLimiter {
+    pub threshold: f32,
+    pub ceiling: f32,
+    pub compression_count: usize,
+    pub peak_input: f32,
+    pub peak_output: f32,
+    pub enabled: bool,
+}
+
+impl SoftSaturationLimiter {
+    pub const fn new(threshold: f32) -> Self {
+        Self {
+            threshold,
+            ceiling: 0.999,
+            compression_count: 0,
+            peak_input: 0.0,
+            peak_output: 0.0,
+            enabled: true,
+        }
+    }
+
+    /// Limits a single floating-point sample in range [-inf, +inf] to strictly [-ceiling, +ceiling].
+    #[inline]
+    pub fn process_channel(&mut self, sample: f32) -> f32 {
+        if !self.enabled {
+            return sample;
+        }
+
+        let abs_val = if sample < 0.0 { -sample } else { sample };
+        if abs_val > self.peak_input {
+            self.peak_input = abs_val;
+        }
+
+        let out = if abs_val <= self.threshold {
+            sample
+        } else {
+            self.compression_count += 1;
+            let delta = abs_val - self.threshold;
+            let denom_scale = 1.0 - self.threshold;
+            let compressed = self.threshold + delta / (1.0 + delta / denom_scale);
+            let sign = if sample < 0.0 { -1.0 } else { 1.0 };
+            sign * compressed.min(self.ceiling)
+        };
+
+        let abs_out = if out < 0.0 { -out } else { out };
+        if abs_out > self.peak_output {
+            self.peak_output = abs_out;
+        }
+
+        out
+    }
+
+    /// Limits a stereo pair of PCM audio samples.
+    #[inline]
+    pub fn process_sample(&mut self, left: i16, right: i16) -> (i16, i16) {
+        let norm_l = (left as f32) / 32768.0;
+        let norm_r = (right as f32) / 32768.0;
+
+        let lim_l = self.process_channel(norm_l);
+        let lim_r = self.process_channel(norm_r);
+
+        let out_l = (lim_l * 32767.0).clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+        let out_r = (lim_r * 32767.0).clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+
+        (out_l, out_r)
+    }
+
+    pub fn reset_stats(&mut self) {
+        self.compression_count = 0;
+        self.peak_input = 0.0;
+        self.peak_output = 0.0;
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Real-Time Game Audio Pipeline Processor
+// -----------------------------------------------------------------------------
+
+/// Unified real-time game audio enhancement processor combining:
+/// 1. 10-Band Parametric Equalizer (RBJ Biquad filters)
+/// 2. Psychoacoustic Bass Enhancer (Missing fundamental harmonic synthesizer)
+/// 3. Dynamic Soft-Saturation Limiter (Anti-clipping protection)
+pub struct GameAudioProcessor {
+    pub eq: super::eq::ParametricEqualizer10,
+    pub bass_enhancer: PsychoacousticBassEnhancer,
+    pub limiter: SoftSaturationLimiter,
+    pub master_gain: f32,
+    pub enabled: bool,
+}
+
+impl GameAudioProcessor {
+    pub fn new() -> Self {
+        Self {
+            eq: super::eq::ParametricEqualizer10::new(),
+            bass_enhancer: PsychoacousticBassEnhancer::new(HarmonicBassConfig::default()),
+            limiter: SoftSaturationLimiter::new(0.85),
+            master_gain: 1.0,
+            enabled: true,
+        }
+    }
+
+    /// Processes a single stereo PCM sample through the complete enhancement chain.
+    #[inline]
+    pub fn process_sample(&mut self, left: i16, right: i16) -> (i16, i16) {
+        if !self.enabled {
+            return (left, right);
+        }
+
+        // Stage 1: 10-Band Parametric Equalizer
+        let (eq_l, eq_r) = self.eq.process_sample(left, right);
+
+        // Stage 2: Psychoacoustic Bass Enhancer
+        let (bass_l, bass_r) = self.bass_enhancer.process_sample(eq_l, eq_r);
+
+        // Apply master gain
+        let scaled_l = (bass_l as f32 * self.master_gain).clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+        let scaled_r = (bass_r as f32 * self.master_gain).clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+
+        // Stage 3: Dynamic Soft-Saturation Limiter
+        self.limiter.process_sample(scaled_l, scaled_r)
+    }
+
+    /// Processes split stereo buffers in-place.
+    pub fn process_buffers(&mut self, left: &mut [i16], right: &mut [i16]) {
+        if !self.enabled {
+            return;
+        }
+
+        let count = left.len().min(right.len());
+        for i in 0..count {
+            let (l, r) = self.process_sample(left[i], right[i]);
+            left[i] = l;
+            right[i] = r;
+        }
+    }
+
+    /// Resets all filter and limiter states.
+    pub fn reset(&mut self) {
+        self.eq.reset();
+        self.bass_enhancer.reset();
+        self.limiter.reset_stats();
+    }
+}
+
+/// Unit test verifying dynamic soft-saturation limiter and integrated game audio processor.
+pub fn test_soft_limiter_and_game_audio_pipeline() -> bool {
+    // 1. Verify SoftSaturationLimiter
+    let mut limiter = SoftSaturationLimiter::new(0.85);
+
+    // Within linear threshold (0.50): output matches input exactly
+    let out_lin = limiter.process_channel(0.50);
+    if (out_lin - 0.50).abs() > 1e-5 {
+        return false;
+    }
+
+    // Heavy overload (2.0): smoothly compressed strictly below ceiling (0.999)
+    let out_overload = limiter.process_channel(2.0);
+    if out_overload >= 0.999 || out_overload <= 0.85 {
+        return false;
+    }
+
+    // Verify negative symmetry
+    let out_neg = limiter.process_channel(-2.0);
+    if (out_neg + out_overload).abs() > 1e-5 {
+        return false;
+    }
+
+    if limiter.compression_count != 2 {
+        return false;
+    }
+
+    // 2. Verify GameAudioProcessor full pipeline
+    let mut processor = GameAudioProcessor::new();
+    processor.eq.apply_preset(super::eq::EqPreset::ActionGame);
+    processor.master_gain = 1.5; // Deliberate 50% gain boost
+
+    // Process a loud stereo burst
+    let mut left_buf = [25000i16; 64];
+    let mut right_buf = [-25000i16; 64];
+    processor.process_buffers(&mut left_buf, &mut right_buf);
+
+    // Verify every single sample is bounded to valid i16 range without overflow
+    for i in 0..64 {
+        if left_buf[i] == i16::MAX || left_buf[i] == i16::MIN {
+            // Should be softly compressed, not hard clipped at rails
+            return false;
+        }
+    }
+
+    // Limiter should have caught and prevented clipping
+    if processor.limiter.compression_count == 0 {
+        return false;
+    }
+
+    true
+}
