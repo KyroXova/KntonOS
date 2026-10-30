@@ -1,15 +1,8 @@
-//! External eGPU Hot-Connect Manager & Dynamic PCIe Bridge Configuration.
-//!
-//! Provides dynamic PCIe Type 1 bridge secondary/subordinate bus renumbering,
-//! 32-bit non-prefetchable and 64-bit prefetchable MMIO aperture window allocation,
-//! Resizable BAR support, and external eGPU hot-connect attach/detach management
-//! across Thunderbolt 3/4, USB4, and OCuLink PCIe interconnects.
+//! External eGPU hot-connect manager and dynamic PCIe bridge configuration.
 
 use alloc::vec::Vec;
 
-// -----------------------------------------------------------------------------
-// PCIe Type 1 PCI-to-PCI Bridge Register Offsets
-// -----------------------------------------------------------------------------
+// PCIe Type 1 PCI-to-PCI bridge register offsets.
 
 pub const PCI_PRIMARY_BUS_OFFSET: u8 = 0x18;
 pub const PCI_SECONDARY_BUS_OFFSET: u8 = 0x19;
@@ -121,10 +114,7 @@ impl PciBridgeConfig {
     }
 }
 
-/// PCIe Physical MMIO Resource Window Allocator.
-///
-/// Carves out aligned physical address regions for 32-bit non-prefetchable and
-/// 64-bit prefetchable BAR apertures without colliding with system RAM.
+/// PCIe physical MMIO resource window allocator for 32-bit and 64-bit BAR apertures.
 pub struct PciResourceWindowPool {
     pub mmio32_base: u32,
     pub mmio32_limit: u32,
@@ -135,9 +125,7 @@ pub struct PciResourceWindowPool {
 }
 
 impl PciResourceWindowPool {
-    /// Creates a resource pool with default x86-64 Q35 / modern PC MMIO ranges:
-    /// - 32-bit MMIO: 0xE000_0000 .. 0xFE00_0000 (480 MiB)
-    /// - 64-bit Prefetchable MMIO: 0x0000_0004_0000_0000 .. 0x0000_0008_0000_0000 (16 GiB)
+    /// Creates a resource pool with default x86-64 Q35 / modern PC MMIO ranges.
     pub fn new_default() -> Self {
         Self {
             mmio32_base: 0xE000_0000,
@@ -178,10 +166,7 @@ impl PciResourceWindowPool {
     }
 }
 
-/// PCIe Bus Number Allocator.
-///
-/// Dynamically assigns downstream secondary and subordinate bus number ranges
-/// to newly discovered hot-plugged PCIe switches and bridges.
+/// PCIe bus number allocator for downstream secondary and subordinate ranges.
 pub struct PciBusAllocator {
     pub next_bus: u8,
     pub max_bus: u8,
@@ -212,10 +197,7 @@ impl PciBusAllocator {
     }
 }
 
-/// Dynamic Bridge Manager.
-///
-/// Programs physical Type 1 PCI-to-PCI bridge registers and allocates MMIO BARs
-/// for downstream external eGPU adapters.
+/// Dynamic bridge manager programming Type 1 bridge registers and BAR apertures.
 pub struct DynamicBridgeManager {
     pub bridge_bdf: (u8, u8, u8),
     pub bridge_config: PciBridgeConfig,
@@ -475,13 +457,7 @@ impl ScanoutPlaneDescriptor {
     }
 }
 
-/// External eGPU Hot-Connect & Scanout Migration Manager.
-///
-/// Orchestrates the hot-attachment of external graphics enclosures:
-/// 1. Dynamic bus & MMIO resource assignment.
-/// 2. Graphics driver binding and command ring activation.
-/// 3. Seamless display scanout migration from internal iGPU to eGPU.
-/// 4. Graceful and surprise ejection handling with automated fallback.
+/// External eGPU hot-connect and scanout migration manager.
 pub struct EgpuHotConnectManager {
     pub interconnect: EgpuInterconnectType,
     pub state: EgpuDeviceState,

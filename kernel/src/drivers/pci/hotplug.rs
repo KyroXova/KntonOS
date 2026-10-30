@@ -1,16 +1,8 @@
-//! PCIe Native Hot-Plug Controller & Slot Event State Machine.
-//!
-//! Implements PCIe Base Specification Section 6.7 Native Hot-Plug architecture:
-//! - Slot Capabilities (SlotCap), Control (SlotCtl), and Status (SlotSta) registers
-//! - Presence Detect Change (PDC) and Attention Button Press (ABP) interrupt processing
-//! - Slot Power Controller state machine (Power On / Off, Link Training, Inrush Limiting)
-//! - Attention and Power indicator control (On, Blinking, Off)
+//! PCIe native hot-plug controller and slot event state machine.
 
 use alloc::vec::Vec;
 
-// -----------------------------------------------------------------------------
-// PCIe Native Hot-Plug Register Definitions (PCIe Spec Section 6.7 / 7.8)
-// -----------------------------------------------------------------------------
+// PCIe native hot-plug register definitions (PCIe Spec Section 6.7 / 7.8).
 
 /// Offset of Slot Capabilities register relative to PCIe Capability base
 pub const PCIE_SLOTCAP_OFFSET: u8 = 0x14;

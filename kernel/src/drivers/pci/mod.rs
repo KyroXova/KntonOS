@@ -8,9 +8,7 @@ pub use flr::*;
 pub use hotplug::*;
 pub use egpu::*;
 
-/// Comprehensive verification self-test for PCIe Native Hot-Plug & External eGPU Hot-Connect Controller.
-///
-/// Emits sentinel [KNT-PCI-HOTPLUG-PASS] upon successful validation.
+/// Verification self-test for PCIe native hot-plug and eGPU controller.
 pub fn test_pci_hotplug_subsystem() -> bool {
     // 1. Verify PCIe Base Spec Section 6.7 native hot-plug slot controller and presence state machine
     if !verify_pcie_hotplug_controller() {
@@ -27,9 +25,7 @@ pub fn test_pci_hotplug_subsystem() -> bool {
         return false;
     }
 
-    // 4. End-to-end integration loopback test:
-    // Full Thunderbolt 4 external eGPU hot-attach, bus renumbering, MMIO resource configuration,
-    // display scanout migration, attention button press (ABP), and orderly detachment.
+    // Full Thunderbolt 4 external eGPU hot-attach, bus renumbering, and detachment.
     let mut hotplug_daemon = PcieHotplugDaemon::new();
     let slot = PcieSlotController::new(0, 28, 0, 0x40, 1);
     hotplug_daemon.register_slot(slot);
