@@ -392,6 +392,232 @@ impl BinauralParameters {
 }
 
 // -----------------------------------------------------------------------------
+// 2b. Sub-Millisecond Fractional Delay Line & Spherical Head-Shadow Filter
+// -----------------------------------------------------------------------------
+
+/// Ring buffer capacity for the sub-millisecond fractional delay line (128 samples = 2.67 ms at 48 kHz).
+pub const FRACTIONAL_DELAY_CAPACITY: usize = 128;
+pub const FRACTIONAL_DELAY_MASK: usize = FRACTIONAL_DELAY_CAPACITY - 1;
+
+/// Sub-millisecond fractional delay line supporting 4-point Hermite and Lagrange interpolation.
+#[derive(Debug, Clone, Copy)]
+pub struct SubMillisecondDelayLine {
+    buffer: [f32; FRACTIONAL_DELAY_CAPACITY],
+    write_pos: usize,
+    pub current_delay_samples: f32,
+}
+
+impl SubMillisecondDelayLine {
+    /// Creates a zeroed delay line.
+    pub const fn new() -> Self {
+        Self {
+            buffer: [0.0; FRACTIONAL_DELAY_CAPACITY],
+            write_pos: 0,
+            current_delay_samples: 0.0,
+        }
+    }
+
+    /// Resets all delay line state and buffer memory to zero.
+    pub fn reset(&mut self) {
+        self.buffer = [0.0; FRACTIONAL_DELAY_CAPACITY];
+        self.write_pos = 0;
+        self.current_delay_samples = 0.0;
+    }
+
+    /// Pushes a single audio sample into the circular delay line.
+    pub fn write_sample(&mut self, sample: f32) {
+        self.buffer[self.write_pos] = sample;
+        self.write_pos = (self.write_pos + 1) & FRACTIONAL_DELAY_MASK;
+    }
+
+    /// Reads delayed sample using 4-point, 3rd-order Hermite cubic interpolation with C1 continuity.
+    pub fn read_hermite(&self, delay_samples: f32) -> f32 {
+        let clamped_delay = if delay_samples < 0.0 {
+            0.0
+        } else if delay_samples > (FRACTIONAL_DELAY_CAPACITY - 4) as f32 {
+            (FRACTIONAL_DELAY_CAPACITY - 4) as f32
+        } else {
+            delay_samples
+        };
+
+        let int_delay = clamped_delay as usize;
+        let frac = clamped_delay - int_delay as f32;
+
+        let base = (self.write_pos + FRACTIONAL_DELAY_CAPACITY - 1 - int_delay) & FRACTIONAL_DELAY_MASK;
+        let idx_prev = (base + 1) & FRACTIONAL_DELAY_MASK;
+        let idx_0 = base;
+        let idx_1 = (base + FRACTIONAL_DELAY_CAPACITY - 1) & FRACTIONAL_DELAY_MASK;
+        let idx_2 = (base + FRACTIONAL_DELAY_CAPACITY - 2) & FRACTIONAL_DELAY_MASK;
+
+        let y_m1 = self.buffer[idx_prev];
+        let y0 = self.buffer[idx_0];
+        let y1 = self.buffer[idx_1];
+        let y2 = self.buffer[idx_2];
+
+        let c0 = y0;
+        let c1 = 0.5 * (y1 - y_m1);
+        let c2 = y_m1 - 2.5 * y0 + 2.0 * y1 - 0.5 * y2;
+        let c3 = 0.5 * (y2 - y_m1) + 1.5 * (y0 - y1);
+
+        ((c3 * frac + c2) * frac + c1) * frac + c0
+    }
+
+    /// Reads delayed sample using 4-point Lagrange polynomial interpolation.
+    pub fn read_lagrange(&self, delay_samples: f32) -> f32 {
+        let clamped_delay = if delay_samples < 0.0 {
+            0.0
+        } else if delay_samples > (FRACTIONAL_DELAY_CAPACITY - 4) as f32 {
+            (FRACTIONAL_DELAY_CAPACITY - 4) as f32
+        } else {
+            delay_samples
+        };
+
+        let int_delay = clamped_delay as usize;
+        let frac = clamped_delay - int_delay as f32;
+
+        let base = (self.write_pos + FRACTIONAL_DELAY_CAPACITY - 1 - int_delay) & FRACTIONAL_DELAY_MASK;
+        let idx_m1 = (base + 1) & FRACTIONAL_DELAY_MASK;
+        let idx_0 = base;
+        let idx_1 = (base + FRACTIONAL_DELAY_CAPACITY - 1) & FRACTIONAL_DELAY_MASK;
+        let idx_2 = (base + FRACTIONAL_DELAY_CAPACITY - 2) & FRACTIONAL_DELAY_MASK;
+
+        let ym1 = self.buffer[idx_m1];
+        let y0 = self.buffer[idx_0];
+        let y1 = self.buffer[idx_1];
+        let y2 = self.buffer[idx_2];
+
+        let l_m1 = -frac * (frac - 1.0) * (frac - 2.0) / 6.0;
+        let l0 = (frac + 1.0) * (frac - 1.0) * (frac - 2.0) * 0.5;
+        let l1 = -(frac + 1.0) * frac * (frac - 2.0) * 0.5;
+        let l2 = (frac + 1.0) * frac * (frac - 1.0) / 6.0;
+
+        l_m1 * ym1 + l0 * y0 + l1 * y1 + l2 * y2
+    }
+
+    /// Pushes a sample and retrieves delayed output with smooth delay parameter slewing.
+    pub fn process_sample_slewed(&mut self, input: f32, target_delay: f32, slew_rate: f32) -> f32 {
+        self.write_sample(input);
+        let diff = target_delay - self.current_delay_samples;
+        if diff.abs() <= slew_rate {
+            self.current_delay_samples = target_delay;
+        } else if diff > 0.0 {
+            self.current_delay_samples += slew_rate;
+        } else {
+            self.current_delay_samples -= slew_rate;
+        }
+        self.read_hermite(self.current_delay_samples)
+    }
+}
+
+/// First-order continuous spherical head diffraction filter (Brown & Duda Rayleigh sphere model).
+/// Models acoustic diffraction around a rigid sphere with dynamic azimuthal angle tracking.
+#[derive(Debug, Clone, Copy)]
+pub struct HeadShadowSphericalFilter {
+    pub b0: f32,
+    pub b1: f32,
+    pub a1: f32,
+    prev_x: f32,
+    prev_y: f32,
+    pub current_alpha: f32,
+}
+
+impl HeadShadowSphericalFilter {
+    pub const fn new() -> Self {
+        Self {
+            b0: 1.0,
+            b1: 0.0,
+            a1: 0.0,
+            prev_x: 0.0,
+            prev_y: 0.0,
+            current_alpha: 1.0,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.prev_x = 0.0;
+        self.prev_y = 0.0;
+    }
+
+    /// Updates filter coefficients based on the incident azimuth angle relative to the ear in radians.
+    pub fn update_angle(&mut self, theta_ear: f32) {
+        let sin_val = sin_f32(theta_ear);
+        let raw_alpha = 1.0 + 0.9 * sin_val;
+        let alpha = if raw_alpha < 0.18 {
+            0.18
+        } else if raw_alpha > 2.0 {
+            2.0
+        } else {
+            raw_alpha
+        };
+        self.current_alpha = alpha;
+
+        let w0 = 2.0 * SPEED_OF_SOUND / DEFAULT_HEAD_RADIUS;
+        let k = (2.0 * AUDIO_SAMPLE_RATE) / w0;
+
+        let denom = k + 1.0;
+        self.b0 = (k * alpha + 1.0) / denom;
+        self.b1 = (1.0 - k * alpha) / denom;
+        self.a1 = (1.0 - k) / denom;
+    }
+
+    /// Processes a single audio sample through the spherical head-shadow IIR filter.
+    pub fn process_sample(&mut self, x: f32) -> f32 {
+        let y = self.b0 * x + self.b1 * self.prev_x - self.a1 * self.prev_y;
+        self.prev_x = x;
+        self.prev_y = y;
+        y
+    }
+
+    /// Evaluates the frequency magnitude response |H(e^{j*omega})| in linear scale.
+    pub fn magnitude_response(&self, freq_hz: f32) -> f32 {
+        let w = (TWO_PI * freq_hz) / AUDIO_SAMPLE_RATE;
+        let cos_w = cos_f32(w);
+        let sin_w = sin_f32(w);
+
+        let num_re = self.b0 + self.b1 * cos_w;
+        let num_im = -self.b1 * sin_w;
+        let num_mag2 = num_re * num_re + num_im * num_im;
+
+        let den_re = 1.0 + self.a1 * cos_w;
+        let den_im = -self.a1 * sin_w;
+        let den_mag2 = den_re * den_re + den_im * den_im;
+
+        if den_mag2 > 1e-12 {
+            sqrt_f32(num_mag2 / den_mag2)
+        } else {
+            1.0
+        }
+    }
+}
+
+/// Dual-Ear Binaural Channel Processor uniting fractional delay and spherical head shadow.
+#[derive(Debug, Clone, Copy)]
+pub struct DualEarSpatialChannel {
+    pub delay_line: SubMillisecondDelayLine,
+    pub shadow_filter: HeadShadowSphericalFilter,
+}
+
+impl DualEarSpatialChannel {
+    pub const fn new() -> Self {
+        Self {
+            delay_line: SubMillisecondDelayLine::new(),
+            shadow_filter: HeadShadowSphericalFilter::new(),
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.delay_line.reset();
+        self.shadow_filter.reset();
+    }
+
+    pub fn process(&mut self, input: f32, delay_samples: f32, ear_azimuth: f32, gain: f32) -> f32 {
+        self.shadow_filter.update_angle(ear_azimuth);
+        let filtered = self.shadow_filter.process_sample(input * gain);
+        self.delay_line.process_sample_slewed(filtered, delay_samples, 0.05)
+    }
+}
+
+// -----------------------------------------------------------------------------
 // 3. Ear-Canal Acoustic Impedance & Transfer Function (ECTF)
 // -----------------------------------------------------------------------------
 
@@ -591,6 +817,42 @@ mod tests {
         assert_eq!(binaural.right_delay_samples, 0.0); // right ear is ipsilateral
         assert!(binaural.left_delay_samples > 0.0);   // left ear is contralateral
         assert!(binaural.right_gain > binaural.left_gain); // right ear receives direct sound
+    }
+
+    #[test]
+    pub fn test_fractional_delay_and_head_shadow_filter() {
+        let mut delay = SubMillisecondDelayLine::new();
+        for i in 0..64 {
+            delay.write_sample(i as f32);
+        }
+
+        // Test integer delay (e.g. 5.0 samples)
+        let val_5 = delay.read_hermite(5.0);
+        // Delay 5 from 63 should be 58.0
+        assert!((val_5 - 58.0).abs() < 1e-3);
+
+        // Test fractional delay (e.g. 5.5 samples)
+        let val_5_5_hermite = delay.read_hermite(5.5);
+        let val_5_5_lagrange = delay.read_lagrange(5.5);
+        assert!((val_5_5_hermite - 57.5).abs() < 0.1);
+        assert!((val_5_5_lagrange - 57.5).abs() < 0.1);
+
+        // Test Head Shadow Spherical Filter
+        let mut filter = HeadShadowSphericalFilter::new();
+        // Frontal incidence (theta = 0): response should be flat ~1.0
+        filter.update_angle(0.0);
+        let mag_front = filter.magnitude_response(5000.0);
+        assert!((mag_front - 1.0).abs() < 0.05);
+
+        // Ipsilateral ear (+PI/2): high-frequency presence boost
+        filter.update_angle(HALF_PI);
+        let mag_ipsi = filter.magnitude_response(5000.0);
+        assert!(mag_ipsi > 1.2);
+
+        // Contralateral ear (-PI/2): deep head shadow attenuation
+        filter.update_angle(-HALF_PI);
+        let mag_contra = filter.magnitude_response(5000.0);
+        assert!(mag_contra < 0.4);
     }
 
     #[test]
