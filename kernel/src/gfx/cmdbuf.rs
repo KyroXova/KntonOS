@@ -3,6 +3,8 @@
 //! Provides high-throughput, low-latency command stream encoding for GPU hardware queues:
 //! - 64-bit compact command packet headers with opcode, payload size, and stream routing
 //! - Variable-length inline typed payloads (DrawIndexed, SetPipelineState, SetRenderTargets, CopyBufferRegion)
+//! - Direct3D 12 / Vulkan style resource synchronization barriers (Transition, Aliasing, UAV)
+//! - Descriptor heap binding and root descriptor table setting
 //! - Linear memory recording buffer for fast cache-friendly append operations
 //! - Stream reader and packet decoding iterator for hardware submission dispatch
 
@@ -29,6 +31,7 @@ pub enum GpuCommandOpcode {
     SetVertexBuffer = 8,
     ResourceBarrier = 9,
     BindDescriptorHeaps = 10,
+    SetDescriptorTable = 11,
 }
 
 impl GpuCommandOpcode {
@@ -45,6 +48,7 @@ impl GpuCommandOpcode {
             8 => Some(Self::SetVertexBuffer),
             9 => Some(Self::ResourceBarrier),
             10 => Some(Self::BindDescriptorHeaps),
+            11 => Some(Self::SetDescriptorTable),
             _ => None,
         }
     }
@@ -98,6 +102,211 @@ impl CommandPacketHeader {
     #[inline(always)]
     pub const fn as_u64(&self) -> u64 {
         self.0
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Resource Barriers & Pipeline Stages
+// -----------------------------------------------------------------------------
+
+/// GPU resource usage states for synchronization barriers (bitflags).
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResourceState(pub u32);
+
+impl ResourceState {
+    pub const COMMON: Self = Self(0);
+    pub const VERTEX_AND_CONSTANT_BUFFER: Self = Self(1 << 0);
+    pub const INDEX_BUFFER: Self = Self(1 << 1);
+    pub const RENDER_TARGET: Self = Self(1 << 2);
+    pub const UNORDERED_ACCESS: Self = Self(1 << 3);
+    pub const DEPTH_WRITE: Self = Self(1 << 4);
+    pub const DEPTH_READ: Self = Self(1 << 5);
+    pub const NON_PIXEL_SHADER_RESOURCE: Self = Self(1 << 6);
+    pub const PIXEL_SHADER_RESOURCE: Self = Self(1 << 7);
+    pub const COPY_DEST: Self = Self(1 << 8);
+    pub const COPY_SOURCE: Self = Self(1 << 9);
+    pub const PRESENT: Self = Self(1 << 10);
+
+    #[inline(always)]
+    pub const fn bits(&self) -> u32 {
+        self.0
+    }
+
+    #[inline(always)]
+    pub const fn contains(&self, other: Self) -> bool {
+        (self.0 & other.0) == other.0
+    }
+}
+
+/// Pipeline stage synchronization masks (bitflags).
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PipelineStageFlags(pub u32);
+
+impl PipelineStageFlags {
+    pub const TOP_OF_PIPE: Self = Self(1 << 0);
+    pub const DRAW_INDIRECT: Self = Self(1 << 1);
+    pub const VERTEX_INPUT: Self = Self(1 << 2);
+    pub const VERTEX_SHADER: Self = Self(1 << 3);
+    pub const PIXEL_SHADER: Self = Self(1 << 4);
+    pub const DEPTH_STENCIL: Self = Self(1 << 5);
+    pub const RENDER_TARGET: Self = Self(1 << 6);
+    pub const COMPUTE_SHADER: Self = Self(1 << 7);
+    pub const TRANSFER: Self = Self(1 << 8);
+    pub const BOTTOM_OF_PIPE: Self = Self(1 << 9);
+    pub const ALL_COMMANDS: Self = Self(0x3FF);
+
+    #[inline(always)]
+    pub const fn bits(&self) -> u32 {
+        self.0
+    }
+}
+
+/// Type of resource synchronization barrier.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BarrierType {
+    /// State transition (e.g. CopyDest -> PixelShaderResource).
+    Transition = 0,
+    /// Resource aliasing transition within placed resource heaps.
+    Aliasing = 1,
+    /// UAV memory dependency barrier (flushes compute L1/L2 caches).
+    Uav = 2,
+}
+
+/// Payload for resource pipeline barriers (`ResourceBarrier`).
+#[repr(C, align(8))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResourceBarrierPayload {
+    pub barrier_type: u32,
+    pub flags: u32,
+    pub src_stages: u32,
+    pub dst_stages: u32,
+    pub state_before: u32,
+    pub state_after: u32,
+    pub resource_gpu_address: u64,
+    pub subresource: u32,
+    pub _reserved: u32,
+}
+
+impl ResourceBarrierPayload {
+    /// Constructs a state transition barrier between two pipeline states.
+    pub const fn transition(
+        resource_gpu_address: u64,
+        subresource: u32,
+        state_before: ResourceState,
+        state_after: ResourceState,
+        src_stages: PipelineStageFlags,
+        dst_stages: PipelineStageFlags,
+    ) -> Self {
+        Self {
+            barrier_type: BarrierType::Transition as u32,
+            flags: 0,
+            src_stages: src_stages.bits(),
+            dst_stages: dst_stages.bits(),
+            state_before: state_before.bits(),
+            state_after: state_after.bits(),
+            resource_gpu_address,
+            subresource,
+            _reserved: 0,
+        }
+    }
+
+    /// Constructs an Unordered Access View (UAV) memory barrier to flush caches between compute dispatches.
+    pub const fn uav(resource_gpu_address: u64) -> Self {
+        Self {
+            barrier_type: BarrierType::Uav as u32,
+            flags: 0,
+            src_stages: PipelineStageFlags::COMPUTE_SHADER.bits(),
+            dst_stages: PipelineStageFlags::COMPUTE_SHADER.bits(),
+            state_before: ResourceState::UNORDERED_ACCESS.bits(),
+            state_after: ResourceState::UNORDERED_ACCESS.bits(),
+            resource_gpu_address,
+            subresource: 0,
+            _reserved: 0,
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Descriptor Heaps & Tables
+// -----------------------------------------------------------------------------
+
+/// Modern GPU descriptor heap types.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DescriptorHeapType {
+    /// Shader Resource View (SRV), Constant Buffer View (CBV), Unordered Access View (UAV).
+    CbvSrvUav = 0,
+    /// Texture samplers (linear, anisotropic, point).
+    Sampler = 1,
+    /// Render Target Views (RTV).
+    Rtv = 2,
+    /// Depth Stencil Views (DSV).
+    Dsv = 3,
+}
+
+/// Payload for binding active descriptor heaps to the GPU shader unit (`BindDescriptorHeaps`).
+#[repr(C, align(8))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BindDescriptorHeapsPayload {
+    pub num_heaps: u32,
+    pub _reserved: u32,
+    pub heap_gpu_addresses: [u64; 4],
+    pub heap_types: [u32; 4],
+    pub descriptor_counts: [u32; 4],
+}
+
+impl BindDescriptorHeapsPayload {
+    pub const fn new() -> Self {
+        Self {
+            num_heaps: 0,
+            _reserved: 0,
+            heap_gpu_addresses: [0; 4],
+            heap_types: [0; 4],
+            descriptor_counts: [0; 4],
+        }
+    }
+
+    pub fn add_heap(&mut self, heap_type: DescriptorHeapType, gpu_address: u64, count: u32) -> Result<(), &'static str> {
+        if self.num_heaps >= 4 {
+            return Err("Maximum of 4 descriptor heaps can be bound simultaneously");
+        }
+        let idx = self.num_heaps as usize;
+        self.heap_gpu_addresses[idx] = gpu_address;
+        self.heap_types[idx] = heap_type as u32;
+        self.descriptor_counts[idx] = count;
+        self.num_heaps += 1;
+        Ok(())
+    }
+}
+
+/// Payload for binding a descriptor table into a root signature parameter slot (`SetDescriptorTable`).
+#[repr(C, align(8))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetDescriptorTablePayload {
+    pub root_parameter_index: u32,
+    pub heap_type: u32,
+    pub base_descriptor_gpu_address: u64,
+    pub descriptor_count: u32,
+    pub _reserved: u32,
+}
+
+impl SetDescriptorTablePayload {
+    pub const fn new(
+        root_parameter_index: u32,
+        heap_type: DescriptorHeapType,
+        base_addr: u64,
+        count: u32,
+    ) -> Self {
+        Self {
+            root_parameter_index,
+            heap_type: heap_type as u32,
+            base_descriptor_gpu_address: base_addr,
+            descriptor_count: count,
+            _reserved: 0,
+        }
     }
 }
 
@@ -427,6 +636,69 @@ impl CommandBufferRecorder {
         self.append_packet(GpuCommandOpcode::SetScissorRects, bytes, 0)
     }
 
+    /// Encodes a generic resource pipeline barrier command.
+    pub fn record_resource_barrier(&mut self, barrier: &ResourceBarrierPayload) -> Result<(), &'static str> {
+        let bytes = unsafe {
+            core::slice::from_raw_parts(
+                barrier as *const ResourceBarrierPayload as *const u8,
+                size_of::<ResourceBarrierPayload>(),
+            )
+        };
+        self.append_packet(GpuCommandOpcode::ResourceBarrier, bytes, 0)
+    }
+
+    /// Encodes a resource state transition barrier (e.g. Common -> RenderTarget, CopyDest -> ShaderResource).
+    pub fn record_transition_barrier(
+        &mut self,
+        resource_gpu_address: u64,
+        subresource: u32,
+        state_before: ResourceState,
+        state_after: ResourceState,
+        src_stages: PipelineStageFlags,
+        dst_stages: PipelineStageFlags,
+    ) -> Result<(), &'static str> {
+        let barrier = ResourceBarrierPayload::transition(
+            resource_gpu_address,
+            subresource,
+            state_before,
+            state_after,
+            src_stages,
+            dst_stages,
+        );
+        self.record_resource_barrier(&barrier)
+    }
+
+    /// Encodes an Unordered Access View (UAV) execution barrier between compute dispatches.
+    pub fn record_uav_barrier(&mut self, resource_gpu_address: u64) -> Result<(), &'static str> {
+        let barrier = ResourceBarrierPayload::uav(resource_gpu_address);
+        self.record_resource_barrier(&barrier)
+    }
+
+    /// Encodes a `BindDescriptorHeaps` command to activate GPU descriptor pools.
+    pub fn record_bind_descriptor_heaps(&mut self, payload: &BindDescriptorHeapsPayload) -> Result<(), &'static str> {
+        if payload.num_heaps > 4 {
+            return Err("Descriptor heap count cannot exceed 4");
+        }
+        let bytes = unsafe {
+            core::slice::from_raw_parts(
+                payload as *const BindDescriptorHeapsPayload as *const u8,
+                size_of::<BindDescriptorHeapsPayload>(),
+            )
+        };
+        self.append_packet(GpuCommandOpcode::BindDescriptorHeaps, bytes, 0)
+    }
+
+    /// Encodes a `SetDescriptorTable` command binding a table into a root signature slot.
+    pub fn record_set_descriptor_table(&mut self, payload: &SetDescriptorTablePayload) -> Result<(), &'static str> {
+        let bytes = unsafe {
+            core::slice::from_raw_parts(
+                payload as *const SetDescriptorTablePayload as *const u8,
+                size_of::<SetDescriptorTablePayload>(),
+            )
+        };
+        self.append_packet(GpuCommandOpcode::SetDescriptorTable, bytes, 0)
+    }
+
     /// Finalizes and closes the command buffer for hardware submission.
     pub fn close(&mut self) -> Result<GpuCommandBuffer, &'static str> {
         if self.is_closed {
@@ -671,6 +943,173 @@ pub fn verify_command_packet_encoding_and_recorder() -> bool {
         Err(_) => return false,
     };
     if cmdbuf2.packet_count() != 1 {
+        return false;
+    }
+
+    true
+}
+
+/// Verifies pipeline barriers, resource state transitions, UAV barriers, and descriptor heap bindings.
+pub fn verify_barriers_and_descriptor_bindings() -> bool {
+    let mut recorder = CommandBufferRecorder::new(4096, 2);
+
+    // 1. Transition Texture from Common to CopyDest
+    let tex_addr = 0xFFFF_9000_0000_0000u64;
+    if recorder
+        .record_transition_barrier(
+            tex_addr,
+            0,
+            ResourceState::COMMON,
+            ResourceState::COPY_DEST,
+            PipelineStageFlags::TOP_OF_PIPE,
+            PipelineStageFlags::TRANSFER,
+        )
+        .is_err()
+    {
+        return false;
+    }
+
+    // 2. CopyBufferRegion upload
+    let copy = CopyBufferRegionPayload::new(tex_addr, 0xFFFF_8000_1000_0000, 65536, 0, 0);
+    if recorder.record_copy_buffer_region(&copy).is_err() {
+        return false;
+    }
+
+    // 3. Transition Texture from CopyDest to PixelShaderResource
+    if recorder
+        .record_transition_barrier(
+            tex_addr,
+            0,
+            ResourceState::COPY_DEST,
+            ResourceState::PIXEL_SHADER_RESOURCE,
+            PipelineStageFlags::TRANSFER,
+            PipelineStageFlags::PIXEL_SHADER,
+        )
+        .is_err()
+    {
+        return false;
+    }
+
+    // 4. Bind Descriptor Heaps (CBV/SRV/UAV heap + Sampler heap)
+    let mut heaps = BindDescriptorHeapsPayload::new();
+    if heaps.add_heap(DescriptorHeapType::CbvSrvUav, 0xFFFF_A000_0000_0000, 1024).is_err() {
+        return false;
+    }
+    if heaps.add_heap(DescriptorHeapType::Sampler, 0xFFFF_B000_0000_0000, 64).is_err() {
+        return false;
+    }
+    if recorder.record_bind_descriptor_heaps(&heaps).is_err() {
+        return false;
+    }
+
+    // 5. Set Descriptor Tables for Root Parameters
+    let cbv_table = SetDescriptorTablePayload::new(0, DescriptorHeapType::CbvSrvUav, 0xFFFF_A000_0000_0000, 16);
+    if recorder.record_set_descriptor_table(&cbv_table).is_err() {
+        return false;
+    }
+    let srv_table = SetDescriptorTablePayload::new(1, DescriptorHeapType::CbvSrvUav, 0xFFFF_A000_0000_0800, 32);
+    if recorder.record_set_descriptor_table(&srv_table).is_err() {
+        return false;
+    }
+
+    // 6. Transition RenderTarget from Present to RenderTarget
+    let rtv_addr = 0xFFFF_C000_0000_0000u64;
+    if recorder
+        .record_transition_barrier(
+            rtv_addr,
+            0,
+            ResourceState::PRESENT,
+            ResourceState::RENDER_TARGET,
+            PipelineStageFlags::TOP_OF_PIPE,
+            PipelineStageFlags::RENDER_TARGET,
+        )
+        .is_err()
+    {
+        return false;
+    }
+
+    // 7. UAV execution barrier for compute dispatch
+    let compute_buf = 0xFFFF_D000_0000_0000u64;
+    if recorder.record_uav_barrier(compute_buf).is_err() {
+        return false;
+    }
+
+    // 8. Close and decode
+    let cmdbuf = match recorder.close() {
+        Ok(b) => b,
+        Err(_) => return false,
+    };
+
+    if cmdbuf.packet_count() != 7 {
+        return false;
+    }
+
+    let reader = CommandStreamReader::new(&cmdbuf);
+    let mut barrier_count = 0;
+    let mut heap_count = 0;
+    let mut table_count = 0;
+
+    for packet in reader {
+        match packet.header.opcode() {
+            Some(GpuCommandOpcode::ResourceBarrier) => {
+                let b: &ResourceBarrierPayload =
+                    unsafe { &*(packet.payload.as_ptr() as *const ResourceBarrierPayload) };
+                if b.barrier_type == BarrierType::Transition as u32 {
+                    if b.resource_gpu_address == tex_addr && b.state_before == ResourceState::COMMON.bits() {
+                        if b.state_after != ResourceState::COPY_DEST.bits() {
+                            return false;
+                        }
+                    } else if b.resource_gpu_address == tex_addr && b.state_before == ResourceState::COPY_DEST.bits() {
+                        if b.state_after != ResourceState::PIXEL_SHADER_RESOURCE.bits() {
+                            return false;
+                        }
+                    } else if b.resource_gpu_address == rtv_addr {
+                        if b.state_before != ResourceState::PRESENT.bits()
+                            || b.state_after != ResourceState::RENDER_TARGET.bits()
+                        {
+                            return false;
+                        }
+                    }
+                } else if b.barrier_type == BarrierType::Uav as u32 {
+                    if b.resource_gpu_address != compute_buf {
+                        return false;
+                    }
+                }
+                barrier_count += 1;
+            }
+            Some(GpuCommandOpcode::BindDescriptorHeaps) => {
+                let h: &BindDescriptorHeapsPayload =
+                    unsafe { &*(packet.payload.as_ptr() as *const BindDescriptorHeapsPayload) };
+                if h.num_heaps != 2
+                    || h.heap_types[0] != DescriptorHeapType::CbvSrvUav as u32
+                    || h.heap_types[1] != DescriptorHeapType::Sampler as u32
+                    || h.descriptor_counts[0] != 1024
+                    || h.descriptor_counts[1] != 64
+                {
+                    return false;
+                }
+                heap_count += 1;
+            }
+            Some(GpuCommandOpcode::SetDescriptorTable) => {
+                let t: &SetDescriptorTablePayload =
+                    unsafe { &*(packet.payload.as_ptr() as *const SetDescriptorTablePayload) };
+                if t.root_parameter_index == 0 {
+                    if t.descriptor_count != 16 {
+                        return false;
+                    }
+                } else if t.root_parameter_index == 1 {
+                    if t.descriptor_count != 32 {
+                        return false;
+                    }
+                }
+                table_count += 1;
+            }
+            Some(GpuCommandOpcode::CopyBufferRegion) => {}
+            _ => return false,
+        }
+    }
+
+    if barrier_count != 4 || heap_count != 1 || table_count != 2 {
         return false;
     }
 
