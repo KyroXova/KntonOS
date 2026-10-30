@@ -7,7 +7,13 @@
 
 pub mod health;
 
-/// Unit verification for subsystem health descriptors and latency metrics.
+/// Unit verification for subsystem health descriptors, registry, and telemetry collection.
 pub fn test_sys_subsystem() -> bool {
-    health::test_subsystem_descriptors_and_latency()
+    if !health::test_subsystem_descriptors_and_latency() {
+        return false;
+    }
+    if !health::test_health_matrix_and_telemetry_collector() {
+        return false;
+    }
+    true
 }
