@@ -1,12 +1,6 @@
-//! Vibration Waveform Synthesizer & ADSR Envelope Generator for Gamepad Haptics.
-//!
-//! Provides integer-based waveform synthesis (sine, square, triangle, pulsed envelope,
-//! decay burst) across 10-500 Hz with millisecond ADSR amplitude shaping, gain modulation,
-//! and 8-bit motor amplitude outputs (0-255).
+//! Vibration waveform synthesizer and ADSR envelope generator for gamepad haptics.
 
-// -----------------------------------------------------------------------------
-// Waveform Types and Frequency Bounds
-// -----------------------------------------------------------------------------
+// Waveform types and frequency bounds.
 
 /// Supported haptic vibration waveform profiles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,9 +22,7 @@ pub const HAPTIC_MIN_FREQUENCY_HZ: u16 = 10;
 pub const HAPTIC_MAX_FREQUENCY_HZ: u16 = 500;
 pub const HAPTIC_DEFAULT_SAMPLE_RATE_HZ: u32 = 1000; // 1 ms evaluation step
 
-// -----------------------------------------------------------------------------
-// ADSR Envelope Configuration
-// -----------------------------------------------------------------------------
+// ADSR envelope configuration.
 
 /// Attack-Decay-Sustain-Release amplitude envelope parameters in milliseconds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,9 +103,7 @@ impl AdsrEnvelope {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Vibration Waveform Synthesizer
-// -----------------------------------------------------------------------------
+// Vibration waveform synthesizer.
 
 /// Integer-based lookup table for sin(x) across 0..=90 degrees (quarter cycle, 0..255 range).
 /// 16 samples covering quarter phase.
@@ -234,9 +224,7 @@ impl WaveformSynthesizer {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Unit Tests & Verification
-// -----------------------------------------------------------------------------
+// Unit tests and verification.
 
 /// Unit test verifying vibration waveform synthesis, ADSR envelopes, and gain scaling.
 pub fn verify_waveform_synthesizer() -> bool {

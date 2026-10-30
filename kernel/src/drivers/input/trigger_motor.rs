@@ -1,10 +1,4 @@
-//! Unified Handheld PC Multi-Zone Haptic Force-Feedback Trigger & Active Resistance Motor Governor.
-//!
-//! Provides bare-metal force-feedback adaptive trigger motor control featuring:
-//! - Multi-mode active resistance: Linear, Stepped/Clicky, Variable Stop, Frequency Rumble, Recoil Pulse Trains.
-//! - Closed-loop PWM duty control with stall-current burnout and thermal overload protection.
-//! - Dual-trigger position sensing with microsecond response curve interpolation.
-//! - Failsafe neutral state handling during process exit or kernel panic.
+//! Handheld PC multi-zone haptic force-feedback trigger and active resistance motor governor.
 
 /// Wire format header magic for Trigger Motor Command Packets ("TMGR").
 pub const TRIGGER_PACKET_MAGIC: u32 = 0x544D_4752;
@@ -579,8 +573,6 @@ impl TriggerEffectSynthesizer {
     }
 
     /// Failsafe neutral state: immediately de-energizes all micromotors to 0% PWM.
-    ///
-    /// Must be invoked on process exit, task switch, or kernel panic to prevent motor burnout.
     pub fn neutralize_all(&mut self) {
         for i in 0..2 {
             self.governor.descriptors[i].profile = ResistanceProfile::Off;
