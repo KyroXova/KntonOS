@@ -4,7 +4,12 @@
 //! zero-fill optimization, AMD 3D V-Cache topology detection, and NUMA core affinity.
 
 pub mod thp;
+pub mod numa;
 
+pub use numa::{
+    CoreAffinityHint, CpuVendor, MemoryAffinityPolicy, NumaCore, NumaDistanceMatrix, NumaNode,
+    NumaNodeType, NumaTopologyManager, WorkloadProfile, MAX_NUMA_CORES, MAX_NUMA_NODES,
+};
 pub use thp::{
     HugePageAllocator, HugePageEntry, HugePageFlags, HugePhysFrame, HugeZeroPool, PageDirectoryTable,
     PageTable4KB, PageTableEntry4KB, ThpMode, ThpStats, TransparentHugePageDaemon,
@@ -103,7 +108,7 @@ pub fn verify_thp_collapse_split_and_zero_pool() -> bool {
 
     let mut daemon = TransparentHugePageDaemon::new(ThpMode::Always);
 
-    // 1. Replenish pre-zeroed pool with 4 frames
+    // 1. Replenish pre-zeroed pool with 8 frames
     let replenished = daemon.zero_pool.replenish(&mut allocator);
     if replenished != 8 || daemon.zero_pool.available() != 8 {
         return false;
@@ -166,6 +171,79 @@ pub fn verify_thp_collapse_split_and_zero_pool() -> bool {
         return false;
     }
     if split_pt.entries[511].physical_address() != huge_frame.base_address() + 511 * PAGE_SIZE_4KB {
+        return false;
+    }
+
+    true
+}
+
+/// Unit test verifying AMD Zen 3D V-Cache and Intel Hybrid topology discovery & affinity routing.
+pub fn verify_numa_vcache_and_hybrid_topology() -> bool {
+    // 1. AMD Zen 3D V-Cache Topology Verification
+    let mut amd_topo = NumaTopologyManager::create_simulated_amd_x3d_topology();
+    if amd_topo.vendor != CpuVendor::Amd || amd_topo.node_count != 2 || amd_topo.core_count != 16 {
+        return false;
+    }
+
+    // Node 0 should be 3D V-Cache with 96 MiB L3
+    let node0 = match amd_topo.nodes[0] {
+        Some(n) => n,
+        None => return false,
+    };
+    if node0.node_type != NumaNodeType::VCache3D || node0.l3_cache_kib != 98_304 {
+        return false;
+    }
+
+    // Node 1 should be Frequency Boosted with 32 MiB L3
+    let node1 = match amd_topo.nodes[1] {
+        Some(n) => n,
+        None => return false,
+    };
+    if node1.node_type != NumaNodeType::FrequencyBoosted || node1.l3_cache_kib != 32_768 {
+        return false;
+    }
+
+    // Cross-CCD distance check (local = 10, cross = 22)
+    if amd_topo.distances.distance(0, 0) != 10 || amd_topo.distances.distance(0, 1) != 22 {
+        return false;
+    }
+
+    // Workload routing: GamingCacheBound -> Cores 0-7 (CCD0 V-Cache)
+    let gaming_core = match amd_topo.find_best_core_for_workload(WorkloadProfile::GamingCacheBound) {
+        Some(c) => c,
+        None => return false,
+    };
+    if gaming_core >= 8 {
+        return false;
+    }
+
+    // Workload routing: ThroughputCompute -> Cores 8-15 (CCD1 Frequency Boost)
+    let compute_core = match amd_topo.find_best_core_for_workload(WorkloadProfile::ThroughputCompute) {
+        Some(c) => c,
+        None => return false,
+    };
+    if compute_core < 8 || compute_core >= 16 {
+        return false;
+    }
+
+    // Memory routing: PreferVCache -> Node 0
+    let vcache_node = amd_topo.select_allocation_node(10, MemoryAffinityPolicy::PreferVCache);
+    if vcache_node != 0 {
+        return false;
+    }
+
+    // 2. Intel Hybrid Topology Verification
+    let intel_topo = NumaTopologyManager::create_simulated_intel_hybrid_topology();
+    if intel_topo.vendor != CpuVendor::Intel || intel_topo.node_count != 2 || intel_topo.core_count != 16 {
+        return false;
+    }
+
+    // Background I/O workload -> Intel Efficient E-core (Cores 8-15)
+    let ecore = match intel_topo.find_best_core_for_workload(WorkloadProfile::BackgroundIo) {
+        Some(c) => c,
+        None => return false,
+    };
+    if ecore < 8 || ecore >= 16 {
         return false;
     }
 
