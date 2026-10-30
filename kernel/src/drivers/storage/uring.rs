@@ -390,3 +390,187 @@ pub fn verify_uring_ring_buffers() -> bool {
 
     true
 }
+
+pub const MAX_INFLIGHT_REQUESTS: usize = 64;
+
+/// In-flight async I/O request tracking structure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AsyncIoRequest {
+    pub sqe_opcode: u8,
+    pub fd: i32,
+    pub user_data: u64,
+    pub buf_addr: u64,
+    pub byte_count: u32,
+    pub lba_offset: u64,
+    pub nvme_cid: u16,
+    pub active: bool,
+}
+
+impl AsyncIoRequest {
+    pub const fn empty() -> Self {
+        Self {
+            sqe_opcode: IORING_OP_NOP,
+            fd: -1,
+            user_data: 0,
+            buf_addr: 0,
+            byte_count: 0,
+            lba_offset: 0,
+            nvme_cid: 0,
+            active: false,
+        }
+    }
+}
+
+/// Overlapped Async I/O Request Dispatcher bridging io_uring SQEs to NVMe hardware queues.
+pub struct AsyncIoDispatcher {
+    pub inflight_slots: [AsyncIoRequest; MAX_INFLIGHT_REQUESTS],
+    pub inflight_count: usize,
+    pub submitted_ops: u64,
+    pub next_cid: u16,
+}
+
+impl AsyncIoDispatcher {
+    pub const fn new() -> Self {
+        Self {
+            inflight_slots: [AsyncIoRequest::empty(); MAX_INFLIGHT_REQUESTS],
+            inflight_count: 0,
+            submitted_ops: 0,
+            next_cid: 1,
+        }
+    }
+
+    /// Allocates an in-flight tracking slot for an async request.
+    pub fn allocate_slot(&mut self, sqe: &IoUringSqe) -> Option<(usize, u16)> {
+        if self.inflight_count >= MAX_INFLIGHT_REQUESTS {
+            return None;
+        }
+
+        for (idx, slot) in self.inflight_slots.iter_mut().enumerate() {
+            if !slot.active {
+                let cid = self.next_cid;
+                self.next_cid = if self.next_cid >= 0xFFFE { 1 } else { self.next_cid + 1 };
+
+                slot.sqe_opcode = sqe.opcode;
+                slot.fd = sqe.fd;
+                slot.user_data = sqe.user_data;
+                slot.buf_addr = sqe.addr;
+                slot.byte_count = sqe.len;
+                slot.lba_offset = sqe.off;
+                slot.nvme_cid = cid;
+                slot.active = true;
+
+                self.inflight_count += 1;
+                self.submitted_ops += 1;
+                return Some((idx, cid));
+            }
+        }
+        None
+    }
+
+    /// Translates an SQE into a native 64-byte NVMe Submission Entry.
+    pub fn translate_sqe_to_nvme(
+        &mut self,
+        sqe: &IoUringSqe,
+        nsid: u32,
+    ) -> Result<(crate::drivers::storage::nvme::NvmeSubmissionEntry, u16), i32> {
+        let (_slot_idx, cid) = self.allocate_slot(sqe).ok_or(-28)?; // -ENOSPC
+
+        match sqe.opcode {
+            IORING_OP_NOP => {
+                let mut cmd = crate::drivers::storage::nvme::NvmeSubmissionEntry::new(0, cid, nsid);
+                cmd.cdw0 |= 0; // NOP-like cmd
+                Ok((cmd, cid))
+            }
+            IORING_OP_READ => {
+                let lba = sqe.off / 512;
+                let sector_count = ((sqe.len + 511) / 512) as u16;
+                let (prp1, prp2) = (sqe.addr, 0u64);
+                let mut cmd = crate::drivers::storage::nvme::build_nvm_read(nsid, lba, sector_count, prp1, prp2);
+                cmd.cdw0 = (cmd.cdw0 & 0x0000_FFFF) | ((cid as u32) << 16);
+                Ok((cmd, cid))
+            }
+            IORING_OP_WRITE => {
+                let lba = sqe.off / 512;
+                let sector_count = ((sqe.len + 511) / 512) as u16;
+                let (prp1, prp2) = (sqe.addr, 0u64);
+                let mut cmd = crate::drivers::storage::nvme::build_nvm_write(nsid, lba, sector_count, prp1, prp2);
+                cmd.cdw0 = (cmd.cdw0 & 0x0000_FFFF) | ((cid as u32) << 16);
+                Ok((cmd, cid))
+            }
+            IORING_OP_FSYNC => {
+                let cmd = crate::drivers::storage::nvme::NvmeSubmissionEntry::new(
+                    crate::drivers::storage::nvme::NVME_NVM_FLUSH,
+                    cid,
+                    nsid,
+                );
+                Ok((cmd, cid))
+            }
+            _ => Err(-22), // -EINVAL (Unsupported opcode)
+        }
+    }
+
+    /// Dispatches all pending SQEs from a SubmissionQueueRing into an NVMe I/O QueuePair.
+    pub fn dispatch_sq_ring<const N: usize>(
+        &mut self,
+        sq: &mut SubmissionQueueRing<N>,
+        nvme_qp: &mut crate::drivers::storage::nvme::NvmeQueuePair,
+        nsid: u32,
+    ) -> usize {
+        let mut dispatched = 0;
+        while let Some(sqe) = sq.pop() {
+            if let Ok((cmd, _cid)) = self.translate_sqe_to_nvme(&sqe, nsid) {
+                nvme_qp.submit_command(cmd);
+                dispatched += 1;
+            } else {
+                break;
+            }
+        }
+        dispatched
+    }
+}
+
+/// Unit test verifying overlapped SQE translation and NVMe command dispatch.
+pub fn verify_async_dispatcher() -> bool {
+    let mut dispatcher = AsyncIoDispatcher::new();
+    let mut sq = SubmissionQueueRing::<8>::new();
+    let mut nvme_qp = crate::drivers::storage::nvme::NvmeQueuePair::new(1, 16, 0, 0);
+
+    // Queue 3 different SQEs: Read, Write, and Fsync
+    let sqe_read = IoUringSqe::new_read(3, 0x0001_8000, 1024, 2048, 0xCAFE_0001);
+    let sqe_write = IoUringSqe::new_write(3, 0x0002_8000, 512, 4096, 0xCAFE_0002);
+    let sqe_fsync = IoUringSqe::new_fsync(3, 0xCAFE_0003);
+
+    assert!(sq.push(sqe_read));
+    assert!(sq.push(sqe_write));
+    assert!(sq.push(sqe_fsync));
+
+    // Dispatch batch to NVMe queue
+    let dispatched = dispatcher.dispatch_sq_ring(&mut sq, &mut nvme_qp, 1);
+    if dispatched != 3 || dispatcher.inflight_count != 3 {
+        return false;
+    }
+
+    // Inspect the generated NVMe submission entries
+    let cmd0 = nvme_qp.sq_entries[0];
+    if cmd0.opcode() != crate::drivers::storage::nvme::NVME_NVM_READ
+        || cmd0.prp1 != 0x0001_8000
+        || cmd0.cdw10 != 4 // 2048 / 512 = 4
+    {
+        return false;
+    }
+
+    let cmd1 = nvme_qp.sq_entries[1];
+    if cmd1.opcode() != crate::drivers::storage::nvme::NVME_NVM_WRITE
+        || cmd1.prp1 != 0x0002_8000
+        || cmd1.cdw10 != 8 // 4096 / 512 = 8
+    {
+        return false;
+    }
+
+    let cmd2 = nvme_qp.sq_entries[2];
+    if cmd2.opcode() != crate::drivers::storage::nvme::NVME_NVM_FLUSH {
+        return false;
+    }
+
+    true
+}
