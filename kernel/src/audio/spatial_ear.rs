@@ -788,7 +788,281 @@ impl CompensationProfile {
 }
 
 // -----------------------------------------------------------------------------
-// Unit Tests for Commit 1
+// 4. Cross-Talk Cancellation (XTC) & Acoustic Impedance Equalizer
+// -----------------------------------------------------------------------------
+
+/// Single-channel biquad IIR filter runner for ear-canal acoustic equalization.
+#[derive(Debug, Clone, Copy)]
+pub struct BiquadFilterChannel {
+    x1: f32,
+    x2: f32,
+    y1: f32,
+    y2: f32,
+    pub tf: EarCanalTransferFunction,
+}
+
+impl BiquadFilterChannel {
+    pub const fn new(tf: EarCanalTransferFunction) -> Self {
+        Self {
+            x1: 0.0,
+            x2: 0.0,
+            y1: 0.0,
+            y2: 0.0,
+            tf,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.x1 = 0.0;
+        self.x2 = 0.0;
+        self.y1 = 0.0;
+        self.y2 = 0.0;
+    }
+
+    pub fn set_transfer_function(&mut self, tf: EarCanalTransferFunction) {
+        self.tf = tf;
+    }
+
+    /// Processes a single sample through Direct Form I biquad difference equation.
+    pub fn process_sample(&mut self, x: f32) -> f32 {
+        let y = self.tf.b0 * x + self.tf.b1 * self.x1 + self.tf.b2 * self.x2
+            - self.tf.a1 * self.y1 - self.tf.a2 * self.y2;
+        self.x2 = self.x1;
+        self.x1 = x;
+        self.y2 = self.y1;
+        self.y1 = y;
+        y
+    }
+}
+
+/// Stereo Acoustic Impedance Equalizer compensating for ear-canal 3 kHz resonance and headphone/IEM acoustics.
+#[derive(Debug, Clone, Copy)]
+pub struct AcousticImpedanceEqualizer {
+    pub left_channel: BiquadFilterChannel,
+    pub right_channel: BiquadFilterChannel,
+    pub profile: CompensationProfile,
+}
+
+impl AcousticImpedanceEqualizer {
+    pub fn new(profile: CompensationProfile) -> Self {
+        let tf = profile.get_transfer_function();
+        Self {
+            left_channel: BiquadFilterChannel::new(tf),
+            right_channel: BiquadFilterChannel::new(tf),
+            profile,
+        }
+    }
+
+    pub fn set_profile(&mut self, profile: CompensationProfile) {
+        self.profile = profile;
+        let tf = profile.get_transfer_function();
+        self.left_channel.set_transfer_function(tf);
+        self.right_channel.set_transfer_function(tf);
+    }
+
+    pub fn reset(&mut self) {
+        self.left_channel.reset();
+        self.right_channel.reset();
+    }
+
+    pub fn process_stereo(&mut self, left: f32, right: f32) -> (f32, f32) {
+        (
+            self.left_channel.process_sample(left),
+            self.right_channel.process_sample(right),
+        )
+    }
+}
+
+/// Delay line capacity for Cross-Talk Cancellation delay line (64 samples = 1.33 ms).
+pub const XTC_DELAY_CAPACITY: usize = 64;
+pub const XTC_DELAY_MASK: usize = XTC_DELAY_CAPACITY - 1;
+
+/// Cross-Talk Cancellation (XTC) Virtualizer for Handheld Gaming Speakers.
+///
+/// Enables binaural 3D spatial audio over physical stereo speakers by canceling
+/// ipsilateral-to-contralateral ear acoustic leakage using an inverted, delayed,
+/// and low-pass filtered cross-feed network.
+#[derive(Debug, Clone, Copy)]
+pub struct CrossTalkCancellationVirtualizer {
+    left_delay_buf: [f32; XTC_DELAY_CAPACITY],
+    right_delay_buf: [f32; XTC_DELAY_CAPACITY],
+    write_pos: usize,
+    pub speaker_span_m: f32,
+    pub listener_distance_m: f32,
+    pub cancellation_gain: f32,
+    pub cross_delay_samples: f32,
+    damping_l: f32,
+    damping_r: f32,
+    pub enabled: bool,
+}
+
+impl CrossTalkCancellationVirtualizer {
+    /// Creates a new XTC virtualizer configured for handheld gaming device geometry:
+    /// 20 cm speaker separation, 40 cm user holding distance.
+    pub fn new_handheld_defaults() -> Self {
+        let mut xtc = Self {
+            left_delay_buf: [0.0; XTC_DELAY_CAPACITY],
+            right_delay_buf: [0.0; XTC_DELAY_CAPACITY],
+            write_pos: 0,
+            speaker_span_m: 0.20,
+            listener_distance_m: 0.40,
+            cancellation_gain: 0.72,
+            cross_delay_samples: 6.0,
+            damping_l: 0.0,
+            damping_r: 0.0,
+            enabled: true,
+        };
+        xtc.recalculate_geometry();
+        xtc
+    }
+
+    /// Recalculates cross-talk acoustic path difference and sample delay from physical geometry.
+    pub fn recalculate_geometry(&mut self) {
+        let half_w = self.speaker_span_m * 0.5;
+        let r_ear = DEFAULT_HEAD_RADIUS;
+        let d = self.listener_distance_m;
+
+        let d_direct_sq = d * d + (half_w - r_ear) * (half_w - r_ear);
+        let d_cross_sq = d * d + (half_w + r_ear) * (half_w + r_ear);
+
+        let d_direct = sqrt_f32(d_direct_sq);
+        let d_cross = sqrt_f32(d_cross_sq);
+        let path_diff = if d_cross > d_direct { d_cross - d_direct } else { 0.0 };
+
+        let time_delay = path_diff / SPEED_OF_SOUND;
+        let samples = (time_delay * AUDIO_SAMPLE_RATE).clamp(1.0, (XTC_DELAY_CAPACITY - 4) as f32);
+        self.cross_delay_samples = samples;
+    }
+
+    pub fn reset(&mut self) {
+        self.left_delay_buf = [0.0; XTC_DELAY_CAPACITY];
+        self.right_delay_buf = [0.0; XTC_DELAY_CAPACITY];
+        self.write_pos = 0;
+        self.damping_l = 0.0;
+        self.damping_r = 0.0;
+    }
+
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+        if !enabled {
+            self.reset();
+        }
+    }
+
+    /// Processes stereo samples through the Cross-Talk Cancellation matrix.
+    pub fn process_stereo(&mut self, left_in: f32, right_in: f32) -> (f32, f32) {
+        if !self.enabled {
+            return (left_in, right_in);
+        }
+
+        let int_delay = self.cross_delay_samples as usize;
+        let frac = self.cross_delay_samples - int_delay as f32;
+
+        let base = (self.write_pos + XTC_DELAY_CAPACITY - 1 - int_delay) & XTC_DELAY_MASK;
+        let idx_0 = base;
+        let idx_1 = (base + XTC_DELAY_CAPACITY - 1) & XTC_DELAY_MASK;
+
+        // Linear interpolation for XTC delay line
+        let l_delayed = self.left_delay_buf[idx_0] * (1.0 - frac) + self.left_delay_buf[idx_1] * frac;
+        let r_delayed = self.right_delay_buf[idx_0] * (1.0 - frac) + self.right_delay_buf[idx_1] * frac;
+
+        // Head shadow acoustic damping (first-order low-pass at ~7 kHz)
+        self.damping_l = 0.65 * l_delayed + 0.35 * self.damping_l;
+        self.damping_r = 0.65 * r_delayed + 0.35 * self.damping_r;
+
+        // Invert and cross-feed to cancel contralateral acoustic leakage
+        let left_out = left_in - self.cancellation_gain * self.damping_r;
+        let right_out = right_in - self.cancellation_gain * self.damping_l;
+
+        // Record into delay lines
+        self.left_delay_buf[self.write_pos] = left_out;
+        self.right_delay_buf[self.write_pos] = right_out;
+        self.write_pos = (self.write_pos + 1) & XTC_DELAY_MASK;
+
+        (left_out, right_out)
+    }
+}
+
+/// Integrated Kernel-Direct Low-Latency 3D Spatial Audio Virtualizer Engine.
+#[derive(Debug, Clone, Copy)]
+pub struct SpatialAudioVirtualizerEngine {
+    pub listener: SpatialListener,
+    pub left_channel: DualEarSpatialChannel,
+    pub right_channel: DualEarSpatialChannel,
+    pub eq: AcousticImpedanceEqualizer,
+    pub xtc: CrossTalkCancellationVirtualizer,
+}
+
+impl SpatialAudioVirtualizerEngine {
+    pub fn new(listener: SpatialListener, profile: CompensationProfile) -> Self {
+        let mut xtc = CrossTalkCancellationVirtualizer::new_handheld_defaults();
+        xtc.set_enabled(profile == CompensationProfile::HandheldStereoSpeakersXTC);
+
+        Self {
+            listener,
+            left_channel: DualEarSpatialChannel::new(),
+            right_channel: DualEarSpatialChannel::new(),
+            eq: AcousticImpedanceEqualizer::new(profile),
+            xtc,
+        }
+    }
+
+    pub fn set_profile(&mut self, profile: CompensationProfile) {
+        self.eq.set_profile(profile);
+        self.xtc.set_enabled(profile == CompensationProfile::HandheldStereoSpeakersXTC);
+    }
+
+    pub fn reset(&mut self) {
+        self.left_channel.reset();
+        self.right_channel.reset();
+        self.eq.reset();
+        self.xtc.reset();
+    }
+
+    /// Spatializes a single monophonic emitter sample into binaural stereo with impedance compensation.
+    pub fn process_mono_to_binaural(&mut self, input_sample: f32, emitter: &SpatialEmitter) -> (f32, f32) {
+        let binaural = BinauralParameters::calculate(&self.listener, emitter);
+
+        // 1. Dual-ear ITD fractional delay and spherical head shadow
+        let l_spatial = self.left_channel.process(
+            input_sample,
+            binaural.left_delay_samples,
+            -binaural.azimuth_rad,
+            binaural.left_gain,
+        );
+        let r_spatial = self.right_channel.process(
+            input_sample,
+            binaural.right_delay_samples,
+            binaural.azimuth_rad,
+            binaural.right_gain,
+        );
+
+        // 2. Ear-canal acoustic impedance resonance equalization
+        let (l_eq, r_eq) = self.eq.process_stereo(l_spatial, r_spatial);
+
+        // 3. Cross-talk cancellation (if enabled for physical front speakers)
+        self.xtc.process_stereo(l_eq, r_eq)
+    }
+
+    /// Processes an entire audio frame in-place or buffer-to-buffer.
+    pub fn process_frame(
+        &mut self,
+        input_mono: &[f32],
+        output_left: &mut [f32],
+        output_right: &mut [f32],
+        emitter: &SpatialEmitter,
+    ) {
+        let count = input_mono.len().min(output_left.len()).min(output_right.len());
+        for i in 0..count {
+            let (l, r) = self.process_mono_to_binaural(input_mono[i], emitter);
+            output_left[i] = l;
+            output_right[i] = r;
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Unit Tests
 // -----------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -871,5 +1145,38 @@ mod tests {
         let mag_at_low = iem_tf.magnitude_response(100.0);
         // At low frequencies, magnitude should remain close to 1.0 (pass-through)
         assert!((mag_at_low - 1.0).abs() < 0.05);
+    }
+    #[test]
+    pub fn test_xtc_and_impedance_equalizer() {
+        let mut eq = AcousticImpedanceEqualizer::new(CompensationProfile::InEarMonitorIEM);
+        let (l_out, r_out) = eq.process_stereo(1.0, 1.0);
+        assert!(l_out > 0.0);
+        assert!(r_out > 0.0);
+
+        let mut xtc = CrossTalkCancellationVirtualizer::new_handheld_defaults();
+        assert!(xtc.cross_delay_samples > 3.0 && xtc.cross_delay_samples < 15.0);
+
+        // Process a strong Left impulse
+        let (l1, r1) = xtc.process_stereo(1.0, 0.0);
+        assert_eq!(l1, 1.0);
+        assert_eq!(r1, 0.0);
+
+        // Advance by delay samples and verify canceling cross-feed on Right
+        let int_d = xtc.cross_delay_samples as usize;
+        let mut found_canceling_pulse = false;
+        for _ in 0..int_d + 3 {
+            let (_l, r) = xtc.process_stereo(0.0, 0.0);
+            if r < -0.2 {
+                found_canceling_pulse = true;
+            }
+        }
+        assert!(found_canceling_pulse);
+
+        // Test complete SpatialAudioVirtualizerEngine
+        let listener = SpatialListener::new(SpatialVector3::zero());
+        let mut engine = SpatialAudioVirtualizerEngine::new(listener, CompensationProfile::HandheldStereoSpeakersXTC);
+        let emitter = SpatialEmitter::new(SpatialVector3::new(2.0, 0.0, 0.0)); // 2m right
+        let (l_bin, r_bin) = engine.process_mono_to_binaural(1.0, &emitter);
+        assert!(l_bin != 0.0 || r_bin != 0.0);
     }
 }
