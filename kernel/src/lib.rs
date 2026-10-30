@@ -213,6 +213,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Battery fuel gauge and smart charger self-test failed!\r\n");
     }
 
+    // Initialize and verify Unified Kernel Dynamic Frequency Scaling (DVFS) & Micro-Voltage Stepping Governor
+    if !power::test_dvfs_governor_subsystem() {
+        serial_write_str("[KNT-PANIC] DVFS governor and voltage stepping self-test failed!\r\n");
+    }
+
     // Initialize Virtual File System & mount demo initramfs
     fs::init();
     if !fs::test_vfs_subsystem() {

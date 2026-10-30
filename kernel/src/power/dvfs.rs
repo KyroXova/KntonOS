@@ -267,7 +267,8 @@ impl DvfsGovernor {
             // Smooth frame delivered during boost cooldown
             if self.cooldown_frames_remaining > 0 {
                 self.cooldown_frames_remaining -= 1;
-            } else {
+            }
+            if self.cooldown_frames_remaining == 0 {
                 // Cooldown expired: decay boost frequency down to balanced nominal (2.8 GHz)
                 self.boost_active = false;
                 for core_id in 0..MAX_DVFS_CORES {
