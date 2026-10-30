@@ -1,13 +1,6 @@
-//! Linear Resonant Actuator (LRA) Driver & Dynamic Resonant Frequency Tracking PLL.
-//!
-//! Provides precision LRA drive and real-time resonance frequency ($f_0$) tracking:
-//! - Back-EMF zero-crossing phase detector monitoring coil voltage during hi-Z coasting windows
-//! - Proportional-Integral (PI) Phase-Locked Loop (PLL) continuously tuning drive frequency across 150Hz–250Hz
-//! - Automatic adaptation to hand grip pressure, actuator thermal drift, and mechanical spring aging
+//! Linear Resonant Actuator (LRA) driver and dynamic resonance frequency tracking PLL.
 
-// -----------------------------------------------------------------------------
-// Constants & Configuration
-// -----------------------------------------------------------------------------
+// Constants and configuration.
 
 /// Minimum supported LRA resonance tracking frequency in Hz.
 pub const LRA_MIN_RESONANT_FREQ_HZ: f32 = 150.0;
@@ -51,9 +44,7 @@ impl LraPllConfig {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Back-EMF Zero-Crossing Detector
-// -----------------------------------------------------------------------------
+// Back-EMF zero-crossing detector.
 
 /// Raw Back-EMF ADC voltage sample.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,9 +166,7 @@ impl BackEmfZeroCrossingDetector {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Resonant Frequency Tracking PLL
-// -----------------------------------------------------------------------------
+// Resonant frequency tracking PLL.
 
 /// Phase-Locked Loop (PLL) continuously tuning LRA drive frequency to mechanical resonance.
 #[derive(Debug, Clone)]
@@ -215,11 +204,7 @@ impl LraPllTracker {
         }
     }
 
-    /// Updates the PLL state when a zero-crossing event is detected.
-    ///
-    /// Evaluates the measured half-period versus expected half-period $T_{\text{drive}} / 2$,
-    /// calculates phase discrepancy $\Delta \phi$, and executes PI loop filter to nudge
-    /// `current_drive_freq_hz` towards true mechanical resonance $f_0$.
+    /// Updates PLL state when a zero-crossing event is detected, tuning drive frequency to resonance.
     pub fn process_zero_crossing(&mut self, event: ZeroCrossingEvent) {
         self.total_crossings += 1;
 
@@ -239,9 +224,7 @@ impl LraPllTracker {
         // T_half_us = 1_000_000 / (2 * f_drive)
         let expected_half_period_us = 500_000.0 / self.current_drive_freq_hz;
 
-        // Timing error in microseconds:
-        // If measured < expected, actuator is oscillating faster -> resonance f0 is higher -> timing error < 0
-        // Phase error in radians: delta_phi = (measured - expected) / expected * PI
+        // Phase error in radians: delta_phi = (measured - expected) / expected * PI.
         let timing_error_us = measured_half_period_us - expected_half_period_us;
         let phase_error_rad = (timing_error_us / expected_half_period_us) * core::f32::consts::PI;
         self.last_phase_error_rad = phase_error_rad;
@@ -284,9 +267,7 @@ impl LraPllTracker {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Unit Tests & Verification
-// -----------------------------------------------------------------------------
+// Unit tests and verification.
 
 /// Unit test verifying LRA back-EMF zero-crossing detector and resonant frequency tracking PLL.
 pub fn verify_lra_back_emf_and_pll_tracking() -> bool {
@@ -321,10 +302,7 @@ pub fn verify_lra_back_emf_and_pll_tracking() -> bool {
         return false;
     }
 
-    // 2. Verify Resonant Frequency Tracking PLL
-    // Actuator true mechanical resonance f0 = 220 Hz (e.g. stiffer spring / tight grip).
-    // Initial oscillator drive frequency = 200 Hz.
-    // True half-period at 220 Hz: 1_000_000 / (2 * 220) = 2272.72 us.
+    // Verify resonant frequency tracking PLL convergence from 200 Hz to 220 Hz.
     let config = LraPllConfig::default_handheld();
     let mut pll = LraPllTracker::new(config);
 
@@ -376,9 +354,7 @@ pub fn verify_lra_back_emf_and_pll_tracking() -> bool {
 }
 
 
-// -----------------------------------------------------------------------------
-// Multi-Zone Spatial Haptic Routing
-// -----------------------------------------------------------------------------
+// Multi-zone spatial haptic routing.
 
 /// Physical haptic actuator zone on the handheld device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

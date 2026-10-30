@@ -1,8 +1,4 @@
-//! 6-Axis Inertial Measurement Unit (IMU) Accelerometer & Gyroscope Structures.
-//!
-//! Provides raw sensor representations, configurable sensitivities (LSB/g and LSB/dps),
-//! zero-bias calibration, first-order low-pass filtering, quaternion sensor fusion
-//! (Madgwick & Mahony 6-axis algorithms), and Euler angle orientation math.
+//! 6-axis IMU accelerometer and gyroscope sensor structures and fusion filters.
 
 /// Standard gravitational acceleration in m/s^2.
 pub const GRAVITY_MSS: f32 = 9.80665;
@@ -19,9 +15,7 @@ pub const PI: f32 = 3.14159265358979323846;
 /// Mathematical constant Pi / 2.
 pub const HALF_PI: f32 = PI / 2.0;
 
-// -----------------------------------------------------------------------------
-// Pure no_std Trigonometric & Polynomial Math Helpers
-// -----------------------------------------------------------------------------
+// Trigonometric and polynomial math helpers.
 
 /// Computes the square root of a floating-point number using Newton-Raphson iteration.
 #[inline(always)]
@@ -89,9 +83,7 @@ pub fn asin_f32(mut x: f32) -> f32 {
     atan2_f32(x, denom)
 }
 
-// -----------------------------------------------------------------------------
-// Sensor Ranges & Vector3
-// -----------------------------------------------------------------------------
+// Sensor ranges and Vector3.
 
 /// Accelerometer full-scale range configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -479,9 +471,7 @@ impl ImuProcessor {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Quaternion & Orientation Math
-// -----------------------------------------------------------------------------
+// Quaternion and orientation math.
 
 /// Unit quaternion representing spatial 3D orientation: q = w + xi + yj + zk.
 #[repr(C)]
@@ -662,9 +652,7 @@ impl EulerAngles {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Real-time Quaternion Sensor Fusion Filters
-// -----------------------------------------------------------------------------
+// Real-time quaternion sensor fusion filters.
 
 /// Sebastian Madgwick 6-Axis IMU Gradient Descent Quaternion Fusion Filter.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -694,11 +682,7 @@ impl MadgwickFilter {
         self.q = Quaternion::IDENTITY;
     }
 
-    /// Updates orientation quaternion using accelerometer and gyroscope measurements over interval `dt`.
-    ///
-    /// - `accel`: Accelerometer measurement vector in m/s^2 or g.
-    /// - `gyro`: Gyroscope angular rate vector in radians/sec.
-    /// - `dt`: Sampling interval in seconds (e.g. 0.001 for 1000Hz).
+    /// Updates orientation quaternion using accelerometer and gyroscope measurements.
     pub fn update(&mut self, accel: Vector3, gyro: Vector3, dt: f32) {
         let q = self.q;
 
@@ -853,10 +837,7 @@ impl MahonyFilter {
     }
 }
 
-/// Unified 6-Axis IMU Sensor Fusion Pipeline.
-///
-/// Combines raw sample processing, Madgwick / Mahony quaternion filtering,
-/// Euler orientation output, and gravity-compensated linear dynamic acceleration extraction.
+/// Unified 6-axis IMU sensor fusion pipeline combining filtering and linear acceleration extraction.
 pub struct SensorFusion {
     pub processor: ImuProcessor,
     pub madgwick: MadgwickFilter,
