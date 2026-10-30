@@ -17,9 +17,9 @@ These branches are managed by their respective developers with granular commit l
 
 | Contributor identity | Branch | Local workspace | Status |
 | --- | --- | --- | --- |
-| Ada Chen | `workspace/ada-chen` | `E:\Git Lab's\kntonOS-ada-chen` | Active (TASK-KNT-103) |
-| Jules Martin | `workspace/jules-martin` | `E:\Git Lab's\kntonOS-jules-martin` | Active (TASK-KNT-101) |
-| Priya Nair | `workspace/priya-nair` | `E:\Git Lab's\kntonOS-priya-nair` | Active (TASK-KNT-102) |
+| Ada Chen | `workspace/ada-chen` | `E:\Git Lab's\kntonOS-ada-chen` | Idle (TASK-KNT-103 complete) |
+| Jules Martin | `workspace/jules-martin` | `E:\Git Lab's\kntonOS-jules-martin` | Idle (TASK-KNT-101 complete) |
+| Priya Nair | `workspace/priya-nair` | `E:\Git Lab's\kntonOS-priya-nair` | Idle (TASK-KNT-102 complete) |
 
 ## Task index
 
@@ -125,13 +125,10 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-098 | Unified Handheld PC RGB LED Lighting Controller & Game State Aura Sync Engine | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-098-rgb-lighting.md) |
 | TASK-KNT-099 | Direct3D 12 Mesh Shader & Amplification Shader Primitive Pipeline Engine | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-099-mesh-shaders.md) |
 | TASK-KNT-100 | Milestone 100: KntonOS Micro-Kernel Unified Gaming Subsystem Health Matrix & Benchmark Supervisor | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-100-health-matrix-supervisor.md) |
-| TASK-KNT-101 | Unified Handheld PC MicroSD Card UHS-I/II Host Controller & Fast Game Storage Driver | Claimed | TASK-KNT-046 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-101-sdhci-storage.md) |
-| TASK-KNT-102 | Direct3D 12 Work Graphs & Autonomous GPU Shader Execution Engine | Claimed | TASK-KNT-099 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-102-work-graphs.md) |
-| TASK-KNT-103 | Real-Time Low-Latency Game Voice Chat & Acoustic Noise Cancellation (DSP / RNNoise-Style) Filter Engine | Claimed | TASK-KNT-091 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-103-voice-dsp.md) |
+| TASK-KNT-101 | Unified Handheld PC MicroSD Card UHS-I/II Host Controller & Fast Game Storage Driver | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-101-sdhci-storage.md) |
+| TASK-KNT-102 | Direct3D 12 Work Graphs & Autonomous GPU Shader Execution Engine | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-102-work-graphs.md) |
+| TASK-KNT-103 | Real-Time Low-Latency Game Voice Chat & Acoustic Noise Cancellation (DSP / RNNoise-Style) Filter Engine | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-103-voice-dsp.md) |
 
 ## Active reservations
 
 - `kernel/src/pkg/`: reserved by ArdenKestrel for TASK-KNT-045.
-- `kernel/src/drivers/storage/sdhci.rs`, `kernel/src/drivers/storage/sdcard.rs`: reserved by Jules Martin for TASK-KNT-101.
-- `kernel/src/gfx/work_graphs.rs`: reserved by Priya Nair for TASK-KNT-102.
-- `kernel/src/audio/voice_dsp.rs`: reserved by Ada Chen for TASK-KNT-103.
