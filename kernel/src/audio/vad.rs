@@ -217,3 +217,235 @@ impl AcousticEchoCancellerState {
         }
     }
 }
+
+
+// -----------------------------------------------------------------------------
+// VAD Feature Extraction & Spectral Analysis
+// -----------------------------------------------------------------------------
+
+/// Extract spectral features, energy metrics, and zero-crossing counts from a 5ms PCM frame.
+pub fn extract_spectral_features(samples: &[i16; VAD_FRAME_SAMPLES]) -> VadSpectralFeatures {
+    let mut sum_energy_q16: i64 = 0;
+    let mut sum_low_energy_q16: i64 = 0;
+    let mut zero_crossings: u16 = 0;
+
+    // One-pole low-pass filter at ~1500 Hz for vocal formant extraction (alpha ~= 0.18 in Q16 = 11796)
+    let alpha_low_q16 = 11796i32;
+    let mut filter_state_q16 = 0i32;
+
+    let mut prev_sign = samples[0] >= 0;
+
+    for &raw_sample in samples.iter() {
+        // Normalize 16-bit PCM sample to Q16.16 [-65536, 65535]
+        let s_q16 = (raw_sample as i32) * 2;
+        let s_sq = ((s_q16 as i64) * (s_q16 as i64)) >> 16;
+        sum_energy_q16 += s_sq;
+
+        // Apply 1500 Hz low-pass filter for vocal fundamental energy
+        let diff = s_q16 - filter_state_q16;
+        let delta = fp_mul_q16(diff, alpha_low_q16);
+        filter_state_q16 += delta;
+
+        let low_sq = ((filter_state_q16 as i64) * (filter_state_q16 as i64)) >> 16;
+        sum_low_energy_q16 += low_sq;
+
+        // Zero-crossing detection
+        let current_sign = raw_sample >= 0;
+        if current_sign != prev_sign {
+            zero_crossings = zero_crossings.saturating_add(1);
+            prev_sign = current_sign;
+        }
+    }
+
+    let frame_energy_q16 = (sum_energy_q16 / (VAD_FRAME_SAMPLES as i64)) as i32;
+    let low_band_energy_q16 = (sum_low_energy_q16 / (VAD_FRAME_SAMPLES as i64)) as i32;
+    let high_band_energy_q16 = (frame_energy_q16 - low_band_energy_q16).max(0);
+
+    // Spectral flatness estimation: ratio of high/low distribution vs peak formants
+    let spectral_flatness_q16 = if frame_energy_q16 <= 10 {
+        FP_Q16_ONE // Digital silence is treated as flat noise
+    } else {
+        // High vocal formant concentration yields low flatness (< 0.40)
+        let low_ratio = fp_div_q16(low_band_energy_q16, frame_energy_q16);
+        if low_ratio >= 45875 { // >= 70% low band
+            16384 // ~0.25 (pronounced harmonic formants)
+        } else if low_ratio >= 32768 { // >= 50% low band
+            29491 // ~0.45 (mixed speech)
+        } else {
+            // Flat noise / fan rumble / high hiss
+            52428 // ~0.80
+        }
+    };
+
+    VadSpectralFeatures {
+        frame_energy_q16,
+        zero_crossing_count: zero_crossings,
+        spectral_flatness_q16,
+        low_band_energy_q16,
+        high_band_energy_q16,
+        energy_variance_q16: 0,
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Dynamic Background Noise Floor Estimator & Chassis Rejection
+// -----------------------------------------------------------------------------
+
+impl NoiseFloorEstimator {
+    /// Update background noise floor estimate based on current frame features and speech state.
+    pub fn update(&mut self, features: &VadSpectralFeatures, is_speech: bool) {
+        let frame_e = features.frame_energy_q16;
+
+        if !is_speech {
+            // Track noise floor when human speech is inactive
+            if frame_e < self.noise_energy_q16 {
+                // Noise dropped: track downwards quickly
+                let diff = self.noise_energy_q16 - frame_e;
+                let step = fp_mul_q16(diff, self.alpha_fall_q16);
+                self.noise_energy_q16 = (self.noise_energy_q16 - step).max(10);
+            } else {
+                // Noise rose (fan spinning up): track upwards slowly
+                let diff = frame_e - self.noise_energy_q16;
+                let step = fp_mul_q16(diff, self.alpha_rise_q16);
+                self.noise_energy_q16 = self.noise_energy_q16 + step;
+            }
+        }
+
+        // Calculate instantaneous SNR: SNR_dB ~= 10 * log10(E_frame / E_noise)
+        let effective_noise = fp_mul_q16(self.noise_energy_q16, self.fan_coupling_factor_q16).max(10);
+        let ratio = fp_div_q16(frame_e.max(10), effective_noise);
+        // Fixed-point linear SNR indicator
+        self.snr_q16 = ratio;
+    }
+
+    /// Modulate noise floor based on handheld cooling fan RPM percentage (0% to 100%).
+    pub fn set_fan_rpm_factor(&mut self, fan_percent: u32) {
+        let pct = fan_percent.min(100);
+        // At 0% fan: coupling = 1.0 (65536)
+        // At 100% fan: coupling = 2.5 (163840) to prevent fan whine false speech triggers
+        self.fan_coupling_factor_q16 = FP_Q16_ONE + ((pct as i32) * 98304) / 100;
+    }
+
+    /// Detect transient mechanical chassis noise (tactile button click or bumper release).
+    /// Mechanical clicks exhibit high zero-crossing rates, high high-band energy, and low vocal formant ratio.
+    pub fn is_chassis_noise(&self, features: &VadSpectralFeatures) -> bool {
+        let high_energy_bias = features.high_band_energy_q16 > (features.low_band_energy_q16 * 2);
+        let high_zcr = features.zero_crossing_count > 65;
+        let transient_spike = features.frame_energy_q16 > (self.noise_energy_q16 * 3);
+
+        high_energy_bias && high_zcr && transient_spike
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Voice Activity Detector Engine with Hangover Timer
+// -----------------------------------------------------------------------------
+
+/// Real-time low-latency Voice Activity Detector (VAD) engine.
+pub struct VoiceActivityDetector {
+    /// Internal decision and hangover state.
+    pub state: VadState,
+    /// Background noise floor and fan tracking estimator.
+    pub noise_estimator: NoiseFloorEstimator,
+    /// Speech probability detection threshold in 16.16 fixed point (~0.50).
+    pub speech_threshold_q16: i32,
+}
+
+impl VoiceActivityDetector {
+    /// Construct a new VAD engine with configured hangover duration.
+    pub fn new(hangover_duration_frames: u16) -> Self {
+        Self {
+            state: VadState::new(hangover_duration_frames),
+            noise_estimator: NoiseFloorEstimator::new(),
+            speech_threshold_q16: 32768, // 0.50 * 65536
+        }
+    }
+
+    /// Analyze a 5ms voice frame and return the classified VAD decision and extracted features.
+    pub fn process_frame(&mut self, samples: &[i16; VAD_FRAME_SAMPLES]) -> (VadDecision, VadSpectralFeatures) {
+        let features = extract_spectral_features(samples);
+
+        // 1. Check for mechanical button click / chassis noise rejection
+        if self.noise_estimator.is_chassis_noise(&features) {
+            // Chassis click rejected
+            self.state.decision = VadDecision::ChassisNoise;
+            self.state.speech_probability_q16 = 0;
+            self.noise_estimator.update(&features, false);
+            return (VadDecision::ChassisNoise, features);
+        }
+
+        // 2. Evaluate Voice Activity score:
+        // Speech criteria:
+        // - SNR > threshold (frame energy significantly exceeds fan noise floor)
+        // - Formant concentration: low band energy >= 40% of total
+        // - Moderate zero-crossing rate: typical speech is 5..65 crossings per 240 samples
+        // - Spectral flatness < 0.70
+        let mut score_q16 = 0i32;
+
+        let effective_noise = fp_mul_q16(
+            self.noise_estimator.noise_energy_q16,
+            self.noise_estimator.fan_coupling_factor_q16,
+        );
+
+        // Energy criterion (up to +0.40 score)
+        if features.frame_energy_q16 > (effective_noise * 3) {
+            score_q16 += 26214; // 0.40
+        } else if features.frame_energy_q16 > (effective_noise * 2) {
+            score_q16 += 16384; // 0.25
+        } else if features.frame_energy_q16 > effective_noise {
+            score_q16 += 6554;  // 0.10
+        }
+
+        // Vocal formant concentration criterion (up to +0.30 score)
+        if features.frame_energy_q16 > 10 {
+            let low_ratio = fp_div_q16(features.low_band_energy_q16, features.frame_energy_q16);
+            if low_ratio >= 32768 { // >= 50% in vocal formant region
+                score_q16 += 19661; // 0.30
+            } else if low_ratio >= 22938 { // >= 35%
+                score_q16 += 9830;  // 0.15
+            }
+        }
+
+        // Zero-crossing speech range criterion (5 to 65 per 240 samples = ~500 Hz to 6500 Hz) (+0.20 score)
+        if features.zero_crossing_count >= 5 && features.zero_crossing_count <= 65 {
+            score_q16 += 13107; // 0.20
+        }
+
+        // Spectral non-flatness criterion (+0.10 score)
+        if features.spectral_flatness_q16 < 39322 { // < 0.60
+            score_q16 += 6554; // 0.10
+        }
+
+        self.state.speech_probability_q16 = score_q16.min(FP_Q16_ONE);
+
+        // 3. Make speech classification decision with hangover timer hysteresis
+        let raw_speech = self.state.speech_probability_q16 >= self.speech_threshold_q16;
+
+        if raw_speech {
+            self.state.decision = VadDecision::Speech;
+            self.state.hangover_counter = self.state.hangover_duration_frames;
+            self.state.consecutive_speech_frames = self.state.consecutive_speech_frames.saturating_add(1);
+        } else {
+            // Raw speech below threshold: check if hangover timer is still active
+            if self.state.hangover_counter > 0 {
+                self.state.hangover_counter -= 1;
+                // Hold speech decision to prevent chopped phonemes at word endings
+                self.state.decision = VadDecision::Speech;
+            } else {
+                self.state.decision = VadDecision::Silence;
+                self.state.consecutive_speech_frames = 0;
+            }
+        }
+
+        // 4. Update noise floor tracker
+        let speech_active = self.state.decision == VadDecision::Speech;
+        self.noise_estimator.update(&features, speech_active);
+
+        (self.state.decision, features)
+    }
+
+    /// Adjust hangover duration in frames.
+    pub fn set_hangover_duration(&mut self, frames: u16) {
+        self.state.hangover_duration_frames = frames;
+    }
+}
