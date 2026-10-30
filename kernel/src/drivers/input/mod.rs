@@ -12,6 +12,7 @@ pub mod lra_haptic;
 pub mod haptic_brake;
 pub mod touch;
 pub mod gesture;
+pub mod touchpad;
 
 pub use imu::*;
 pub use gamepad::*;
@@ -25,6 +26,7 @@ pub use lra_haptic::*;
 pub use haptic_brake::*;
 pub use touch::*;
 pub use gesture::*;
+pub use touchpad::*;
 
 use crate::serial_write_str;
 
