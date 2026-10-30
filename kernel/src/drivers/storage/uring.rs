@@ -1,15 +1,10 @@
 //! High-Speed NVMe Overlapped Async I/O (io_uring Style) Completion Engine.
-//!
-//! Provides lockless shared-memory Submission Queue (SQ) and Completion Queue (CQ)
-//! ring buffers with atomic head and tail cursors, Submission Queue Entries (SQE),
-//! Completion Queue Entries (CQE), async request dispatching directly to NVMe/block drivers,
-//! out-of-order completion harvesting, and token correlation.
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
 pub const DEFAULT_RING_ENTRIES: usize = 32;
 
-// --- io_uring Opcodes ---
+// io_uring Opcodes.
 pub const IORING_OP_NOP: u8 = 0;
 pub const IORING_OP_READV: u8 = 1;
 pub const IORING_OP_WRITEV: u8 = 2;
@@ -25,7 +20,7 @@ pub const IORING_OP_TIMEOUT: u8 = 11;
 pub const IORING_OP_READ: u8 = 22;
 pub const IORING_OP_WRITE: u8 = 23;
 
-// --- SQE Flags ---
+// SQE Flags.
 pub const IOSQE_FIXED_FILE: u8 = 1 << 0;
 pub const IOSQE_IO_DRAIN: u8 = 1 << 1;
 pub const IOSQE_IO_LINK: u8 = 1 << 2;
@@ -33,7 +28,7 @@ pub const IOSQE_IO_HARDLINK: u8 = 1 << 3;
 pub const IOSQE_ASYNC: u8 = 1 << 4;
 pub const IOSQE_BUFFER_SELECT: u8 = 1 << 5;
 
-// --- CQE Flags ---
+// CQE Flags.
 pub const IORING_CQE_F_BUFFER: u32 = 1 << 0;
 pub const IORING_CQE_F_MORE: u32 = 1 << 1;
 

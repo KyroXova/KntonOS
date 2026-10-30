@@ -1,13 +1,6 @@
 //! Standard SD Host Controller Interface (SDHCI) Architecture & Command Packet Engine.
-//!
-//! Implements the SDHCI Simplified Specification v3.00/v4.20 for handheld gaming PCs:
-//! - Complete MMIO host register layout and bitmask definitions
-//! - SD command packet encoder (CMD0, CMD8, ACMD41, CMD2, CMD3, CMD9, CMD7, CMD16, CMD17/18, CMD24/25)
-//! - Response type validation and card operational state machine
 
-// -----------------------------------------------------------------------------
-// SDHCI Host Controller MMIO Register Offsets
-// -----------------------------------------------------------------------------
+// SDHCI Host Controller MMIO Register Offsets.
 
 pub mod regs {
     /// 32-bit System DMA Address / Argument 2 (Offset 0x00).
@@ -73,9 +66,7 @@ pub mod regs {
     pub const ADMA_SYS_ADDR_HIGH: usize = 0x5C;
 }
 
-// -----------------------------------------------------------------------------
-// Register Bitmasks and Flags
-// -----------------------------------------------------------------------------
+// Register Bitmasks and Flags.
 
 /// Present State register bitmasks (Offset 0x24).
 pub mod state_flags {
@@ -179,9 +170,7 @@ pub mod err_int_flags {
     pub const TUNING_ERR: u16 = 1 << 10;
 }
 
-// -----------------------------------------------------------------------------
-// SD Command Types & Encoding
-// -----------------------------------------------------------------------------
+// SD Command Types & Encoding.
 
 /// Expected hardware response format from the SD card.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -338,9 +327,7 @@ impl SdCommand {
     }
 }
 
-// -----------------------------------------------------------------------------
-// SD Card State Machine
-// -----------------------------------------------------------------------------
+// SD Card State Machine.
 
 /// SD Card operational states as defined in the SD Physical Layer Specification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -369,9 +356,7 @@ pub enum SdCardState {
     Error,
 }
 
-// -----------------------------------------------------------------------------
-// Card Register Formats (CID, CSD, OCR) & UHS-I Bus Modes
-// -----------------------------------------------------------------------------
+// Card Register Formats (CID, CSD, OCR) & UHS-I Bus Modes.
 
 /// UHS-I Bus Speed Mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -468,9 +453,7 @@ impl CidRegister {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Unit Tests & Verification
-// -----------------------------------------------------------------------------
+// Unit Tests & Verification.
 
 /// Unit test verifying SDHCI host register layout, card state machine, and command packet encoding.
 pub fn verify_sdhci_structures_and_commands() -> bool {

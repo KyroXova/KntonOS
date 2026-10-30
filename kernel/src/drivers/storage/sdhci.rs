@@ -1,14 +1,8 @@
 //! SDHCI Host Controller Driver & Hardware Abstraction Layer.
-//!
-//! Provides memory-mapped register access, ADMA2 scatter-gather DMA engine,
-//! UHS-I bus speed tuning, block read/write device abstraction, and hot-plug
-//! interrupt detection for handheld PC MicroSD host controllers.
 
 pub use super::sdcard::*;
 
-// -----------------------------------------------------------------------------
-// ADMA2 (Advanced Direct Memory Access 2) Definitions
-// -----------------------------------------------------------------------------
+// ADMA2 (Advanced Direct Memory Access 2) Definitions.
 
 /// Standard SD block size in bytes.
 pub const SD_BLOCK_SIZE: usize = 512;
@@ -74,10 +68,7 @@ impl Adma2Table {
         }
     }
 
-    /// Builds a scatter-gather descriptor chain for a physical buffer.
-    ///
-    /// Automatically fragments transfers exceeding 65536 bytes into 64KiB chunks
-    /// and sets the terminal `END` attribute on the final descriptor.
+    /// Builds a scatter-gather descriptor chain for a physical buffer, fragmenting as needed.
     pub fn build_transfer(&mut self, mut physical_addr: u64, mut bytes_remaining: usize) -> bool {
         self.count = 0;
         self.total_bytes = bytes_remaining;
@@ -113,9 +104,7 @@ impl Adma2Table {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Hot-Plug Event Notifications
-// -----------------------------------------------------------------------------
+// Hot-Plug Event Notifications.
 
 /// MicroSD card hot-plug detection events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,9 +117,7 @@ pub enum HotPlugEvent {
     WriteProtectChanged(bool),
 }
 
-// -----------------------------------------------------------------------------
-// SDHCI Host Controller Instance & State Machine
-// -----------------------------------------------------------------------------
+// SDHCI Host Controller Instance & State Machine.
 
 /// SDHCI Host Controller Instance for Handheld PC Game Storage Expansion.
 #[derive(Debug)]
@@ -354,9 +341,7 @@ impl SdhciHost {
     }
 }
 
-// -----------------------------------------------------------------------------
-// High-Level Block Device Abstraction
-// -----------------------------------------------------------------------------
+// High-Level Block Device Abstraction.
 
 /// MicroSD Block Device Driver Interface for KntonOS storage stack.
 #[derive(Debug)]
@@ -415,9 +400,7 @@ impl SdBlockDevice {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Unit Tests & Verification
-// -----------------------------------------------------------------------------
+// Unit Tests & Verification.
 
 /// Unit test verifying card initialization, UHS-I bus tuning, and ADMA2 DMA engine.
 pub fn verify_card_init_and_adma2() -> bool {
