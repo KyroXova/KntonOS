@@ -428,3 +428,528 @@ pub fn verify_activation_modes_and_calibration() -> bool {
 
     true
 }
+
+// -----------------------------------------------------------------------------
+// Multi-Axis Gyroscope Zero-Drift & Motion Aiming Governor (TASK-KNT-131)
+// -----------------------------------------------------------------------------
+
+/// Conversion factor: Degrees to Radians.
+pub const DEG2RAD: f32 = PI / 180.0;
+/// Conversion factor: Radians to Degrees.
+pub const RAD2DEG: f32 = 180.0 / PI;
+
+/// Tri-axial gyroscope angular velocity representation in physical degrees per second (°/s).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GyroAngularVelocity {
+    /// Roll angular rate in °/s (rotation around longitudinal axis).
+    pub roll_dps: f32,
+    /// Pitch angular rate in °/s (rotation around lateral axis).
+    pub pitch_dps: f32,
+    /// Yaw angular rate in °/s (rotation around vertical axis).
+    pub yaw_dps: f32,
+    /// Capture timestamp in microseconds.
+    pub timestamp_us: u64,
+}
+
+impl GyroAngularVelocity {
+    /// Creates a new angular velocity reading.
+    pub const fn new(roll_dps: f32, pitch_dps: f32, yaw_dps: f32, timestamp_us: u64) -> Self {
+        Self {
+            roll_dps,
+            pitch_dps,
+            yaw_dps,
+            timestamp_us,
+        }
+    }
+
+    /// Converts the angular velocity tuple to radians per second: (pitch, yaw, roll).
+    #[inline(always)]
+    pub fn to_rad_per_sec(&self) -> (f32, f32, f32) {
+        (
+            self.pitch_dps * DEG2RAD,
+            self.yaw_dps * DEG2RAD,
+            self.roll_dps * DEG2RAD,
+        )
+    }
+
+    /// Computes the Euclidean angular velocity vector norm in °/s.
+    #[inline(always)]
+    pub fn magnitude_dps(&self) -> f32 {
+        crate::graphics::sqrt_f32(
+            self.roll_dps * self.roll_dps
+                + self.pitch_dps * self.pitch_dps
+                + self.yaw_dps * self.yaw_dps,
+        )
+    }
+}
+
+/// Persistent zero-bias calibration registers for IMU background bias compensation.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GyroBiasRegisters {
+    /// Zero-rate offset for roll axis in °/s.
+    pub bias_roll_dps: f32,
+    /// Zero-rate offset for pitch axis in °/s.
+    pub bias_pitch_dps: f32,
+    /// Zero-rate offset for yaw axis in °/s.
+    pub bias_yaw_dps: f32,
+    /// Number of stationary frames accumulated into current bias estimate.
+    pub sample_count: u32,
+    /// Flag indicating if background calibration converged.
+    pub is_calibrated: bool,
+}
+
+impl GyroBiasRegisters {
+    /// Creates an initial uncalibrated bias register block.
+    pub const fn new() -> Self {
+        Self {
+            bias_roll_dps: 0.0,
+            bias_pitch_dps: 0.0,
+            bias_yaw_dps: 0.0,
+            sample_count: 0,
+            is_calibrated: false,
+        }
+    }
+
+    /// Resets accumulated calibration registers.
+    pub fn reset(&mut self) {
+        self.bias_roll_dps = 0.0;
+        self.bias_pitch_dps = 0.0;
+        self.bias_yaw_dps = 0.0;
+        self.sample_count = 0;
+        self.is_calibrated = false;
+    }
+}
+
+/// Motion aiming sensitivity transfer curve profiles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AimingCurveType {
+    /// Linear 1:1 proportional response curve.
+    Linear,
+    /// Power curve (y = x^gamma) providing fine control in the center and quick turns on edges.
+    Exponential,
+    /// Dual-zone response: reduced sensitivity in micro-aim core, linear transition outside.
+    DualZone,
+}
+
+/// Configuration profile governing motion transfer, deadzones, and acceleration.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GyroAimProfile {
+    /// Curve profile type.
+    pub curve_type: AimingCurveType,
+    /// Base sensitivity scaling multiplier.
+    pub base_sensitivity: f32,
+    /// Exponential gamma exponent (typically 1.2 to 1.8).
+    pub exponent: f32,
+    /// Tremor deadzone floor in °/s (micro-movements below this are suppressed).
+    pub tremor_deadzone_dps: f32,
+    /// Speed threshold in °/s above which high-speed angular acceleration engages.
+    pub acceleration_threshold_dps: f32,
+    /// Maximum acceleration multiplier for quick flick turns.
+    pub max_acceleration_multiplier: f32,
+}
+
+impl GyroAimProfile {
+    /// Default handheld aiming configuration tuned for competitive FPS and precision navigation.
+    pub const fn default_competitive() -> Self {
+        Self {
+            curve_type: AimingCurveType::Exponential,
+            base_sensitivity: 1.0,
+            exponent: 1.4,
+            tremor_deadzone_dps: 0.25, // 0.25 °/s tremor suppression
+            acceleration_threshold_dps: 30.0, // 30 °/s flick threshold
+            max_acceleration_multiplier: 2.5,
+        }
+    }
+}
+
+/// Verification helper for Commit 1 angular velocity structures and aiming curves.
+pub fn verify_gyro_angular_structures_and_curves() -> bool {
+    // 1. Verify GyroAngularVelocity Initialization & Unit Conversion
+    let gyro = GyroAngularVelocity::new(0.0, 90.0, 0.0, 10_000);
+    if gyro.pitch_dps != 90.0 || gyro.timestamp_us != 10_000 {
+        return false;
+    }
+
+    let (pitch_rad, yaw_rad, roll_rad) = gyro.to_rad_per_sec();
+    // 90° = PI / 2 radians (~1.57079 rad)
+    if (pitch_rad - (PI / 2.0)).abs() > 0.001 || yaw_rad != 0.0 || roll_rad != 0.0 {
+        return false;
+    }
+    if (gyro.magnitude_dps() - 90.0).abs() > 0.001 {
+        return false;
+    }
+
+    // 2. Verify GyroBiasRegisters
+    let mut bias_regs = GyroBiasRegisters::new();
+    if bias_regs.is_calibrated || bias_regs.sample_count != 0 {
+        return false;
+    }
+    bias_regs.bias_yaw_dps = 0.5;
+    bias_regs.is_calibrated = true;
+    bias_regs.reset();
+    if bias_regs.bias_yaw_dps != 0.0 || bias_regs.is_calibrated {
+        return false;
+    }
+
+    // 3. Verify Aiming Profile Defaults
+    let profile = GyroAimProfile::default_competitive();
+    if profile.curve_type != AimingCurveType::Exponential || profile.tremor_deadzone_dps != 0.25 {
+        return false;
+    }
+
+    true
+}
+/// Stationary threshold in °/s below which the handheld device is considered at rest.
+pub const STATIONARY_THRESHOLD_DPS: f32 = 0.85;
+/// Minimum stationary resting duration in seconds before background bias adaptation begins.
+pub const STATIONARY_MIN_REST_SEC: f32 = 0.30;
+
+/// Background stationary zero-drift auto-calibrator and dynamic bias compensator.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StationaryDriftCompensator {
+    /// Internal hardware bias registers.
+    pub registers: GyroBiasRegisters,
+    /// Velocity magnitude threshold in °/s to qualify as stationary rest.
+    pub threshold_dps: f32,
+    /// Accumulated duration of continuous stationary rest in seconds.
+    pub rest_duration_sec: f32,
+    /// Total consecutive stationary samples processed.
+    pub stationary_samples: u32,
+}
+
+impl StationaryDriftCompensator {
+    /// Creates a new auto-calibrator with default resting thresholds.
+    pub const fn new() -> Self {
+        Self {
+            registers: GyroBiasRegisters::new(),
+            threshold_dps: STATIONARY_THRESHOLD_DPS,
+            rest_duration_sec: 0.0,
+            stationary_samples: 0,
+        }
+    }
+
+    /// Evaluates incoming gyro sample for resting condition and updates background bias estimates.
+    pub fn update(&mut self, sample: &GyroAngularVelocity, dt_sec: f32) {
+        let mag = sample.magnitude_dps();
+
+        if mag <= self.threshold_dps {
+            self.rest_duration_sec += dt_sec;
+            self.stationary_samples = self.stationary_samples.saturating_add(1);
+
+            // Once the device has been stably resting for at least 300ms, adapt bias
+            if self.rest_duration_sec >= STATIONARY_MIN_REST_SEC {
+                let alpha = (1.8 * dt_sec).min(0.08); // Exponential smoothing rate
+
+                self.registers.bias_roll_dps =
+                    self.registers.bias_roll_dps * (1.0 - alpha) + sample.roll_dps * alpha;
+                self.registers.bias_pitch_dps =
+                    self.registers.bias_pitch_dps * (1.0 - alpha) + sample.pitch_dps * alpha;
+                self.registers.bias_yaw_dps =
+                    self.registers.bias_yaw_dps * (1.0 - alpha) + sample.yaw_dps * alpha;
+
+                self.registers.sample_count = self.registers.sample_count.saturating_add(1);
+                if self.registers.sample_count >= 15 {
+                    self.registers.is_calibrated = true;
+                }
+            }
+        } else {
+            // Active motion detected: freeze bias learning and reset rest timer
+            self.rest_duration_sec = 0.0;
+            self.stationary_samples = 0;
+        }
+    }
+
+    /// Subtracts the learned zero-drift bias from raw angular velocity.
+    pub fn compensate(&self, raw: &GyroAngularVelocity) -> GyroAngularVelocity {
+        GyroAngularVelocity {
+            roll_dps: raw.roll_dps - self.registers.bias_roll_dps,
+            pitch_dps: raw.pitch_dps - self.registers.bias_pitch_dps,
+            yaw_dps: raw.yaw_dps - self.registers.bias_yaw_dps,
+            timestamp_us: raw.timestamp_us,
+        }
+    }
+}
+
+/// Verification helper for Commit 2 stationary zero-drift calibration.
+pub fn verify_stationary_drift_calibration() -> bool {
+    let mut compensator = StationaryDriftCompensator::new();
+
+    // 1. Initial State: Uncalibrated
+    if compensator.registers.is_calibrated || compensator.rest_duration_sec != 0.0 {
+        return false;
+    }
+
+    // 2. Feed 200 resting samples with intentional slow temperature drift (+0.40 °/s yaw, -0.30 °/s pitch)
+    // 200 steps * 10ms (0.01s) = 2.0 seconds total rest
+    for i in 0..200 {
+        let sample = GyroAngularVelocity::new(0.0, -0.30, 0.40, (i as u64) * 10_000);
+        compensator.update(&sample, 0.01);
+    }
+
+    // Bias should have converged close to the intentional drift offsets
+    if !compensator.registers.is_calibrated {
+        return false;
+    }
+    if (compensator.registers.bias_yaw_dps - 0.40).abs() > 0.06 {
+        return false;
+    }
+    if (compensator.registers.bias_pitch_dps - (-0.30)).abs() > 0.06 {
+        return false;
+    }
+
+    // 3. Compensate drifting raw reading: should output near-zero
+    let drifting_sample = GyroAngularVelocity::new(0.0, -0.30, 0.40, 1_000_000);
+    let corrected = compensator.compensate(&drifting_sample);
+    if corrected.yaw_dps.abs() > 0.06 || corrected.pitch_dps.abs() > 0.06 {
+        return false;
+    }
+
+    // 4. Feed active high-velocity motion (e.g. 45 °/s flick turn)
+    let flick_sample = GyroAngularVelocity::new(0.0, 10.0, 45.0, 1_010_000);
+    compensator.update(&flick_sample, 0.01);
+    // Resting timer must have reset to 0, while learned bias remains frozen
+    if compensator.rest_duration_sec != 0.0 {
+        return false;
+    }
+    if (compensator.registers.bias_yaw_dps - 0.40).abs() > 0.06 {
+        return false;
+    }
+
+    true
+}
+
+// -----------------------------------------------------------------------------
+// Pure no_std Fast Math Approximations for Curve Calculation
+// -----------------------------------------------------------------------------
+
+/// Fast natural logarithm approximation for positive f32.
+pub fn ln_f32(x: f32) -> f32 {
+    if x <= 0.0 {
+        return 0.0;
+    }
+    let bits = x.to_bits();
+    let exp = ((bits >> 23) & 0xFF) as i32 - 127;
+    let mant = (bits & 0x007F_FFFF) | 0x3F80_0000;
+    let m = f32::from_bits(mant);
+    let u = (m - 1.0) / (m + 1.0);
+    let u2 = u * u;
+    let res = 2.0 * u * (1.0 + u2 * ((1.0 / 3.0) + u2 * ((1.0 / 5.0) + u2 * ((1.0 / 7.0) + u2 * (1.0 / 9.0)))));
+    res + (exp as f32) * 0.69314718
+}
+
+/// Fast exponential approximation e^y.
+pub fn exp_f32(y: f32) -> f32 {
+    const LN2: f32 = 0.69314718;
+    const INV_LN2: f32 = 1.44269504;
+    let k_f = y * INV_LN2;
+    let k = if k_f >= 0.0 {
+        (k_f + 0.5) as i32
+    } else {
+        (k_f - 0.5) as i32
+    };
+    let r = y - (k as f32) * LN2;
+    let expr = 1.0 + r * (1.0 + r * (0.5 + r * ((1.0 / 6.0) + r * ((1.0 / 24.0) + r * (1.0 / 120.0)))));
+    let exp_bits = ((k + 127).max(0).min(255) as u32) << 23;
+    let scale = f32::from_bits(exp_bits);
+    expr * scale
+}
+
+/// Fast power function base^exp for positive base.
+pub fn powf_f32(base: f32, exp: f32) -> f32 {
+    if base <= 0.0 {
+        return 0.0;
+    }
+    exp_f32(exp * ln_f32(base))
+}
+
+// -----------------------------------------------------------------------------
+// Motion Aiming Governor & Auto-Centering Ratchet
+// -----------------------------------------------------------------------------
+
+/// Motion aiming governor handling sensitivity curve mapping, tremor deadzone suppression,
+/// flick angular acceleration, and yaw auto-centering ratcheting during thumbstick panning.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MotionAimingGovernor {
+    /// Active aiming profile configuration.
+    pub profile: GyroAimProfile,
+    /// Stick deflection threshold [0.0..1.0] above which yaw auto-centering activates.
+    pub ratchet_threshold: f32,
+    /// Rate at which accumulated yaw is recentered during ratcheting (degrees/second).
+    pub ratchet_speed_dps: f32,
+    /// Indicates whether auto-centering ratchet is actively engaged.
+    pub is_ratcheting: bool,
+    /// Current accumulated integrated yaw angle in degrees.
+    pub integrated_yaw_deg: f32,
+}
+
+impl MotionAimingGovernor {
+    /// Creates a motion aiming governor with default competitive profile and ratchet parameters.
+    pub const fn new(profile: GyroAimProfile) -> Self {
+        Self {
+            profile,
+            ratchet_threshold: 0.70,
+            ratchet_speed_dps: 30.0,
+            is_ratcheting: false,
+            integrated_yaw_deg: 0.0,
+        }
+    }
+
+    /// Evaluates transfer function for a single angular velocity axis in °/s.
+    ///
+    /// Applies tremor deadzone clamping, curve translation (Linear, Exponential, DualZone),
+    /// and speed-dependent angular flick acceleration.
+    pub fn apply_transfer_function(&self, speed_dps: f32) -> f32 {
+        let abs_speed = speed_dps.abs();
+        if abs_speed <= self.profile.tremor_deadzone_dps {
+            return 0.0;
+        }
+
+        let effective_speed = abs_speed - self.profile.tremor_deadzone_dps;
+
+        let mut curved_speed = match self.profile.curve_type {
+            AimingCurveType::Linear => effective_speed * self.profile.base_sensitivity,
+            AimingCurveType::Exponential => {
+                powf_f32(effective_speed, self.profile.exponent) * self.profile.base_sensitivity
+            }
+            AimingCurveType::DualZone => {
+                if effective_speed <= 15.0 {
+                    effective_speed * 0.65 * self.profile.base_sensitivity
+                } else {
+                    (15.0 * 0.65 + (effective_speed - 15.0) * 1.35) * self.profile.base_sensitivity
+                }
+            }
+        };
+
+        // Speed-dependent angular acceleration (flick turns)
+        if abs_speed >= self.profile.acceleration_threshold_dps {
+            let accel_ratio =
+                (abs_speed - self.profile.acceleration_threshold_dps) / self.profile.acceleration_threshold_dps;
+            let accel_mult = (1.0 + accel_ratio).min(self.profile.max_acceleration_multiplier);
+            curved_speed *= accel_mult;
+        }
+
+        if speed_dps < 0.0 {
+            -curved_speed
+        } else {
+            curved_speed
+        }
+    }
+
+    /// Updates the auto-centering ratchet governor based on right analog stick deflection.
+    ///
+    /// When the player holds a large stick turn (|right_stick_x| >= ratchet_threshold),
+    /// the gyro yaw angle is smoothly ratcheted back toward zero to relieve wrist strain.
+    pub fn update_ratchet(&mut self, right_stick_x: f32, dt_sec: f32) -> bool {
+        if right_stick_x.abs() >= self.ratchet_threshold {
+            self.is_ratcheting = true;
+            let decay = (self.ratchet_speed_dps * dt_sec).min(self.integrated_yaw_deg.abs());
+            if self.integrated_yaw_deg > 0.0 {
+                self.integrated_yaw_deg -= decay;
+            } else if self.integrated_yaw_deg < 0.0 {
+                self.integrated_yaw_deg += decay;
+            }
+            true
+        } else {
+            self.is_ratcheting = false;
+            false
+        }
+    }
+
+    /// Processes an input angular velocity frame, updating yaw integration and auto-centering.
+    ///
+    /// Returns compensated and curved angular velocity: `(pitch_dps, yaw_dps)`.
+    pub fn process_motion(
+        &mut self,
+        sample: &GyroAngularVelocity,
+        right_stick_x: f32,
+        dt_sec: f32,
+    ) -> (f32, f32) {
+        let curved_pitch = self.apply_transfer_function(sample.pitch_dps);
+        let curved_yaw = self.apply_transfer_function(sample.yaw_dps);
+
+        // Accumulate integrated yaw
+        self.integrated_yaw_deg += curved_yaw * dt_sec;
+
+        // Apply auto-centering ratchet
+        self.update_ratchet(right_stick_x, dt_sec);
+
+        (curved_pitch, curved_yaw)
+    }
+}
+
+/// Verification helper for Commit 3 motion transfer, deadzone filter, and yaw auto-centering ratchet.
+pub fn verify_motion_transfer_and_yaw_autocentering() -> bool {
+    let profile = GyroAimProfile::default_competitive();
+    let mut governor = MotionAimingGovernor::new(profile);
+
+    // 1. Verify Tremor Deadzone Suppression (deadzone = 0.25 °/s)
+    let micro_tremor_pos = governor.apply_transfer_function(0.18);
+    let micro_tremor_neg = governor.apply_transfer_function(-0.24);
+    if micro_tremor_pos != 0.0 || micro_tremor_neg != 0.0 {
+        return false;
+    }
+
+    // 2. Verify Linear vs Exponential Curve Dynamics
+    let linear_profile = GyroAimProfile {
+        curve_type: AimingCurveType::Linear,
+        base_sensitivity: 1.0,
+        exponent: 1.0,
+        tremor_deadzone_dps: 0.25,
+        acceleration_threshold_dps: 50.0,
+        max_acceleration_multiplier: 2.0,
+    };
+    let linear_gov = MotionAimingGovernor::new(linear_profile);
+    let lin_out = linear_gov.apply_transfer_function(5.25);
+    // (5.25 - 0.25) * 1.0 = 5.0
+    if (lin_out - 5.0).abs() > 0.01 {
+        return false;
+    }
+
+    // Exponential curve with gamma 1.4: (5.25 - 0.25)^1.4 = 5.0^1.4 ≈ 9.52
+    let exp_out = governor.apply_transfer_function(5.25);
+    if (exp_out - 9.52).abs() > 0.5 {
+        return false;
+    }
+
+    // Negative velocity must maintain sign
+    let neg_out = governor.apply_transfer_function(-5.25);
+    if (neg_out - (-exp_out)).abs() > 0.001 {
+        return false;
+    }
+
+    // 3. Verify Flick Angular Acceleration (threshold = 30.0 °/s, max_mult = 2.5)
+    // Speed = 60.0 °/s -> effective = 59.75. abs_speed >= 30.0 -> accel_ratio = (60 - 30) / 30 = 1.0 -> mult = 2.0
+    let flick_out = governor.apply_transfer_function(60.0);
+    let unaccelerated = powf_f32(60.0 - 0.25, 1.4);
+    if flick_out <= unaccelerated * 1.5 {
+        return false;
+    }
+
+    // 4. Verify Yaw Auto-Centering Ratchet Governor
+    governor.integrated_yaw_deg = 20.0;
+    // With stick neutral (0.0), ratchet should not engage and yaw should not decay
+    let ratcheting = governor.update_ratchet(0.0, 0.05);
+    if ratcheting || governor.is_ratcheting || governor.integrated_yaw_deg != 20.0 {
+        return false;
+    }
+
+    // Deflect right stick past threshold (0.85 >= 0.70)
+    let ratcheting_active = governor.update_ratchet(0.85, 0.1);
+    if !ratcheting_active || !governor.is_ratcheting {
+        return false;
+    }
+    // With ratchet_speed_dps = 30.0 and dt = 0.1, decay = 3.0 degrees
+    if (governor.integrated_yaw_deg - 17.0).abs() > 0.01 {
+        return false;
+    }
+
+    // Run additional steps to recenter past 0: decay clamps smoothly at 0 without overshoot
+    for _ in 0..10 {
+        governor.update_ratchet(0.85, 0.1);
+    }
+    if governor.integrated_yaw_deg != 0.0 {
+        return false;
+    }
+
+    true
+}
