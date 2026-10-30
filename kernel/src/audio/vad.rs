@@ -449,3 +449,179 @@ impl VoiceActivityDetector {
         self.state.hangover_duration_frames = frames;
     }
 }
+
+
+// -----------------------------------------------------------------------------
+// Normalized Least Mean Squares (NLMS) Acoustic Echo Canceller Implementation
+// -----------------------------------------------------------------------------
+
+/// Real-time Normalized Least Mean Squares (NLMS) Acoustic Echo Canceller (AEC).
+pub struct AcousticEchoCanceller {
+    pub state: AcousticEchoCancellerState,
+    /// Dual-talk threshold factor in 16.16 fixed point (e.g. 0.60 * 65536 = 39322).
+    pub dual_talk_threshold_q16: i32,
+}
+
+impl AcousticEchoCanceller {
+    /// Construct a new acoustic echo canceler with specified adaptation step size.
+    pub fn new(step_size_mu_q16: i32) -> Self {
+        let mut state = AcousticEchoCancellerState::new();
+        if step_size_mu_q16 > 0 {
+            state.step_size_mu_q16 = step_size_mu_q16;
+        }
+        Self {
+            state,
+            dual_talk_threshold_q16: 39322, // 0.60 * 65536
+        }
+    }
+
+    /// Process a single audio sample: subtract estimated echo and adapt filter weights.
+    /// Both `mic_sample_q16` and `speaker_sample_q16` are in 16.16 fixed-point format.
+    /// Returns the echo-cancelled output error sample `e[n]`.
+    #[inline]
+    pub fn process_sample(&mut self, mic_sample_q16: i32, speaker_sample_q16: i32) -> i32 {
+        // 1. Insert current speaker sample into ring buffer history
+        self.state.speaker_history_q16[self.state.history_cursor] = speaker_sample_q16;
+
+        // 2. Compute estimated acoustic echo coupling: d_hat = sum(w_k * x[n-k])
+        let mut echo_estimate_acc: i64 = 0;
+        let mut speaker_norm_acc: i64 = 0;
+        let mut max_speaker_abs: i32 = 0;
+
+        let cursor = self.state.history_cursor;
+        for k in 0..NLMS_FILTER_TAPS {
+            // Read past speaker sample in reverse chronological order
+            let hist_idx = (cursor + NLMS_FILTER_TAPS - k) % NLMS_FILTER_TAPS;
+            let x_k = self.state.speaker_history_q16[hist_idx];
+            let w_k = self.state.filter_weights_q16[k];
+
+            echo_estimate_acc += ((w_k as i64) * (x_k as i64)) >> 16;
+            speaker_norm_acc += ((x_k as i64) * (x_k as i64)) >> 16;
+
+            let abs_x = x_k.abs();
+            if abs_x > max_speaker_abs {
+                max_speaker_abs = abs_x;
+            }
+        }
+
+        let echo_estimate_q16 = echo_estimate_acc as i32;
+
+        // 3. Compute error signal: e[n] = y[n] - d_hat[n]
+        let error_q16 = mic_sample_q16 - echo_estimate_q16;
+
+        // Advance ring cursor
+        self.state.history_cursor = (self.state.history_cursor + 1) % NLMS_FILTER_TAPS;
+
+        // 4. Geigel Dual-Talk Detection (DTD)
+        // If microphone amplitude exceeds threshold * max_speaker_amplitude: near-end user is speaking!
+        let mic_abs = mic_sample_q16.abs();
+        let geigel_bound = fp_mul_q16(max_speaker_abs, self.dual_talk_threshold_q16);
+        let is_dual_talk = mic_abs > geigel_bound && mic_abs > 1310; // > ~0.02 amplitude
+
+        self.state.dual_talk_detected = is_dual_talk;
+
+        // 5. Adapt filter weights only when dual-talk is NOT active
+        // Weight update: w_k[n+1] = w_k[n] + mu * e[n] * x[n-k] / (||x||^2 + eps)
+        if !is_dual_talk && speaker_norm_acc > 100 {
+            let norm_q16 = (speaker_norm_acc.min(i32::MAX as i64) as i32) + self.state.regularization_eps_q16;
+            let mu_e_q16 = fp_mul_q16(self.state.step_size_mu_q16, error_q16);
+            let step_scale_q16 = fp_div_q16(mu_e_q16, norm_q16);
+
+            for k in 0..NLMS_FILTER_TAPS {
+                let hist_idx = (cursor + NLMS_FILTER_TAPS - k) % NLMS_FILTER_TAPS;
+                let x_k = self.state.speaker_history_q16[hist_idx];
+                let weight_delta = fp_mul_q16(step_scale_q16, x_k);
+                self.state.filter_weights_q16[k] = self.state.filter_weights_q16[k].saturating_add(weight_delta);
+            }
+        }
+
+        // Update power statistics for ERLE measurement
+        let mic_sq = ((mic_sample_q16 as i64) * (mic_sample_q16 as i64)) >> 16;
+        let err_sq = ((error_q16 as i64) * (error_q16 as i64)) >> 16;
+        self.state.mic_power_q16 = (self.state.mic_power_q16 * 15 + (mic_sq as i32)) >> 4;
+        self.state.error_power_q16 = (self.state.error_power_q16 * 15 + (err_sq as i32)) >> 4;
+
+        if self.state.error_power_q16 > 10 && self.state.mic_power_q16 > self.state.error_power_q16 {
+            let erle_ratio = fp_div_q16(self.state.mic_power_q16, self.state.error_power_q16);
+            // Rough approximation of 10 * log10(ratio) in dB
+            self.state.erle_db = if erle_ratio >= 655360 { // >= 10x
+                20
+            } else if erle_ratio >= 262144 { // >= 4x
+                12
+            } else if erle_ratio >= 131072 { // >= 2x
+                6
+            } else {
+                3
+            };
+        }
+
+        error_q16
+    }
+
+    /// Process a full 5ms frame of 16-bit PCM microphone samples against speaker output reference.
+    pub fn process_frame(
+        &mut self,
+        mic_in: &[i16; VAD_FRAME_SAMPLES],
+        speaker_in: &[i16; VAD_FRAME_SAMPLES],
+        out_clean: &mut [i16; VAD_FRAME_SAMPLES],
+    ) {
+        for i in 0..VAD_FRAME_SAMPLES {
+            let mic_q16 = (mic_in[i] as i32) * 2;
+            let spk_q16 = (speaker_in[i] as i32) * 2;
+
+            let clean_q16 = self.process_sample(mic_q16, spk_q16);
+
+            // Convert back to 16-bit PCM with saturation
+            let sample_i16 = (clean_q16 / 2).clamp(-32768, 32767) as i16;
+            out_clean[i] = sample_i16;
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Unified Voice Chat Audio Processor Pipeline
+// -----------------------------------------------------------------------------
+
+/// Unified real-time voice communications processing pipeline.
+/// Integrates NLMS Acoustic Echo Cancellation with Multi-Feature Voice Activity Detection.
+pub struct VoiceChatProcessor {
+    /// Adaptive acoustic echo canceler removing speaker bleed.
+    pub echo_canceller: AcousticEchoCanceller,
+    /// Low-latency multi-feature VAD engine.
+    pub vad: VoiceActivityDetector,
+    /// Temporary frame buffer holding echo-cancelled audio.
+    clean_frame_scratch: [i16; VAD_FRAME_SAMPLES],
+}
+
+impl VoiceChatProcessor {
+    /// Allocate a unified voice chat processor.
+    pub fn new() -> Self {
+        Self {
+            echo_canceller: AcousticEchoCanceller::new(16384), // step size = 0.25
+            vad: VoiceActivityDetector::new(DEFAULT_HANGOVER_FRAMES),
+            clean_frame_scratch: [0i16; VAD_FRAME_SAMPLES],
+        }
+    }
+
+    /// Process 5ms microphone capture frame and speaker playback reference:
+    /// 1. Subtract acoustic speaker echo using NLMS adaptive filter.
+    /// 2. Perform VAD analysis on the echo-cancelled clean microphone signal.
+    /// 3. Return `(VadDecision, clean_samples)`.
+    pub fn process_voice_frame(
+        &mut self,
+        mic_in: &[i16; VAD_FRAME_SAMPLES],
+        speaker_in: &[i16; VAD_FRAME_SAMPLES],
+        out_clean: &mut [i16; VAD_FRAME_SAMPLES],
+    ) -> VadDecision {
+        // Step 1: Acoustic Echo Cancellation
+        self.echo_canceller.process_frame(mic_in, speaker_in, &mut self.clean_frame_scratch);
+
+        // Copy cleaned audio to output
+        out_clean.copy_from_slice(&self.clean_frame_scratch);
+
+        // Step 2: Voice Activity Detection on cleaned speech
+        let (decision, _) = self.vad.process_frame(&self.clean_frame_scratch);
+
+        decision
+    }
+}
