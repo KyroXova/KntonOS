@@ -397,3 +397,145 @@ impl DivergenceEstimator {
         }
     }
 }
+
+
+// -----------------------------------------------------------------------------
+// ReorderThread Execution Pipeline & HitObject Dispatch Loop
+// -----------------------------------------------------------------------------
+
+/// Coherence profiler recording before-and-after SIMD efficiency gains.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct SerCoherenceProfiler {
+    pub total_batches_reordered: u64,
+    pub total_rays_reordered: u64,
+    pub total_waves_dispatched: u64,
+    pub pre_reorder_lane_utilization: f32,
+    pub post_reorder_lane_utilization: f32,
+    pub pre_reorder_spatial_coherence: f32,
+    pub post_reorder_spatial_coherence: f32,
+    pub lane_utilization_gain_factor: f32,
+}
+
+impl SerCoherenceProfiler {
+    /// Records a reordering execution cycle and updates cumulative profiling statistics.
+    pub fn record_cycle(&mut self, pre: DivergenceMetrics, post: DivergenceMetrics) {
+        self.total_batches_reordered += 1;
+        self.total_rays_reordered += pre.total_rays as u64;
+        self.total_waves_dispatched += post.wave_count as u64;
+
+        self.pre_reorder_lane_utilization = pre.lane_utilization;
+        self.post_reorder_lane_utilization = post.lane_utilization;
+        self.pre_reorder_spatial_coherence = pre.spatial_coherence;
+        self.post_reorder_spatial_coherence = post.spatial_coherence;
+
+        if pre.lane_utilization > 0.0 {
+            self.lane_utilization_gain_factor = post.lane_utilization / pre.lane_utilization;
+        } else {
+            self.lane_utilization_gain_factor = 1.0;
+        }
+    }
+}
+
+/// A coherent wave of rays dispatched to hardware SIMD execution units.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DispatchWave {
+    pub wave_id: u32,
+    pub shader_table_index: u32,
+    pub active_lanes_mask: u64,
+    pub ray_count: u32,
+    pub rays: alloc::vec::Vec<HitObject>,
+}
+
+/// Unified Shader Execution Reordering (SER) Engine & Dispatch Accelerator.
+#[derive(Debug, Clone)]
+pub struct SerEngine {
+    pub reorder_table: ReorderTable,
+    pub sorter: RadixHitSorter,
+    pub profiler: SerCoherenceProfiler,
+    pub bbox_min: [f32; 3],
+    pub bbox_max: [f32; 3],
+    pub next_wave_id: u32,
+}
+
+impl Default for SerEngine {
+    fn default() -> Self {
+        Self::new(256, 32, [-100.0; 3], [100.0; 3])
+    }
+}
+
+impl SerEngine {
+    /// Creates a new SER Engine with specified capacity, wave size, and scene bounding box.
+    pub fn new(capacity: usize, wave_size: u32, bbox_min: [f32; 3], bbox_max: [f32; 3]) -> Self {
+        Self {
+            reorder_table: ReorderTable::new(capacity, wave_size),
+            sorter: RadixHitSorter::new(),
+            profiler: SerCoherenceProfiler::default(),
+            bbox_min,
+            bbox_max,
+            next_wave_id: 0,
+        }
+    }
+
+    /// Emulates the HLSL `ReorderThread()` intrinsic:
+    /// Intercepts a ray hit record, hashes spatial coordinates, and buffers the HitObject.
+    pub fn reorder_thread(&mut self, hit_record: HitRecord) -> Result<(), SerError> {
+        let hit_object = HitObject::new(hit_record, self.bbox_min, self.bbox_max)?;
+        self.reorder_table.push(hit_object)
+    }
+
+    /// Sorts buffered HitObjects with the hardware radix binning engine and dispatches
+    /// coherent SIMD execution waves.
+    pub fn dispatch_reordered_rays(&mut self) -> Result<alloc::vec::Vec<DispatchWave>, SerError> {
+        if self.reorder_table.is_empty() {
+            return Err(SerError::EmptyTable);
+        }
+
+        let wave_size = self.reorder_table.wave_size;
+
+        // 1. Analyze pre-reordering divergence
+        let pre_metrics = DivergenceEstimator::analyze(&self.reorder_table.entries, wave_size);
+
+        // 2. Execute hardware-assisted Radix Hit-Sort
+        self.sorter.sort(&mut self.reorder_table.entries);
+
+        // 3. Analyze post-reordering divergence
+        let post_metrics = DivergenceEstimator::analyze(&self.reorder_table.entries, wave_size);
+
+        // 4. Update coherence profiler
+        self.profiler.record_cycle(pre_metrics, post_metrics);
+
+        // 5. Package sorted rays into coherent SIMD dispatch waves
+        let mut dispatch_waves = alloc::vec::Vec::new();
+        let w_size = wave_size as usize;
+
+        for chunk in self.reorder_table.entries.chunks(w_size) {
+            let wave_id = self.next_wave_id;
+            self.next_wave_id += 1;
+
+            // Generate active lanes bitmask
+            let mut mask: u64 = 0;
+            for i in 0..chunk.len().min(64) {
+                mask |= 1u64 << i;
+            }
+
+            let primary_shader = if !chunk.is_empty() {
+                chunk[0].reorder_key.shader_index()
+            } else {
+                0
+            };
+
+            dispatch_waves.push(DispatchWave {
+                wave_id,
+                shader_table_index: primary_shader,
+                active_lanes_mask: mask,
+                ray_count: chunk.len() as u32,
+                rays: chunk.to_vec(),
+            });
+        }
+
+        // 6. Reset reorder table for next batch
+        self.reorder_table.clear();
+
+        Ok(dispatch_waves)
+    }
+}
