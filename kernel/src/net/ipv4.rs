@@ -1,7 +1,5 @@
 //! Internet Protocol Version 4 (IPv4, RFC 791) Header Parser, Checksum, and Routing.
-//!
 //! Handles IPv4 packet framing, RFC 791 one's complement checksum calculation,
-//! protocol demultiplexing (ICMP=1, TCP=6, UDP=17), and subnet routing checks.
 
 use alloc::vec::Vec;
 

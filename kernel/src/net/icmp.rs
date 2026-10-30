@@ -1,7 +1,5 @@
 //! Internet Control Message Protocol (ICMP, RFC 792) Ping Responder.
-//!
 //! Implements ICMP Echo Request (Type 8) reception and automated Echo Reply (Type 0)
-//! generation for bare-metal kernel network diagnostics and ICMP ping validation.
 
 use super::ipv4::compute_checksum;
 use alloc::vec::Vec;

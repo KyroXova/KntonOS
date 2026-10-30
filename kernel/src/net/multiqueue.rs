@@ -1,7 +1,5 @@
 //! Receive Side Scaling (RSS) Toeplitz Hashing & Multi-Queue Packet Steering.
-//!
 //! Provides hardware-compatible Toeplitz 4-tuple hashing (IPv4 Src/Dst, Port Src/Dst),
-//! indirection table lookup, and multi-queue RX packet distribution across CPU cores.
 
 pub const RSS_KEY_BYTES: usize = 40; // Standard 40-byte Microsoft/Intel RSS secret key
 pub const RSS_RETA_SIZE: usize = 128; // Standard 128-entry Redirection Table (RETA)
@@ -439,9 +437,6 @@ pub fn verify_per_core_tx_and_qos() -> bool {
 
     // 1. Submit 4 packets from Core 0 with out-of-order priorities:
     // Packet 0: Bulk (Background)
-    // Packet 1: Normal (Interactive)
-    // Packet 2: High (Urgent Game packet)
-    // Packet 3: Low (Standard)
     let p_bulk = TxPacketRequest {
         buf_phys: 0x3000_0000,
         length: 1500,
