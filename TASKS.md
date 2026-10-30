@@ -116,13 +116,16 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-089 | Direct3D 12 Dynamic Constant Buffer Pool & Ring Allocator Engine | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-089-cbv-ring.md) |
 | TASK-KNT-090 | Unified Handheld PC USB-C DisplayPort Alternate Mode & Hot-Plug Modeset Daemon | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-090-dp-altmode.md) |
 | TASK-KNT-091 | Zero-Copy Shared-Memory Audio Client Protocol & Real-Time Waveform Mixer Ring | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-091-audio-client.md) |
-| TASK-KNT-092 | Unified Handheld PC Capacitive Touch Controller & Multi-Finger Gesture Engine | Claimed | TASK-KNT-051 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-092-touch-gesture.md) |
-| TASK-KNT-093 | Direct3D 12 Raytracing Acceleration Structure (BVH) Memory Manager & DispatchRays Engine | Claimed | TASK-KNT-071 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-093-dxr-bvh.md) |
-| TASK-KNT-094 | Unified Kernel Dynamic Frequency Scaling (DVFS) & Micro-Voltage Stepping Governor | Claimed | TASK-KNT-049 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-094-dvfs-governor.md) |
+| TASK-KNT-092 | Unified Handheld PC Capacitive Touch Controller & Multi-Finger Gesture Engine | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-092-touch-gesture.md) |
+| TASK-KNT-093 | Direct3D 12 Raytracing Acceleration Structure (BVH) Memory Manager & DispatchRays Engine | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-093-dxr-bvh.md) |
+| TASK-KNT-094 | Unified Kernel Dynamic Frequency Scaling (DVFS) & Micro-Voltage Stepping Governor | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-094-dvfs-governor.md) |
+| TASK-KNT-095 | Unified Handheld PC Capacitive Touchpad & Virtual Trackball Emulation Engine | Claimed | TASK-KNT-051 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-095-touchpad-trackball.md) |
+| TASK-KNT-096 | Direct3D 12 Variable Rate Shading (VRS Tier 2) & Eye-Tracked Foveated Rasterizer | Claimed | TASK-KNT-071 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-096-vrs-foveated.md) |
+| TASK-KNT-097 | Kernel-Direct Hardware Video Decode & Zero-Copy Presentation Streamer | Claimed | TASK-KNT-069 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-097-video-decode.md) |
 
 ## Active reservations
 
 - `kernel/src/pkg/`: reserved by ArdenKestrel for TASK-KNT-045.
-- `kernel/src/drivers/input/touch.rs`, `kernel/src/drivers/input/gesture.rs`: reserved by Jules Martin for TASK-KNT-092.
-- `kernel/src/gfx/dxr_as.rs`, `kernel/src/gfx/dispatch_rays.rs`: reserved by Priya Nair for TASK-KNT-093.
-- `kernel/src/power/dvfs.rs`, `kernel/src/power/cppc.rs`: reserved by Ada Chen for TASK-KNT-094.
+- `kernel/src/drivers/input/touchpad.rs`, `kernel/src/drivers/input/trackball.rs`: reserved by Jules Martin for TASK-KNT-095.
+- `kernel/src/gfx/vrs.rs`, `kernel/src/gfx/foveated.rs`: reserved by Priya Nair for TASK-KNT-096.
+- `kernel/src/video/decode.rs`, `kernel/src/video/nv12.rs`: reserved by Ada Chen for TASK-KNT-097.
