@@ -1,7 +1,9 @@
 //! Handheld PC Multi-Zone RGB Lighting Driver: Color Math, Gamma Correction & Layout.
 //!
 //! Provides color primitives, 2.2 perceptual gamma correction, HSV color space
-//! conversion, and multi-zone physical layout configurations for handheld gaming PCs.
+//! conversion, effect generators, and multi-zone physical layout configurations for handheld gaming PCs.
+
+use crate::graphics::{sin_f32, TWO_PI};
 
 // -----------------------------------------------------------------------------
 // Gamma 2.2 Perceptual Correction Lookup Table
@@ -226,6 +228,16 @@ pub const ALL_LED_ZONES: [LedZone; LED_ZONE_COUNT] = [
     LedZone::ChassisLogo,
 ];
 
+/// Spatial perimeter phase offsets (in degrees) for continuous console perimeter flow.
+pub const ZONE_SPATIAL_PHASE: [f32; LED_ZONE_COUNT] = [
+    0.0,   // LeftStickRing
+    180.0, // RightStickRing
+    60.0,  // DpadAccent
+    300.0, // LeftGrip
+    240.0, // RightGrip
+    120.0, // ChassisLogo
+];
+
 /// Physical and logical descriptor for a handheld hardware lighting zone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ZoneDescriptor {
@@ -274,6 +286,261 @@ pub const fn get_zone_descriptor(zone: LedZone) -> ZoneDescriptor {
             led_count: 2,
             default_color: Rgb8::WHITE,
         },
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Lighting Effect Generators
+// -----------------------------------------------------------------------------
+
+/// Configurable dynamic lighting effects for handheld console illumination.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LedEffect {
+    /// Static single color.
+    Static(Rgb8),
+    /// Smooth sinusoidal breathing pulsation between min and max brightness.
+    Breathing {
+        color: Rgb8,
+        period_ms: u32,
+        min_brightness: f32,
+        max_brightness: f32,
+    },
+    /// Dynamic continuous 360-degree rainbow spectrum cycle.
+    RainbowCycle {
+        period_ms: u32,
+        spatial_phase_deg: f32,
+    },
+    /// Smooth color wave oscillating between two distinct hues.
+    ColorWave {
+        color_a: Rgb8,
+        color_b: Rgb8,
+        period_ms: u32,
+        spatial_phase_deg: f32,
+    },
+    /// Battery fuel gauge indicator (Red critical, Amber low, Green nominal, Pulsing if charging).
+    BatteryIndicator {
+        charge_percent: u8,
+        is_charging: bool,
+    },
+    /// Turn off LEDs in this zone.
+    Off,
+}
+
+impl LedEffect {
+    /// Evaluates the effect at a specific timestamp in milliseconds.
+    pub fn render(&self, elapsed_ms: u64) -> Rgb8 {
+        match *self {
+            Self::Static(color) => color,
+            Self::Breathing {
+                color,
+                period_ms,
+                min_brightness,
+                max_brightness,
+            } => {
+                let period = if period_ms == 0 { 1000 } else { period_ms };
+                let phase = (elapsed_ms % (period as u64)) as f32 / (period as f32);
+                let sin_norm = (sin_f32(phase * TWO_PI) + 1.0) * 0.5;
+                let b = min_brightness + (max_brightness - min_brightness) * sin_norm;
+                color.scale(b)
+            }
+            Self::RainbowCycle {
+                period_ms,
+                spatial_phase_deg,
+            } => {
+                let period = if period_ms == 0 { 3000 } else { period_ms };
+                let time_frac = (elapsed_ms % (period as u64)) as f32 / (period as f32);
+                let hue = (time_frac * 360.0 + spatial_phase_deg) % 360.0;
+                let hue_pos = if hue < 0.0 { hue + 360.0 } else { hue };
+                HsvColor::new(hue_pos, 1.0, 1.0).to_rgb()
+            }
+            Self::ColorWave {
+                color_a,
+                color_b,
+                period_ms,
+                spatial_phase_deg,
+            } => {
+                let period = if period_ms == 0 { 2000 } else { period_ms };
+                let time_frac = (elapsed_ms % (period as u64)) as f32 / (period as f32);
+                let phase_rad = time_frac * TWO_PI + (spatial_phase_deg * (TWO_PI / 360.0));
+                let t = (sin_f32(phase_rad) + 1.0) * 0.5;
+                color_a.lerp(color_b, t)
+            }
+            Self::BatteryIndicator {
+                charge_percent,
+                is_charging,
+            } => {
+                let base_color = if charge_percent < 20 {
+                    Rgb8::RED
+                } else if charge_percent < 50 {
+                    Rgb8::AMBER
+                } else {
+                    Rgb8::GREEN
+                };
+
+                if is_charging {
+                    // 1200ms charging pulse
+                    let phase = (elapsed_ms % 1200) as f32 / 1200.0;
+                    let sin_norm = (sin_f32(phase * TWO_PI) + 1.0) * 0.5;
+                    let b = 0.35 + 0.65 * sin_norm;
+                    base_color.scale(b)
+                } else if charge_percent < 10 {
+                    // Low battery fast blink (400ms: 200ms ON / 200ms OFF)
+                    if (elapsed_ms % 400) < 200 {
+                        base_color
+                    } else {
+                        Rgb8::BLACK
+                    }
+                } else {
+                    base_color
+                }
+            }
+            Self::Off => Rgb8::BLACK,
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Aura Sync Controller
+// -----------------------------------------------------------------------------
+
+/// Synchronization coordination mode across handheld lighting zones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuraSyncMode {
+    /// Each zone executes its own assigned effect independently.
+    Independent,
+    /// All zones locked in synchronous phase.
+    Synchronized,
+    /// Perimeter flow around handheld console with progressive spatial phase offsets.
+    FlowingPerimeter,
+}
+
+/// Central multi-zone RGB lighting controller for handheld gaming consoles.
+pub struct RgbLightingController {
+    /// Current effect assigned to each zone.
+    effects: [LedEffect; LED_ZONE_COUNT],
+    /// Current rendered output color for each zone (gamma-corrected).
+    current_colors: [Rgb8; LED_ZONE_COUNT],
+    /// Global master brightness scale factor [0.0 .. 1.0].
+    master_brightness: f32,
+    /// Master power / enable switch.
+    master_enabled: bool,
+    /// Active Aura Sync synchronization mode.
+    sync_mode: AuraSyncMode,
+    /// Cumulative elapsed operational time in milliseconds.
+    elapsed_time_ms: u64,
+}
+
+impl RgbLightingController {
+    /// Creates a new RGB lighting controller with default handheld presets.
+    pub fn new() -> Self {
+        let mut controller = Self {
+            effects: [LedEffect::Off; LED_ZONE_COUNT],
+            current_colors: [Rgb8::BLACK; LED_ZONE_COUNT],
+            master_brightness: 1.0,
+            master_enabled: true,
+            sync_mode: AuraSyncMode::Independent,
+            elapsed_time_ms: 0,
+        };
+
+        // Initialize default zone effects
+        for &zone in &ALL_LED_ZONES {
+            let desc = get_zone_descriptor(zone);
+            controller.set_zone_effect(zone, LedEffect::Static(desc.default_color));
+        }
+
+        controller
+    }
+
+    /// Sets the lighting effect for a specific zone.
+    pub fn set_zone_effect(&mut self, zone: LedZone, effect: LedEffect) {
+        self.effects[zone as usize] = effect;
+    }
+
+    /// Applies a uniform lighting effect across all hardware zones.
+    pub fn set_all_zones_effect(&mut self, effect: LedEffect) {
+        for slot in &mut self.effects {
+            *slot = effect;
+        }
+    }
+
+    /// Configures the Aura Sync synchronization mode.
+    pub fn set_sync_mode(&mut self, mode: AuraSyncMode) {
+        self.sync_mode = mode;
+    }
+
+    /// Sets global master brightness scale [0.0 .. 1.0].
+    pub fn set_master_brightness(&mut self, brightness: f32) {
+        self.master_brightness = brightness.clamp(0.0, 1.0);
+    }
+
+    /// Enables or disables master LED illumination.
+    pub fn set_master_enabled(&mut self, enabled: bool) {
+        self.master_enabled = enabled;
+    }
+
+    /// Returns master brightness scale.
+    pub fn master_brightness(&self) -> f32 {
+        self.master_brightness
+    }
+
+    /// Returns master enabled status.
+    pub fn is_master_enabled(&self) -> bool {
+        self.master_enabled
+    }
+
+    /// Returns the current rendered color for a specific zone.
+    pub fn get_zone_color(&self, zone: LedZone) -> Rgb8 {
+        self.current_colors[zone as usize]
+    }
+
+    /// Returns reference to all current zone colors.
+    pub fn current_colors(&self) -> &[Rgb8; LED_ZONE_COUNT] {
+        &self.current_colors
+    }
+
+    /// Advances lighting animation timeline and computes next gamma-corrected frame buffer.
+    pub fn update(&mut self, delta_ms: u32) -> &[Rgb8; LED_ZONE_COUNT] {
+        self.elapsed_time_ms += delta_ms as u64;
+
+        if !self.master_enabled || self.master_brightness <= 0.0 {
+            for slot in &mut self.current_colors {
+                *slot = Rgb8::BLACK;
+            }
+            return &self.current_colors;
+        }
+
+        for (i, _) in ALL_LED_ZONES.iter().enumerate() {
+            let base_effect = self.effects[i];
+            let effective_effect = match (self.sync_mode, base_effect) {
+                (AuraSyncMode::FlowingPerimeter, LedEffect::RainbowCycle { period_ms, .. }) => {
+                    LedEffect::RainbowCycle {
+                        period_ms,
+                        spatial_phase_deg: ZONE_SPATIAL_PHASE[i],
+                    }
+                }
+                (AuraSyncMode::FlowingPerimeter, LedEffect::ColorWave { color_a, color_b, period_ms, .. }) => {
+                    LedEffect::ColorWave {
+                        color_a,
+                        color_b,
+                        period_ms,
+                        spatial_phase_deg: ZONE_SPATIAL_PHASE[i],
+                    }
+                }
+                (AuraSyncMode::Synchronized, LedEffect::RainbowCycle { period_ms, .. }) => {
+                    LedEffect::RainbowCycle {
+                        period_ms,
+                        spatial_phase_deg: 0.0,
+                    }
+                }
+                _ => base_effect,
+            };
+
+            let linear_color = effective_effect.render(self.elapsed_time_ms);
+            let scaled_color = linear_color.scale(self.master_brightness);
+            self.current_colors[i] = scaled_color.apply_gamma();
+        }
+
+        &self.current_colors
     }
 }
 
@@ -360,6 +627,105 @@ pub fn verify_rgb_math_and_gamma() -> bool {
         if desc.zone != zone || desc.led_count == 0 || desc.name.is_empty() {
             return false;
         }
+    }
+
+    true
+}
+
+/// Unit test verifying effect generators (breathing, rainbow, battery) and Aura Sync synchronization.
+pub fn verify_effects_and_aura_sync() -> bool {
+    let mut controller = RgbLightingController::new();
+
+    // 1. Static effect and master brightness scaling
+    controller.set_zone_effect(LedZone::ChassisLogo, LedEffect::Static(Rgb8::WHITE));
+    controller.set_master_brightness(1.0);
+    controller.update(16);
+    let c_full = controller.get_zone_color(LedZone::ChassisLogo);
+    if c_full != Rgb8::WHITE {
+        return false;
+    }
+
+    // At 50% master brightness, 255 * 0.5 = 128 -> gamma 2.2 = 56
+    controller.set_master_brightness(0.5);
+    controller.update(16);
+    let c_half = controller.get_zone_color(LedZone::ChassisLogo);
+    if c_half.r < 55 || c_half.r > 57 || c_half.g != c_half.r || c_half.b != c_half.r {
+        return false;
+    }
+    controller.set_master_brightness(1.0);
+
+    // 2. Breathing effect sinusoidal progression
+    // Period = 1000ms, Red color, min=0.0, max=1.0
+    let breathing = LedEffect::Breathing {
+        color: Rgb8::RED,
+        period_ms: 1000,
+        min_brightness: 0.0,
+        max_brightness: 1.0,
+    };
+    // At t = 250ms (peak): sin(PI/2) = 1.0 -> 100% brightness (Red=255)
+    let peak_color = breathing.render(250);
+    if peak_color.r != 255 || peak_color.g != 0 || peak_color.b != 0 {
+        return false;
+    }
+    // At t = 750ms (trough): sin(3PI/2) = -1.0 -> 0% brightness (Red=0)
+    let trough_color = breathing.render(750);
+    if trough_color.r != 0 || trough_color.g != 0 || trough_color.b != 0 {
+        return false;
+    }
+
+    // 3. Rainbow cycle progression
+    // Period = 3600ms -> 100ms per 10 degrees
+    let rainbow = LedEffect::RainbowCycle {
+        period_ms: 3600,
+        spatial_phase_deg: 0.0,
+    };
+    let c_0 = rainbow.render(0); // Hue 0 = Red
+    if c_0 != Rgb8::RED {
+        return false;
+    }
+    let c_120 = rainbow.render(1200); // Hue 120 = Green
+    if c_120 != Rgb8::GREEN {
+        return false;
+    }
+    let c_240 = rainbow.render(2400); // Hue 240 = Blue
+    if c_240 != Rgb8::BLUE {
+        return false;
+    }
+
+    // 4. Battery indicator validation
+    let batt_crit = LedEffect::BatteryIndicator {
+        charge_percent: 15,
+        is_charging: false,
+    }.render(0);
+    if batt_crit != Rgb8::RED {
+        return false;
+    }
+
+    let batt_ok = LedEffect::BatteryIndicator {
+        charge_percent: 85,
+        is_charging: false,
+    }.render(0);
+    if batt_ok != Rgb8::GREEN {
+        return false;
+    }
+
+    // 5. Flowing perimeter Aura Sync spatial offset check
+    controller.set_all_zones_effect(LedEffect::RainbowCycle {
+        period_ms: 3600,
+        spatial_phase_deg: 0.0,
+    });
+    controller.set_sync_mode(AuraSyncMode::FlowingPerimeter);
+    // At elapsed time 0:
+    // LeftStick is at 0.0 deg (Red), RightStick is at 180.0 deg (Cyan)
+    controller.update(0);
+    let left_stick = controller.get_zone_color(LedZone::LeftStickRing);
+    let right_stick = controller.get_zone_color(LedZone::RightStickRing);
+    // Left stick must have dominant Red, Right stick must have dominant Green/Blue (Cyan)
+    if left_stick.r < 200 || left_stick.g != 0 || left_stick.b != 0 {
+        return false;
+    }
+    if right_stick.r != 0 || right_stick.g < 200 || right_stick.b < 200 {
+        return false;
     }
 
     true
