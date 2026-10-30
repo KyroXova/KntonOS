@@ -1,7 +1,5 @@
 //! Core Junction Thermal Monitoring & Closed-Loop PID Dynamic Power Governor.
-//!
 //! Implements Digital Thermal Sensor (DTS) monitoring, PROCHOT / thermal throttling detection,
-//! and closed-loop PID TDP frequency governing (5W to 30W).
 
 // --- Intel Digital Thermal Sensor (DTS) MSRs ---
 pub const IA32_THERM_STATUS: u32 = 0x0000_019C;
@@ -234,9 +232,7 @@ pub fn verify_thermal_monitoring() -> bool {
     true
 }
 
-// ============================================================================
 // Closed-Loop PID Dynamic TDP Power Governor (5W - 30W) & Frequency Scaling
-// ============================================================================
 
 pub const MIN_TDP_LIMIT_MW: u32 = 5_000;    // 5 Watts minimum
 pub const MAX_TDP_LIMIT_MW: u32 = 30_000;   // 30 Watts maximum

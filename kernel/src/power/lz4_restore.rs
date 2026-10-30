@@ -1,8 +1,5 @@
 //! In-Kernel LZ4 Fast Block Compression & CRC32 Verification Engine.
-//!
 //! Provides ultra-fast dictionary compression and decompression (GB/s throughput)
-//! for S4 hibernation images, memory page serialization, and IEEE 802.3 CRC32
-//! data integrity verification.
 
 use alloc::vec::Vec;
 
@@ -469,10 +466,7 @@ impl StagingPageMap {
 }
 
 /// Trampoline 4-Level Page Table (PML4).
-///
 /// An isolated, identity-mapped page table ensuring that during the atomic
-/// relocation sequence, the CPU can read from staging physical memory and
-/// overwrite arbitrary destination physical frames without encountering unmapped page faults.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TrampolinePageTable {
@@ -500,12 +494,7 @@ impl TrampolinePageTable {
 }
 
 /// Atomic S4 Image Memory Restoration Trampoline Engine.
-///
 /// Coordinates the safe two-phase restoration of physical RAM from hibernation:
-/// 1. Decompression into safe staging buffers.
-/// 2. Switching to identity-mapped trampoline page tables.
-/// 3. Atomic relocation copy to final physical frames.
-/// 4. CPU architectural register and CR3 PML4 restoration.
 pub struct RestoreTrampolineEngine {
     pub staging_map: StagingPageMap,
     pub trampoline_pt: TrampolinePageTable,

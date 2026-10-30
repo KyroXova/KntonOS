@@ -1,14 +1,9 @@
 //! Dynamic CPU Core Parking Topology Table & Runqueue Load Evaluation.
-//!
 //! Tracks logical CPU topology (BSP, APs, packages, NUMA nodes, park status),
-//! measures exponential rolling load averages across scheduler runqueues,
-//! and determines core park/unpark transitions based on load thresholds.
 
 use alloc::vec::Vec;
 
-// -----------------------------------------------------------------------------
 // Core Parking Constants & Thresholds
-// -----------------------------------------------------------------------------
 
 /// Minimum unpark threshold percentage (e.g. 75% load on active cores prompts unparking).
 pub const DEFAULT_UNPARK_LOAD_PERCENT: u32 = 75;
@@ -22,9 +17,7 @@ pub const MIN_PARK_HYSTERESIS_MS: u64 = 100;
 /// Maximum number of logical cores supported in parking table.
 pub const MAX_PARKABLE_CORES: usize = 64;
 
-// -----------------------------------------------------------------------------
 // Core Topology & Parking State
-// -----------------------------------------------------------------------------
 
 /// Operational state of a logical CPU core.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,9 +72,7 @@ impl LogicalCoreEntry {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Runqueue Load Evaluator
-// -----------------------------------------------------------------------------
 
 /// Rolling Exponential Moving Average (EMA) load evaluator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,9 +107,7 @@ impl RollingLoadMetric {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Core Parking Manager
-// -----------------------------------------------------------------------------
 
 /// Action recommended by parking evaluation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -210,9 +199,7 @@ impl CoreParkingManager {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Unit Tests & Verification
-// -----------------------------------------------------------------------------
 
 /// Verification self-test for core parking topology and load evaluation.
 pub fn verify_core_parking_topology_and_load() -> bool {
