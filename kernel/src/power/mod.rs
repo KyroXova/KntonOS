@@ -8,6 +8,9 @@ pub mod rapl;
 pub mod parking;
 pub mod cstate;
 pub mod epb;
+pub mod freeze;
+
+pub use freeze::*;
 
 pub use governor::{
     verify_pid_power_governor, verify_thermal_monitoring, CoreThermalStatus, GovernorAction,
