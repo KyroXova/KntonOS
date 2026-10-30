@@ -181,6 +181,122 @@ impl MultiPointFanCurve {
 // Unit Tests & Verification
 // -----------------------------------------------------------------------------
 
+// -----------------------------------------------------------------------------
+// Thermal Hysteresis Damping & Acoustic Rate-of-Change Limiter
+// -----------------------------------------------------------------------------
+
+/// Default temperature hysteresis in °C to prevent rapid step switching.
+pub const DEFAULT_FAN_HYSTERESIS_CELSIUS: u8 = 3;
+
+/// Default maximum allowable PWM ramp-up rate per second (e.g. 20% / sec).
+pub const DEFAULT_MAX_RAMP_UP_PERCENT_PER_SEC: u8 = 20;
+
+/// Default maximum allowable PWM ramp-down rate per second (e.g. 5% / sec, gentle spin-down).
+pub const DEFAULT_MAX_RAMP_DOWN_PERCENT_PER_SEC: u8 = 5;
+
+/// Fan Controller with thermal hysteresis and acoustic rate-of-change limiter.
+#[derive(Debug, Clone)]
+pub struct DampedFanController {
+    pub curve: MultiPointFanCurve,
+    pub current_pwm: u8,
+    pub last_stable_temp_celsius: u8,
+    pub hysteresis_celsius: u8,
+    pub max_ramp_up_per_sec: u8,
+    pub max_ramp_down_per_sec: u8,
+}
+
+impl DampedFanController {
+    pub fn new(curve: MultiPointFanCurve) -> Self {
+        Self {
+            curve,
+            current_pwm: 0,
+            last_stable_temp_celsius: 0,
+            hysteresis_celsius: DEFAULT_FAN_HYSTERESIS_CELSIUS,
+            max_ramp_up_per_sec: DEFAULT_MAX_RAMP_UP_PERCENT_PER_SEC,
+            max_ramp_down_per_sec: DEFAULT_MAX_RAMP_DOWN_PERCENT_PER_SEC,
+        }
+    }
+
+    /// Evaluates target PWM with thermal hysteresis damping and slewing rate limiter.
+    ///
+    /// # Parameters:
+    /// - `measured_temp`: Current filtered temperature in °C.
+    /// - `elapsed_ms`: Time elapsed since last evaluation step in milliseconds.
+    pub fn update(&mut self, measured_temp: u8, elapsed_ms: u32) -> u8 {
+        // Critical emergency trip overrides all rate limiters and hysteresis
+        if measured_temp >= self.curve.emergency_temp_celsius {
+            self.current_pwm = 100;
+            self.last_stable_temp_celsius = measured_temp;
+            return 100;
+        }
+
+        // Apply temperature hysteresis
+        // If temperature drops by less than hysteresis_celsius, stay at previous temperature regime
+        let effective_temp = if measured_temp < self.last_stable_temp_celsius {
+            if self.last_stable_temp_celsius.saturating_sub(measured_temp) < self.hysteresis_celsius {
+                self.last_stable_temp_celsius
+            } else {
+                self.last_stable_temp_celsius = measured_temp;
+                measured_temp
+            }
+        } else {
+            self.last_stable_temp_celsius = measured_temp;
+            measured_temp
+        };
+
+        let target_pwm = self.curve.evaluate_pwm(effective_temp);
+
+        // Acoustic rate-of-change slewing limiter
+        if target_pwm > self.current_pwm {
+            // Ramp up limited by max_ramp_up_per_sec
+            let max_delta = ((self.max_ramp_up_per_sec as u32 * elapsed_ms) / 1000).max(1) as u8;
+            self.current_pwm = (self.current_pwm.saturating_add(max_delta)).min(target_pwm);
+        } else if target_pwm < self.current_pwm {
+            // Ramp down limited by max_ramp_down_per_sec (gentle spin down)
+            let max_delta = ((self.max_ramp_down_per_sec as u32 * elapsed_ms) / 1000).max(1) as u8;
+            self.current_pwm = (self.current_pwm.saturating_sub(max_delta)).max(target_pwm);
+        }
+
+        self.current_pwm
+    }
+}
+
+/// Unit test verifying thermal hysteresis damping and acoustic rate-of-change limiter.
+pub fn verify_thermal_hysteresis_and_rate_limiter() -> bool {
+    let curve = MultiPointFanCurve::balanced_handheld_preset();
+    let mut controller = DampedFanController::new(curve);
+
+    // 1. Initial stable state at 50°C (target = 25%)
+    // Ramp up over 2 seconds (2000 ms @ 20%/s => can ramp up by 40%, reaches target 25%)
+    let pwm1 = controller.update(50, 2000);
+    if pwm1 != 25 {
+        return false;
+    }
+
+    // 2. Temperature drops by 2°C (to 48°C), less than hysteresis threshold (3°C)
+    // Controller must remain at 50°C regime (25%) rather than throttling fan immediately
+    let pwm2 = controller.update(48, 1000);
+    if pwm2 != 25 {
+        return false;
+    }
+
+    // 3. Temperature drops by 5°C (to 43°C), exceeding hysteresis threshold
+    // Target drops towards 43°C regime (~7%), but rate limiter prevents abrupt acoustic dropping
+    // In 1000ms, max ramp down is 5%/s => drops from 25% to 20%
+    let pwm3 = controller.update(43, 1000);
+    if pwm3 != 20 {
+        return false;
+    }
+
+    // 4. Critical emergency trip (96°C) overrides rate limiter immediately (instant 100%)
+    let pwm_emergency = controller.update(96, 50);
+    if pwm_emergency != 100 {
+        return false;
+    }
+
+    true
+}
+
 /// Unit test verifying multi-point fan interpolation curves and PWM duty table.
 pub fn verify_fan_curve_interpolation() -> bool {
     let balanced = MultiPointFanCurve::balanced_handheld_preset();
