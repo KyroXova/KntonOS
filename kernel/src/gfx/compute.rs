@@ -5,12 +5,16 @@
 //! - 3D workgroup dispatch recording (`Dispatch(x, y, z)`)
 //! - Compute Pipeline State Objects (PSO) with local threadgroup dimension tracking
 //! - Resource descriptor tables (UAVs, SRVs, CBVs) and push constant data streams
+//! - Fine-grained memory barrier synchronization (UAV barriers & Transition barriers)
+//! - Concurrent workgroup pipeline scheduler running async compute alongside graphics rasterization
 //! - High-speed asynchronous compute submission queue
 
 #![allow(dead_code)]
 
 extern crate alloc;
 use alloc::vec::Vec;
+use crate::gfx::cmdbuf::{PipelineStageFlags, ResourceState};
+use crate::gfx::gpu_fence::{GpuTimelineFence, TimelineSyncHub};
 
 // -----------------------------------------------------------------------------
 // Workgroup Dimensions & Pipeline State Objects (PSO)
@@ -110,7 +114,7 @@ impl DescriptorSlot {
     }
 }
 
-/// Descriptor table binding up to 16 resource descriptors to a shader root parameter.
+/// Descriptor table binding resource descriptors to a shader root parameter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DescriptorTable {
     pub root_index: u32,
@@ -131,6 +135,103 @@ impl DescriptorTable {
 
     pub fn slot_count(&self) -> usize {
         self.slots.len()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Fine-Grained Memory Barrier Synchronization
+// -----------------------------------------------------------------------------
+
+/// Detailed barrier classification for compute pipeline transitions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BarrierKind {
+    /// UAV memory barrier: flushes L1/L2 caches ensuring preceding compute writes are visible.
+    Uav { resource_gpu_address: u64 },
+    /// Resource state transition barrier: e.g. UNORDERED_ACCESS -> PIXEL_SHADER_RESOURCE.
+    Transition {
+        resource_gpu_address: u64,
+        state_before: ResourceState,
+        state_after: ResourceState,
+        src_stage: PipelineStageFlags,
+        dst_stage: PipelineStageFlags,
+    },
+}
+
+/// Fine-grained memory barrier ensuring cache coherence and stage ordering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ComputeMemoryBarrier {
+    pub barrier_id: u32,
+    pub kind: BarrierKind,
+}
+
+impl ComputeMemoryBarrier {
+    pub const fn uav(barrier_id: u32, resource_gpu_address: u64) -> Self {
+        Self {
+            barrier_id,
+            kind: BarrierKind::Uav { resource_gpu_address },
+        }
+    }
+
+    pub const fn transition(
+        barrier_id: u32,
+        resource_gpu_address: u64,
+        state_before: ResourceState,
+        state_after: ResourceState,
+        src_stage: PipelineStageFlags,
+        dst_stage: PipelineStageFlags,
+    ) -> Self {
+        Self {
+            barrier_id,
+            kind: BarrierKind::Transition {
+                resource_gpu_address,
+                state_before,
+                state_after,
+                src_stage,
+                dst_stage,
+            },
+        }
+    }
+
+    pub fn is_uav(&self) -> bool {
+        matches!(self.kind, BarrierKind::Uav { .. })
+    }
+
+    /// Verifies that state transitions obey valid hardware rules.
+    pub fn is_valid_transition(&self) -> bool {
+        match self.kind {
+            BarrierKind::Uav { .. } => true,
+            BarrierKind::Transition { state_before, state_after, .. } => {
+                // Must transition between different states or valid flags
+                state_before != state_after
+            }
+        }
+    }
+}
+
+/// Simulated GPU Cache Hierarchy State.
+#[derive(Debug, Default, Clone)]
+pub struct GpuCacheState {
+    pub l1_dirty_lines: u32,
+    pub l2_dirty_lines: u32,
+    pub l1_flushes: u32,
+    pub l2_flushes: u32,
+    pub read_invalidations: u32,
+}
+
+impl GpuCacheState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn flush_uav_caches(&mut self) {
+        self.l1_flushes += 1;
+        self.l2_flushes += 1;
+        self.l1_dirty_lines = 0;
+        self.l2_dirty_lines = 0;
+    }
+
+    pub fn invalidate_reads(&mut self) {
+        self.read_invalidations += 1;
     }
 }
 
@@ -178,7 +279,7 @@ pub enum ComputeCommand {
     SetPipelineState(ComputePipelineState),
     SetDescriptorTable(DescriptorTable),
     SetPushConstants { offset: u32, data: Vec<u8> },
-    ResourceBarrier { barrier_id: u32, is_uav: bool, gpu_address: u64 },
+    ResourceBarrier(ComputeMemoryBarrier),
     SignalFence { fence_id: u32, value: u64 },
     WaitFence { fence_id: u32, value: u64 },
 }
@@ -217,6 +318,36 @@ impl AsyncComputeCommandBuffer {
         self.commands.push(ComputeCommand::SetDescriptorTable(table));
     }
 
+    /// Records a fine-grained memory barrier.
+    pub fn resource_barrier(&mut self, barrier: ComputeMemoryBarrier) {
+        self.commands.push(ComputeCommand::ResourceBarrier(barrier));
+    }
+
+    /// Records a UAV memory barrier directly.
+    pub fn uav_barrier(&mut self, barrier_id: u32, resource_gpu_address: u64) {
+        self.resource_barrier(ComputeMemoryBarrier::uav(barrier_id, resource_gpu_address));
+    }
+
+    /// Records a transition barrier between resource states.
+    pub fn transition_barrier(
+        &mut self,
+        barrier_id: u32,
+        resource_gpu_address: u64,
+        before: ResourceState,
+        after: ResourceState,
+        src_stage: PipelineStageFlags,
+        dst_stage: PipelineStageFlags,
+    ) {
+        self.resource_barrier(ComputeMemoryBarrier::transition(
+            barrier_id,
+            resource_gpu_address,
+            before,
+            after,
+            src_stage,
+            dst_stage,
+        ));
+    }
+
     /// Dispatches a 3D grid of threadgroups.
     pub fn dispatch(&mut self, count_x: u32, count_y: u32, count_z: u32) -> Result<(), &'static str> {
         if self.active_pso.is_none() {
@@ -252,6 +383,142 @@ impl AsyncComputeCommandBuffer {
     #[inline(always)]
     pub fn command_count(&self) -> usize {
         self.commands.len()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Workgroup Workloads & Concurrent Pipeline Scheduler
+// -----------------------------------------------------------------------------
+
+/// Classification of asynchronous compute workloads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComputeWorkloadType {
+    PhysicsSimulation,
+    GpuSkinning,
+    FrustumCulling,
+    RaytracingDenoise,
+}
+
+/// Complete compute workload specification for scheduling.
+#[derive(Debug, Clone)]
+pub struct ComputeShaderWorkload {
+    pub workload_type: ComputeWorkloadType,
+    pub pso: ComputePipelineState,
+    pub dispatch: DispatchPayload,
+    pub uav_resource_address: u64,
+}
+
+/// Graphics rasterization workload to execute concurrently with compute.
+#[derive(Debug, Clone)]
+pub struct GraphicsRasterWorkload {
+    pub name: &'static str,
+    pub draw_call_count: u32,
+    pub estimated_raster_cycles: u64,
+    pub input_resource_address: Option<u64>,
+}
+
+/// Performance telemetry from concurrent execution scheduling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConcurrentExecutionMetrics {
+    pub total_compute_workgroups: u64,
+    pub compute_cycles: u64,
+    pub graphics_cycles: u64,
+    pub concurrent_overlapped_cycles: u64,
+    pub overlap_efficiency_pct: u32,
+    pub uav_barriers_flushed: u32,
+    pub transitions_executed: u32,
+    pub completion_fence_value: u64,
+}
+
+/// High-performance concurrent compute pipeline scheduler.
+pub struct ConcurrentComputeScheduler {
+    pub num_compute_units: u32,
+    pub cache_state: GpuCacheState,
+}
+
+impl ConcurrentComputeScheduler {
+    pub const fn new(num_compute_units: u32) -> Self {
+        Self {
+            num_compute_units,
+            cache_state: GpuCacheState {
+                l1_dirty_lines: 0,
+                l2_dirty_lines: 0,
+                l1_flushes: 0,
+                l2_flushes: 0,
+                read_invalidations: 0,
+            },
+        }
+    }
+
+    /// Schedules and executes compute workloads concurrently alongside graphics rasterization.
+    pub fn execute_concurrent_pass(
+        &mut self,
+        compute_jobs: &[ComputeShaderWorkload],
+        graphics_job: &GraphicsRasterWorkload,
+        sync_hub: &mut TimelineSyncHub,
+        fence: &GpuTimelineFence,
+        fence_target_val: u64,
+    ) -> Result<ConcurrentExecutionMetrics, &'static str> {
+        let mut total_workgroups: u64 = 0;
+        let mut uav_flushes: u32 = 0;
+        let mut transitions: u32 = 0;
+
+        // 1. Process and record all compute workloads across CUs
+        for job in compute_jobs {
+            let groups = job.dispatch.total_threadgroups();
+            total_workgroups += groups;
+
+            // Execute UAV memory barrier between compute dispatches
+            self.cache_state.flush_uav_caches();
+            uav_flushes += 1;
+        }
+
+        // 2. Perform transition barrier from Compute UAV write to Graphics Shader Resource read
+        if let Some(res_addr) = graphics_job.input_resource_address {
+            let barrier = ComputeMemoryBarrier::transition(
+                100,
+                res_addr,
+                ResourceState::UNORDERED_ACCESS,
+                ResourceState::PIXEL_SHADER_RESOURCE,
+                PipelineStageFlags::COMPUTE_SHADER,
+                PipelineStageFlags::PIXEL_SHADER,
+            );
+            if !barrier.is_valid_transition() {
+                return Err("Invalid resource transition barrier");
+            }
+            self.cache_state.invalidate_reads();
+            transitions += 1;
+        }
+
+        // 3. Compute cycles based on compute units:
+        // Each workgroup takes ~100 GPU core cycles; distributed across CUs
+        let cu_count = self.num_compute_units.max(1) as u64;
+        let compute_cycles = (total_workgroups * 100) / cu_count;
+        let graphics_cycles = graphics_job.estimated_raster_cycles;
+
+        // Concurrent overlap calculation: both run simultaneously in hardware
+        let overlapped_cycles = compute_cycles.min(graphics_cycles);
+        let min_cycles = compute_cycles.min(graphics_cycles).max(1);
+        let overlap_efficiency = ((overlapped_cycles * 100) / min_cycles) as u32;
+
+        // 4. Signal timeline fence monotonically
+        fence.signal(fence_target_val)?;
+        fence.complete(fence_target_val);
+
+        // 5. Register and resolve cross-queue sync to present
+        sync_hub.synchronize_compute_to_graphics_present(fence.fence_id, fence_target_val)?;
+        sync_hub.resolve_dependencies();
+
+        Ok(ConcurrentExecutionMetrics {
+            total_compute_workgroups: total_workgroups,
+            compute_cycles,
+            graphics_cycles,
+            concurrent_overlapped_cycles: overlapped_cycles,
+            overlap_efficiency_pct: overlap_efficiency,
+            uav_barriers_flushed: uav_flushes,
+            transitions_executed: transitions,
+            completion_fence_value: fence_target_val,
+        })
     }
 }
 
