@@ -19,6 +19,9 @@
 //! - Dynamic self-centering bias tracking with resting state exponential moving average (EMA).
 
 
+use crate::graphics::sqrt_f32;
+use super::imu::atan2_f32;
+
 /// Supported ADC resolution for Hall effect sensor interfaces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdcResolution {
@@ -412,6 +415,323 @@ pub fn verify_calibration_and_adc_profiles() -> bool {
     }
     let trig_full = cal12.normalize_trigger_axis(4095, 25.0);
     if (trig_full - 1.0).abs() > 1e-4 {
+        return false;
+    }
+
+    true
+}
+
+// -----------------------------------------------------------------------------
+// Commit 2: Circularity Normalization, Anti-Deadzone & Boundary Clamping
+// -----------------------------------------------------------------------------
+
+/// Mode for mapping 2D joystick coordinates from physical circular gate to game space.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CircularityMode {
+    /// True Euclidean circle: magnitude is bounded by 1.0, preserving angle and circular gate geometry.
+    /// Diagonals reach approximately (+/-0.7071, +/-0.7071).
+    TrueCircular,
+    /// Squaring the circle: radial stretch mapping that expands diagonal throws from ~0.7071 to 1.0,
+    /// ensuring full speed and acceleration in 8-way run and games expecting square bounds.
+    SquaringTheCircle,
+    /// Direct unmapped raw normalized values.
+    RawDirect,
+}
+
+/// Output data for a calibrated and filtered 2D joystick deflection.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CalibratedStickOutput {
+    /// Normalized horizontal axis [-1.0, 1.0].
+    pub x: f32,
+    /// Normalized vertical axis [-1.0, 1.0].
+    pub y: f32,
+    /// Vector magnitude sqrt(x^2 + y^2) [0.0, 1.0].
+    pub magnitude: f32,
+    /// Polar angle in radians [-PI, PI].
+    pub angle_rad: f32,
+    /// True if raw input fell within the inner deadzone.
+    pub in_inner_deadzone: bool,
+    /// True if raw input exceeded outer deadzone and was clamped to full scale.
+    pub in_outer_clamp: bool,
+}
+
+impl CalibratedStickOutput {
+    /// Returns a neutral centered output.
+    pub const fn zero() -> Self {
+        Self {
+            x: 0.0,
+            y: 0.0,
+            magnitude: 0.0,
+            angle_rad: 0.0,
+            in_inner_deadzone: true,
+            in_outer_clamp: false,
+        }
+    }
+}
+
+/// Metric report evaluating the circularity precision and error percentage of a joystick.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CircularityReport {
+    /// Total number of perimeter samples analyzed.
+    pub sample_count: usize,
+    /// Average deviation percentage from the ideal unit circle (|r - 1.0| * 100%).
+    pub average_error_pct: f32,
+    /// Maximum deviation percentage observed along the perimeter.
+    pub max_error_pct: f32,
+    /// Minimum observed magnitude along the perimeter.
+    pub min_magnitude: f32,
+    /// Maximum observed magnitude along the perimeter.
+    pub max_magnitude: f32,
+    /// True if the stick exhibits Hall effect esports-grade precision (average error < 1.5%).
+    pub is_hall_grade: bool,
+}
+
+/// Computes the circularity error metric over a sequence of outer-boundary stick samples.
+pub fn compute_circularity_error(samples: &[(f32, f32)]) -> CircularityReport {
+    if samples.is_empty() {
+        return CircularityReport {
+            sample_count: 0,
+            average_error_pct: 0.0,
+            max_error_pct: 0.0,
+            min_magnitude: 0.0,
+            max_magnitude: 0.0,
+            is_hall_grade: false,
+        };
+    }
+
+    let mut sum_error = 0.0f32;
+    let mut max_error = 0.0f32;
+    let mut min_mag = 1000.0f32;
+    let mut max_mag = 0.0f32;
+
+    for &(x, y) in samples {
+        let mag = sqrt_f32(x * x + y * y);
+        let error = (mag - 1.0).abs();
+        sum_error += error;
+        if error > max_error {
+            max_error = error;
+        }
+        if mag < min_mag {
+            min_mag = mag;
+        }
+        if mag > max_mag {
+            max_mag = mag;
+        }
+    }
+
+    let avg_error = sum_error / (samples.len() as f32);
+    let avg_error_pct = avg_error * 100.0;
+    let max_error_pct = max_error * 100.0;
+
+    CircularityReport {
+        sample_count: samples.len(),
+        average_error_pct: avg_error_pct,
+        max_error_pct,
+        min_magnitude: min_mag,
+        max_magnitude: max_mag,
+        is_hall_grade: avg_error_pct < 1.5,
+    }
+}
+
+/// Applies deadzone filtering, anti-deadzone boost, outer clamping, and circularity mapping.
+pub fn process_joystick_vector(
+    raw_x: f32,
+    raw_y: f32,
+    deadzone: &DeadzoneProfile,
+    mode: CircularityMode,
+) -> CalibratedStickOutput {
+    match deadzone.shape {
+        HallDeadzoneShape::Radial => {
+            let r = sqrt_f32(raw_x * raw_x + raw_y * raw_y);
+            if r < 1e-5 {
+                return CalibratedStickOutput::zero();
+            }
+
+            let angle = atan2_f32(raw_y, raw_x);
+
+            // 1. Inner deadzone check
+            if r <= deadzone.inner_deadzone {
+                return CalibratedStickOutput {
+                    x: 0.0,
+                    y: 0.0,
+                    magnitude: 0.0,
+                    angle_rad: angle,
+                    in_inner_deadzone: true,
+                    in_outer_clamp: false,
+                };
+            }
+
+            // Direction unit vector
+            let ux = raw_x / r;
+            let uy = raw_y / r;
+
+            // 2. Outer deadzone clamping & scaling with anti-deadzone boost
+            let (scaled_mag, in_outer_clamp) = if r >= deadzone.outer_deadzone {
+                (1.0f32, true)
+            } else {
+                let denom = deadzone.outer_deadzone - deadzone.inner_deadzone;
+                let t = if denom > 1e-4 {
+                    (r - deadzone.inner_deadzone) / denom
+                } else {
+                    1.0
+                };
+                let a0 = deadzone.anti_deadzone.clamp(0.0, 0.9);
+                let boosted = a0 + (1.0 - a0) * t;
+                (boosted.clamp(0.0, 1.0), false)
+            };
+
+            // 3. Circularity mode mapping
+            match mode {
+                CircularityMode::TrueCircular => {
+                    let out_x = (ux * scaled_mag).clamp(-1.0, 1.0);
+                    let out_y = (uy * scaled_mag).clamp(-1.0, 1.0);
+                    CalibratedStickOutput {
+                        x: out_x,
+                        y: out_y,
+                        magnitude: scaled_mag,
+                        angle_rad: angle,
+                        in_inner_deadzone: false,
+                        in_outer_clamp,
+                    }
+                }
+                CircularityMode::SquaringTheCircle => {
+                    // Radial stretch: s = 1.0 / max(|ux|, |uy|)
+                    let max_axial = ux.abs().max(uy.abs());
+                    let stretch = if max_axial > 1e-4 {
+                        1.0 / max_axial
+                    } else {
+                        1.0
+                    };
+                    let sq_x = (ux * scaled_mag * stretch).clamp(-1.0, 1.0);
+                    let sq_y = (uy * scaled_mag * stretch).clamp(-1.0, 1.0);
+                    let sq_mag = sqrt_f32(sq_x * sq_x + sq_y * sq_y).min(1.4142135);
+                    CalibratedStickOutput {
+                        x: sq_x,
+                        y: sq_y,
+                        magnitude: sq_mag,
+                        angle_rad: angle,
+                        in_inner_deadzone: false,
+                        in_outer_clamp,
+                    }
+                }
+                CircularityMode::RawDirect => {
+                    let out_x = raw_x.clamp(-1.0, 1.0);
+                    let out_y = raw_y.clamp(-1.0, 1.0);
+                    CalibratedStickOutput {
+                        x: out_x,
+                        y: out_y,
+                        magnitude: r.min(1.0),
+                        angle_rad: angle,
+                        in_inner_deadzone: false,
+                        in_outer_clamp,
+                    }
+                }
+            }
+        }
+        HallDeadzoneShape::Axial => {
+            // Process X and Y independently
+            let process_axis = |val: f32| -> (f32, bool, bool) {
+                let abs_val = val.abs();
+                if abs_val <= deadzone.inner_deadzone {
+                    return (0.0, true, false);
+                }
+                let sign = if val < 0.0 { -1.0 } else { 1.0 };
+                if abs_val >= deadzone.outer_deadzone {
+                    return (sign * 1.0, false, true);
+                }
+                let denom = deadzone.outer_deadzone - deadzone.inner_deadzone;
+                let t = if denom > 1e-4 {
+                    (abs_val - deadzone.inner_deadzone) / denom
+                } else {
+                    1.0
+                };
+                let a0 = deadzone.anti_deadzone.clamp(0.0, 0.9);
+                let boosted = a0 + (1.0 - a0) * t;
+                (sign * boosted.clamp(0.0, 1.0), false, false)
+            };
+
+            let (out_x, in_dz_x, in_clamp_x) = process_axis(raw_x);
+            let (out_y, in_dz_y, in_clamp_y) = process_axis(raw_y);
+
+            let mag = sqrt_f32(out_x * out_x + out_y * out_y);
+            let angle = atan2_f32(out_y, out_x);
+
+            CalibratedStickOutput {
+                x: out_x,
+                y: out_y,
+                magnitude: mag.min(1.4142135),
+                angle_rad: angle,
+                in_inner_deadzone: in_dz_x && in_dz_y,
+                in_outer_clamp: in_clamp_x || in_clamp_y,
+            }
+        }
+    }
+}
+
+/// Verification helper for Commit 2 circularity normalization and anti-deadzone algorithms.
+pub fn verify_circularity_and_anti_deadzone() -> bool {
+    // 1. Verify True Circular Clamping
+    let dz_radial = DeadzoneProfile::default_radial();
+    let out_cardinal = process_joystick_vector(1.0, 0.0, &dz_radial, CircularityMode::TrueCircular);
+    if (out_cardinal.x - 1.0).abs() > 1e-4 || out_cardinal.y.abs() > 1e-4 {
+        return false;
+    }
+    if !out_cardinal.in_outer_clamp {
+        return false;
+    }
+
+    // 2. Verify Inner Deadzone Squelching
+    let out_rest = process_joystick_vector(0.02, 0.02, &dz_radial, CircularityMode::TrueCircular);
+    if out_rest.x != 0.0 || out_rest.y != 0.0 || !out_rest.in_inner_deadzone {
+        return false;
+    }
+
+    // 3. Verify Anti-Deadzone Boost
+    let fps_dz = DeadzoneProfile::competitive_fps(); // inner: 0.03, outer: 0.96, anti_deadzone: 0.15
+    let out_just_outside = process_joystick_vector(0.035, 0.0, &fps_dz, CircularityMode::TrueCircular);
+    if out_just_outside.in_inner_deadzone {
+        return false;
+    }
+    // Should immediately jump to >= 0.15 due to anti-deadzone boost
+    if out_just_outside.x < 0.15 {
+        return false;
+    }
+
+    // 4. Verify Squaring the Circle Diagonal Extension
+    // In true circle, 45-deg diagonal at max throw has x = y = 1/sqrt(2) approx 0.7071
+    let diag_circ = 0.7071068f32;
+    let out_diag_circle = process_joystick_vector(diag_circ, diag_circ, &dz_radial, CircularityMode::TrueCircular);
+    if (out_diag_circle.magnitude - 1.0).abs() > 0.01 {
+        return false;
+    }
+    if (out_diag_circle.x - diag_circ).abs() > 0.05 {
+        return false;
+    }
+
+    // In Squaring the Circle, diagonal at max throw expands to (1.0, 1.0)
+    let out_diag_squared = process_joystick_vector(diag_circ, diag_circ, &dz_radial, CircularityMode::SquaringTheCircle);
+    if (out_diag_squared.x - 1.0).abs() > 0.01 || (out_diag_squared.y - 1.0).abs() > 0.01 {
+        return false;
+    }
+
+    // 5. Verify Circularity Error Metric Calculation
+    // Ideal circle samples: r = 1.0 with tiny sub-0.5% jitter
+    let ideal_samples = [
+        (1.002, 0.000), (0.708, 0.705), (0.001, 0.998), (-0.706, 0.708),
+        (-0.999, 0.001), (-0.704, -0.707), (0.002, -1.001), (0.706, -0.705)
+    ];
+    let hall_report = compute_circularity_error(&ideal_samples);
+    if !hall_report.is_hall_grade || hall_report.average_error_pct > 1.0 {
+        return false;
+    }
+
+    // Worn potentiometer samples with severe non-circular drift (10-15% error)
+    let worn_pot_samples = [
+        (0.85, 0.00), (0.62, 0.65), (0.00, 0.88), (-0.60, 0.60),
+        (-0.84, 0.00), (-0.58, -0.62), (0.00, 0.86), (0.60, -0.58)
+    ];
+    let worn_report = compute_circularity_error(&worn_pot_samples);
+    if worn_report.is_hall_grade || worn_report.average_error_pct < 8.0 {
         return false;
     }
 
