@@ -195,3 +195,110 @@ pub fn test_nvme_subsystem() -> bool {
 
     true
 }
+
+/// Comprehensive verification of the High-Speed NVMe Overlapped Async I/O (io_uring Style) Completion Engine.
+///
+/// Tests shared-memory SQ/CQ lockless ring buffers with atomic cursors, 64-byte SQE translation,
+/// overlapped NVMe asynchronous dispatch, out-of-order completion harvesting, and token correlation.
+///
+/// Emits sentinel [KNT-NVME-URING-PASS] upon successful validation.
+pub fn test_nvme_uring_subsystem() -> bool {
+    // 1. Verify SQ/CQ lockless ring buffer mechanics, atomic cursors, and wrap-around
+    if !verify_uring_ring_buffers() {
+        return false;
+    }
+
+    // 2. Verify async request slot allocation, opcode translation, and NVMe dispatch
+    if !verify_async_dispatcher() {
+        return false;
+    }
+
+    // 3. Verify out-of-order completion event harvesting and token matching
+    if !verify_completion_harvesting() {
+        return false;
+    }
+
+    // 4. End-to-end overlapped multi-operation async pipeline simulation:
+    // User submits 4 concurrent overlapped operations (Read, Write, Fsync, NOP) to SQ ring,
+    // dispatcher submits to NVMe queue pair, hardware completes with arbitrary delay/out-of-order,
+    // completions harvested into CQ ring, and verified by token and result byte count.
+    let mut ring_ctx = IoUringContext::<16>::new(1);
+    let mut dispatcher = AsyncIoDispatcher::new();
+    let mut nvme_qp = NvmeQueuePair::new(1, 16, 0, 0);
+
+    // Enqueue 4 overlapped requests into SQ ring
+    let op0 = IoUringSqe::new_read(3, 0x1000_0000, 2048, 0, 0xAAAA_0001); // 4 sectors read
+    let op1 = IoUringSqe::new_write(3, 0x1000_1000, 4096, 2048, 0xAAAA_0002); // 8 sectors write
+    let op2 = IoUringSqe::new_fsync(3, 0xAAAA_0003); // flush
+    let op3 = IoUringSqe::new_nop(0xAAAA_0004); // nop
+
+    if !ring_ctx.sq.push(op0)
+        || !ring_ctx.sq.push(op1)
+        || !ring_ctx.sq.push(op2)
+        || !ring_ctx.sq.push(op3)
+    {
+        return false;
+    }
+
+    if ring_ctx.sq.count() != 4 {
+        return false;
+    }
+
+    // Dispatch all 4 requests into NVMe queue
+    let submitted = dispatcher.dispatch_sq_ring(&mut ring_ctx.sq, &mut nvme_qp, 1);
+    if submitted != 4 || ring_ctx.sq.count() != 0 || dispatcher.inflight_count != 4 {
+        return false;
+    }
+
+    // Extract CIDs assigned to each operation
+    let cid0 = dispatcher.inflight_slots[0].nvme_cid;
+    let cid1 = dispatcher.inflight_slots[1].nvme_cid;
+    let cid2 = dispatcher.inflight_slots[2].nvme_cid;
+    let cid3 = dispatcher.inflight_slots[3].nvme_cid;
+
+    // Simulate completion in reverse order: op3 (NOP), op2 (FSYNC), op1 (WRITE 4096), op0 (READ 2048)
+    nvme_qp.simulate_completion(cid3, 0, 0);
+    nvme_qp.cq_head = (nvme_qp.cq_head + 1) % nvme_qp.size;
+    nvme_qp.simulate_completion(cid2, 0, 0);
+    nvme_qp.cq_head = (nvme_qp.cq_head + 1) % nvme_qp.size;
+    nvme_qp.simulate_completion(cid1, 0, 0);
+    nvme_qp.cq_head = (nvme_qp.cq_head + 1) % nvme_qp.size;
+    nvme_qp.simulate_completion(cid0, 0, 0);
+    nvme_qp.cq_head = 0; // Rewind head to start of completed batch
+
+    // Harvest all completions into CQ ring
+    let harvested = dispatcher.harvest_completions(&mut nvme_qp, &mut ring_ctx.cq, 10);
+    if harvested != 4 || dispatcher.inflight_count != 0 || ring_ctx.cq.count() != 4 {
+        return false;
+    }
+
+    // Verify CQEs match user_data tokens and byte counts
+    let c0 = ring_ctx.cq.pop().expect("c0 pop failed");
+    if c0.user_data != 0xAAAA_0004 || c0.res != 0 {
+        return false;
+    }
+
+    let c1 = ring_ctx.cq.pop().expect("c1 pop failed");
+    if c1.user_data != 0xAAAA_0003 || c1.res != 0 {
+        return false;
+    }
+
+    let c2 = ring_ctx.cq.pop().expect("c2 pop failed");
+    if c2.user_data != 0xAAAA_0002 || c2.res != 4096 {
+        return false;
+    }
+
+    let c3 = ring_ctx.cq.pop().expect("c3 pop failed");
+    if c3.user_data != 0xAAAA_0001 || c3.res != 2048 {
+        return false;
+    }
+
+    if ring_ctx.cq.count() != 0 {
+        return false;
+    }
+
+    // 5. Emit boot sentinel
+    crate::serial_write_str("[KNT-NVME-URING-PASS] NVMe overlapped async I/O completion engine verified\r\n");
+
+    true
+}
