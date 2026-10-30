@@ -16,6 +16,12 @@ pub mod hibernate;
 pub mod lz4_restore;
 pub mod battery;
 pub mod charger;
+pub mod cppc;
+pub mod dvfs;
+
+pub use dvfs::*;
+
+pub use cppc::*;
 
 pub use hibernate::*;
 pub use lz4_restore::*;
@@ -339,6 +345,66 @@ pub fn test_battery_and_charger_subsystem() -> bool {
 
     // 4. Emit deterministic boot sentinel
     crate::serial_write_str("[KNT-POWER-BATTERY-PASS] Handheld battery fuel gauge, Coulomb counter, and smart charger verified\r\n");
+
+    true
+}
+
+
+/// Comprehensive verification self-test suite for Unified Kernel Dynamic Frequency Scaling (DVFS) & Micro-Voltage Stepping Governor.
+///
+/// Emits sentinel [KNT-POWER-DVFS-PASS] upon successful validation.
+pub fn test_dvfs_governor_subsystem() -> bool {
+    crate::serial_write_str("[KNT-POWER-DVFS-TEST] Running Dynamic Frequency Scaling (DVFS) & Micro-Voltage Governor verification suite...\r\n");
+
+    // 1. Verify CPPC v2 performance capability discovery, HWP request encoding, and frequency stepping tables
+    if !cppc::test_cppc_interface_and_stepping_tables() {
+        crate::serial_write_str("[KNT-PANIC] CPPC interface and stepping tables verification failed!\r\n");
+        return false;
+    }
+    crate::serial_write_str("  * CPPC v2 performance capabilities, IA32_HWP_REQUEST MSR, and frequency stepping verified\r\n");
+
+    // 2. Verify micro-voltage curve stepping, per-core undervolt offsets, safety clamping, and power estimation
+    if !dvfs::test_micro_voltage_stepping_and_undervolt() {
+        crate::serial_write_str("[KNT-PANIC] Micro-voltage stepping and undervolting verification failed!\r\n");
+        return false;
+    }
+    crate::serial_write_str("  * Operating Performance Points (OPP), per-core undervolting offsets, and voltage safety clamping verified\r\n");
+
+    // 3. Verify frame-time spike reactive boost and thermal throttle hysteresis regulator
+    if !dvfs::test_frame_boost_and_thermal_hysteresis() {
+        crate::serial_write_str("[KNT-PANIC] Frame-time reactive boost and thermal hysteresis verification failed!\r\n");
+        return false;
+    }
+    crate::serial_write_str("  * Game frame-time reactive boost (16.6ms threshold) and 10C thermal hysteresis regulator verified\r\n");
+
+    // 4. End-to-end multi-core DVFS governor integration test across 8 cores
+    let mut gov = dvfs::DvfsGovernor::new();
+
+    // Configure varied per-core undervolt curves (-25mV, -50mV, -75mV, -100mV)
+    for core_id in 0..8 {
+        let offset = -25 * ((core_id as i32 % 4) + 1);
+        if gov.set_core_undervolt(core_id, offset).is_err() {
+            return false;
+        }
+    }
+
+    // Cycle through all frequency steps from 1.2 GHz to 3.8 GHz
+    for &step in &cppc::STANDARD_FREQUENCY_TABLE {
+        for core_id in 0..8 {
+            let opp = match gov.set_target_frequency(core_id, step.frequency_mhz) {
+                Ok(o) => o,
+                Err(_) => return false,
+            };
+            if opp.effective_voltage_mv < dvfs::MIN_SAFE_VOLTAGE_MV
+                || opp.effective_voltage_mv > dvfs::MAX_SAFE_VOLTAGE_MV
+            {
+                return false;
+            }
+        }
+    }
+
+    crate::serial_write_str("  * End-to-end 8-core DVFS governor curves and dynamic undervolting verified\r\n");
+    crate::serial_write_str("[KNT-POWER-DVFS-PASS] Unified kernel DVFS frequency scaling and micro-voltage stepping governor operational\r\n");
 
     true
 }
