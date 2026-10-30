@@ -6,6 +6,9 @@
 //!   at low luminance (<25%) to maintain LED color uniformity and prevent diode extinction.
 //! - CIE 1931 perceptual luminance gamma mapping (L* -> Y) matching human ocular response.
 //! - Hysteresis band preventing rapid mode oscillation near the 25% transition threshold.
+//! - Gradual exponential / linear fade step pacing avoiding stepped flicker during transitions.
+//! - Ambient minimum brightness clamping and power-save battery limits.
+//! - OLED panel dark-mode scaling and Auto-Brightness Limiting (ABL) governor.
 
 use crate::drivers::display::pwm::{PwmModulator, PWM_DUTY_MAX};
 
@@ -57,8 +60,17 @@ pub fn cie1931_linear_to_perceived(linear: f32) -> f32 {
 }
 
 // -----------------------------------------------------------------------------
-// Dimming Modes & Operating Domain
+// Display Technology & Dimming Modes
 // -----------------------------------------------------------------------------
+
+/// Display panel technology profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PanelType {
+    /// Transmissive LCD panel with LED edge-lit / direct backlight.
+    Lcd,
+    /// Self-emissive OLED panel with per-pixel emission and ABL governor.
+    Oled,
+}
 
 /// Backlight dimming operating mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,9 +92,78 @@ pub enum HybridDomain {
     PwmModulated,
 }
 
+// -----------------------------------------------------------------------------
+// Fade Pacer & Clamping
+// -----------------------------------------------------------------------------
+
+/// Temporal fade pacer providing smooth, gradual brightness transitions.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FadePacer {
+    /// Current interpolated perceived brightness level [0.0..1.0].
+    pub current_level: f32,
+    /// Target perceived brightness level [0.0..1.0].
+    pub target_level: f32,
+    /// Transition rate when increasing brightness (units / second, default 2.5).
+    pub ramp_up_rate_per_sec: f32,
+    /// Transition rate when dimming brightness for comfortable dark adaptation (units / second, default 1.5).
+    pub ramp_down_rate_per_sec: f32,
+}
+
+impl FadePacer {
+    pub const fn new(initial_level: f32) -> Self {
+        Self {
+            current_level: initial_level,
+            target_level: initial_level,
+            ramp_up_rate_per_sec: 2.5,
+            ramp_down_rate_per_sec: 1.5,
+        }
+    }
+
+    /// Advances the smooth fade pacer by `dt_sec` seconds.
+    pub fn step(&mut self, dt_sec: f32) -> f32 {
+        if dt_sec <= 0.0 {
+            return self.current_level;
+        }
+
+        let delta = self.target_level - self.current_level;
+        if delta.abs() < 1e-4 {
+            self.current_level = self.target_level;
+            return self.current_level;
+        }
+
+        let rate = if delta > 0.0 {
+            self.ramp_up_rate_per_sec
+        } else {
+            self.ramp_down_rate_per_sec
+        };
+
+        let max_step = rate * dt_sec;
+        if delta.abs() <= max_step {
+            self.current_level = self.target_level;
+        } else if delta > 0.0 {
+            self.current_level += max_step;
+        } else {
+            self.current_level -= max_step;
+        }
+
+        self.current_level
+    }
+
+    /// Returns true if currently actively transitioning towards target.
+    pub fn is_fading(&self) -> bool {
+        (self.target_level - self.current_level).abs() > 1e-4
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Backlight Configuration & Output State
+// -----------------------------------------------------------------------------
+
 /// Backlight governor configuration parameters.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BacklightConfig {
+    /// Display panel technology (LCD vs OLED).
+    pub panel_type: PanelType,
     /// Dimming operational strategy.
     pub dimming_mode: DimmingMode,
     /// Transition threshold for hybrid mode (linear ratio, default 0.25 = 25%).
@@ -93,16 +174,36 @@ pub struct BacklightConfig {
     pub max_luminance_nits: f32,
     /// Minimum calibrated readable display luminance in nits.
     pub min_luminance_nits: f32,
+    /// Ambient minimum perceived brightness clamp in pitch-dark conditions (default 0.03).
+    pub min_ambient_clamp: f32,
+    /// Minimum OLED ABL power scaling multiplier under 100% full-screen white (default 0.60).
+    pub oled_min_abl_multiplier: f32,
 }
 
 impl BacklightConfig {
     pub const fn default_handheld() -> Self {
         Self {
+            panel_type: PanelType::Lcd,
             dimming_mode: DimmingMode::HybridDc,
             hybrid_threshold: 0.25,
             hybrid_hysteresis: 0.02,
             max_luminance_nits: 500.0,
             min_luminance_nits: 2.0,
+            min_ambient_clamp: 0.03,
+            oled_min_abl_multiplier: 0.60,
+        }
+    }
+
+    pub const fn default_handheld_oled() -> Self {
+        Self {
+            panel_type: PanelType::Oled,
+            dimming_mode: DimmingMode::HybridDc,
+            hybrid_threshold: 0.25,
+            hybrid_hysteresis: 0.02,
+            max_luminance_nits: 600.0,
+            min_luminance_nits: 1.5,
+            min_ambient_clamp: 0.02,
+            oled_min_abl_multiplier: 0.60,
         }
     }
 }
@@ -122,21 +223,30 @@ pub struct BacklightOutputState {
     pub pwm_duty_16: u16,
     /// Active hybrid domain state.
     pub active_domain: HybridDomain,
+    /// Auto-brightness limiter (ABL) scaling multiplier applied [0.0..1.0].
+    pub abl_scaling: f32,
 }
 
 // -----------------------------------------------------------------------------
 // Backlight Governor
 // -----------------------------------------------------------------------------
 
-/// Unified backlight governor managing PWM modulation and flicker-free DC dimming.
+/// Unified backlight governor managing PWM modulation, flicker-free DC dimming,
+/// fade pacing, and OLED ABL scaling.
 #[derive(Debug, Clone)]
 pub struct BacklightGovernor {
     /// Operational configuration.
     pub config: BacklightConfig,
     /// Current hybrid operating domain.
     pub current_domain: HybridDomain,
-    /// Current user perceived brightness target [0.0..1.0].
-    pub current_perceived: f32,
+    /// Smooth temporal fade pacer.
+    pub pacer: FadePacer,
+    /// Battery saver maximum power clamp (e.g. Some(0.70)).
+    pub battery_saver_clamp: Option<f32>,
+    /// Display blanked state (true = display sleep / screen off).
+    pub display_blanked: bool,
+    /// Current Average Picture Level (APL) for OLED panels [0.0..1.0].
+    pub average_picture_level: f32,
 }
 
 impl BacklightGovernor {
@@ -145,28 +255,107 @@ impl BacklightGovernor {
         Self {
             config,
             current_domain: HybridDomain::DcRegulated,
-            current_perceived: 1.0,
+            pacer: FadePacer::new(1.0),
+            battery_saver_clamp: None,
+            display_blanked: false,
+            average_picture_level: 0.5,
         }
     }
 
-    /// Evaluates hardware drive state for a requested perceived brightness level [0.0..1.0].
+    /// Sets the requested perceived brightness target.
+    pub fn set_target(&mut self, target: f32) {
+        self.pacer.target_level = target.clamp(0.0, 1.0);
+    }
+
+    /// Sets battery saver maximum luminance clamp.
+    pub fn set_battery_saver_clamp(&mut self, clamp: Option<f32>) {
+        self.battery_saver_clamp = clamp.map(|c| c.clamp(0.0, 1.0));
+    }
+
+    /// Sets display blanked state (screen off / sleep mode).
+    pub fn set_display_blanked(&mut self, blanked: bool) {
+        self.display_blanked = blanked;
+    }
+
+    /// Updates Average Picture Level (APL) for OLED ABL governor.
+    pub fn set_average_picture_level(&mut self, apl: f32) {
+        self.average_picture_level = apl.clamp(0.0, 1.0);
+    }
+
+    /// Computes Auto-Brightness Limiting (ABL) scaling multiplier based on APL.
+    pub fn compute_abl_multiplier(&self, apl: f32) -> f32 {
+        if self.config.panel_type != PanelType::Oled {
+            return 1.0;
+        }
+
+        // For OLED panels:
+        // APL <= 0.30: 1.0 (full peak luminance allowed on dark UI / small highlights)
+        // APL > 0.30: scales down linearly to oled_min_abl_multiplier at APL = 1.00 (full-field white)
+        if apl <= 0.30 {
+            1.0
+        } else {
+            let progress = (apl - 0.30) / 0.70;
+            1.0 - progress * (1.0 - self.config.oled_min_abl_multiplier)
+        }
+    }
+
+    /// Applies near-black shadow detail enhancement for OLED dark themes.
+    pub fn apply_near_black_boost(&self, linear_lum: f32, apl: f32) -> f32 {
+        if self.config.panel_type == PanelType::Oled && apl < 0.20 {
+            if linear_lum > 0.0 && linear_lum < 0.05 {
+                // Subtle 15% gamma boost to near-black tones, keeping 0.0 true black
+                (linear_lum * 1.15).min(0.05)
+            } else {
+                linear_lum
+            }
+        } else {
+            linear_lum
+        }
+    }
+
+    /// Evaluates hardware drive state for the current interpolated fade level.
     pub fn evaluate(&mut self, perceived_brightness: f32) -> BacklightOutputState {
-        let perceived = perceived_brightness.clamp(0.0, 1.0);
-        self.current_perceived = perceived;
+        // 1. If display is blanked (sleep mode), drive outputs are 0
+        if self.display_blanked {
+            return BacklightOutputState {
+                perceived_brightness: 0.0,
+                linear_luminance: 0.0,
+                output_nits: 0.0,
+                dc_drive_permille: 0,
+                pwm_duty_16: 0,
+                active_domain: self.current_domain,
+                abl_scaling: 1.0,
+            };
+        }
 
-        // Apply CIE 1931 perceptual luminance curve
-        let linear_luminance = cie1931_perceived_to_linear(perceived);
-        let output_nits = linear_luminance * self.config.max_luminance_nits;
+        // 2. Apply ambient minimum clamp and battery saver clamp
+        let mut clamped_perceived = perceived_brightness.clamp(0.0, 1.0);
+        clamped_perceived = clamped_perceived.max(self.config.min_ambient_clamp);
+        if let Some(saver_max) = self.battery_saver_clamp {
+            clamped_perceived = clamped_perceived.min(saver_max);
+        }
 
+        // 3. Apply CIE 1931 perceptual luminance curve
+        let mut linear_luminance = cie1931_perceived_to_linear(clamped_perceived);
+
+        // 4. Apply OLED dark-mode shadow boost
+        linear_luminance = self.apply_near_black_boost(linear_luminance, self.average_picture_level);
+
+        // 5. Apply OLED Auto-Brightness Limiting (ABL) scaling
+        let abl_scaling = self.compute_abl_multiplier(self.average_picture_level);
+        let effective_linear = (linear_luminance * abl_scaling).clamp(0.0, 1.0);
+        let output_nits = effective_linear * self.config.max_luminance_nits;
+
+        // 6. Evaluate hybrid DC / PWM drive values
         let (dc_permille, pwm_duty, domain) = match self.config.dimming_mode {
             DimmingMode::PureDc => {
-                let dc = ((linear_luminance * 1000.0) + 0.5) as u16;
-                let pwm = if linear_luminance > 0.0 { PWM_DUTY_MAX } else { 0 };
+                let dc = ((effective_linear * 1000.0) + 0.5) as u16;
+                let pwm = if effective_linear > 0.0 { PWM_DUTY_MAX } else { 0 };
                 (dc.min(1000), pwm, HybridDomain::DcRegulated)
             }
             DimmingMode::HighFreqPwm => {
-                let pwm = ((linear_luminance * (PWM_DUTY_MAX as f32)) + 0.5) as u16;
-                let dc = if linear_luminance > 0.0 { 1000 } else { 0 };
+                let pwm = ((effective_linear * (PWM_DUTY_MAX as f32)) + 0.5) as u16;
+                let dc = if effective_linear > 0.0 { 1000 } else { 0 };
                 (dc, pwm, HybridDomain::PwmModulated)
             }
             DimmingMode::HybridDc => {
@@ -176,30 +365,30 @@ impl BacklightGovernor {
 
                 match self.current_domain {
                     HybridDomain::DcRegulated => {
-                        if linear_luminance < low_thresh {
+                        if effective_linear < low_thresh {
                             self.current_domain = HybridDomain::PwmModulated;
                         }
                     }
                     HybridDomain::PwmModulated => {
-                        if linear_luminance > high_thresh {
+                        if effective_linear > high_thresh {
                             self.current_domain = HybridDomain::DcRegulated;
                         }
                     }
                 }
 
-                if linear_luminance == 0.0 {
+                if effective_linear == 0.0 {
                     (0, 0, self.current_domain)
                 } else if self.current_domain == HybridDomain::DcRegulated {
                     // Medium-to-high luminance: DC regulation.
                     // PWM is locked at 100% duty (continuous non-pulsing current, zero strobe flicker).
-                    let dc = ((linear_luminance * 1000.0) + 0.5) as u16;
+                    let dc = ((effective_linear * 1000.0) + 0.5) as u16;
                     (dc.min(1000), PWM_DUTY_MAX, HybridDomain::DcRegulated)
                 } else {
                     // Low luminance: PWM modulation below threshold.
                     // DC drive is locked at the hybrid threshold permille (e.g. 250 = 25% current)
                     // preventing color shift and diode knee extinction.
                     let dc_floor_permille = ((self.config.hybrid_threshold * 1000.0) + 0.5) as u16;
-                    let pwm_fraction = (linear_luminance / self.config.hybrid_threshold).clamp(0.0, 1.0);
+                    let pwm_fraction = (effective_linear / self.config.hybrid_threshold).clamp(0.0, 1.0);
                     let pwm = ((pwm_fraction * (PWM_DUTY_MAX as f32)) + 0.5) as u16;
                     (dc_floor_permille, pwm, HybridDomain::PwmModulated)
                 }
@@ -207,13 +396,20 @@ impl BacklightGovernor {
         };
 
         BacklightOutputState {
-            perceived_brightness: perceived,
-            linear_luminance,
+            perceived_brightness: clamped_perceived,
+            linear_luminance: effective_linear,
             output_nits,
             dc_drive_permille: dc_permille,
             pwm_duty_16: pwm_duty,
             active_domain: domain,
+            abl_scaling,
         }
+    }
+
+    /// Advances the smooth fade pacer by `dt_sec` and evaluates the new output state.
+    pub fn tick_fade(&mut self, dt_sec: f32) -> BacklightOutputState {
+        let current = self.pacer.step(dt_sec);
+        self.evaluate(current)
     }
 
     /// Dispatches hardware updates directly to an active PWM modulator.
@@ -258,7 +454,8 @@ pub fn verify_hybrid_dc_dimming_and_cie1931() -> bool {
     }
 
     // 3. Verify Hybrid DC Dimming Governor Transitions
-    let config = BacklightConfig::default_handheld();
+    let mut config = BacklightConfig::default_handheld();
+    config.min_ambient_clamp = 0.0; // Disable min clamp for transition testing
     let mut governor = BacklightGovernor::new(config);
 
     // 3a. High luminance test: Perceived 1.0 -> Linear 1.0 -> DC domain
@@ -307,6 +504,91 @@ pub fn verify_hybrid_dc_dimming_and_cie1931() -> bool {
     // Once perceived reaches 0.62 -> linear ~ 0.31 > 0.27 -> transitions to DcRegulated
     let state_dc_trans = governor.evaluate(0.62);
     if state_dc_trans.active_domain != HybridDomain::DcRegulated {
+        return false;
+    }
+
+    true
+}
+
+/// Unit test verifying smooth fade pacing, ambient minimum clamp, and OLED dark-mode / ABL scaling.
+pub fn verify_fade_pacing_ambient_clamp_and_oled_scaling() -> bool {
+    // 1. Verify Fade Pacer
+    let mut pacer = FadePacer::new(0.2);
+    pacer.target_level = 0.7; // delta = +0.5
+    // With ramp_up_rate = 2.5/s, a 0.1s step should advance level by 0.25
+    let step_1 = pacer.step(0.1);
+    if (step_1 - 0.45).abs() > 0.01 {
+        return false;
+    }
+    if !pacer.is_fading() {
+        return false;
+    }
+    // Advance another 0.15s: should reach 0.45 + (2.5 * 0.15) = 0.45 + 0.375 = 0.825 -> clamped to 0.7
+    let step_2 = pacer.step(0.15);
+    if (step_2 - 0.7).abs() > 0.001 {
+        return false;
+    }
+    if pacer.is_fading() {
+        return false;
+    }
+
+    // 2. Verify Ambient Minimum Clamp & Battery Saver
+    let config = BacklightConfig::default_handheld(); // min_ambient_clamp = 0.03
+    let mut gov = BacklightGovernor::new(config);
+
+    // Requesting 0.0 perceived should be clamped to 0.03
+    let state_clamped = gov.evaluate(0.0);
+    if (state_clamped.perceived_brightness - 0.03).abs() > 0.001 {
+        return false;
+    }
+
+    // If display is blanked (sleep mode), clamp is bypassed and output is 0
+    gov.set_display_blanked(true);
+    let state_blank = gov.evaluate(0.5);
+    if state_blank.linear_luminance != 0.0 || state_blank.dc_drive_permille != 0 || state_blank.pwm_duty_16 != 0 {
+        return false;
+    }
+    gov.set_display_blanked(false);
+
+    // Battery saver clamp: 70% max
+    gov.set_battery_saver_clamp(Some(0.70));
+    let state_saver = gov.evaluate(1.0);
+    if (state_saver.perceived_brightness - 0.70).abs() > 0.001 {
+        return false;
+    }
+    gov.set_battery_saver_clamp(None);
+
+    // 3. Verify OLED Dark-Mode & Auto-Brightness Limiting (ABL) Scaling
+    let oled_config = BacklightConfig::default_handheld_oled();
+    let oled_gov = BacklightGovernor::new(oled_config);
+
+    // 3a. LCD panel: ABL is inactive (multiplier always 1.0)
+    if gov.compute_abl_multiplier(1.0) != 1.0 {
+        return false;
+    }
+
+    // 3b. OLED panel at low APL (<= 0.30): multiplier is 1.0
+    if oled_gov.compute_abl_multiplier(0.15) != 1.0 {
+        return false;
+    }
+    if oled_gov.compute_abl_multiplier(0.30) != 1.0 {
+        return false;
+    }
+
+    // 3c. OLED panel at 100% full-screen white (APL = 1.00): throttles to 60%
+    let oled_abl_full = oled_gov.compute_abl_multiplier(1.0);
+    if (oled_abl_full - 0.60).abs() > 0.01 {
+        return false;
+    }
+
+    // 3d. OLED near-black shadow detail boost:
+    // For low APL (< 0.20), near-black (0.02) gets boosted by 15%
+    let boosted = oled_gov.apply_near_black_boost(0.02, 0.10);
+    if (boosted - (0.02 * 1.15)).abs() > 0.001 {
+        return false;
+    }
+    // True black (0.0) must NOT be boosted
+    if oled_gov.apply_near_black_boost(0.0, 0.10) != 0.0 {
         return false;
     }
 
