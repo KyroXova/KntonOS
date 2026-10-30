@@ -1,8 +1,4 @@
 //! VirtIO Modern PCI Capability Scanner and Register Interface.
-//!
-//! Implements PCI standard configuration space enumeration (via I/O ports 0xCF8 / 0xCFC)
-//! and parses VirtIO 1.0+ vendor-specific capabilities (type 0x09) to locate Common,
-//! Notify, ISR, and Device Configuration structures.
 
 use alloc::vec::Vec;
 

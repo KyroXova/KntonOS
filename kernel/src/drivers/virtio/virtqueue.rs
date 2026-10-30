@@ -1,9 +1,4 @@
 //! Split Virtqueue DMA Memory Structures and Ring Management.
-//!
-//! Implements standard OASIS VirtIO 1.0+ split virtqueue layout:
-//! - Descriptor Table: Defines memory buffers, buffer lengths, and chaining.
-//! - Available Ring: Driver-to-device circular queue of ready descriptor chains.
-//! - Used Ring: Device-to-driver circular queue reporting completed requests.
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
