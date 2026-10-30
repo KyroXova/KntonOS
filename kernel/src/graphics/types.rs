@@ -1,17 +1,11 @@
 //! 3D Graphics Mathematics, Geometry, Matrix, and Vertex Types for KntonOS.
-//!
 //! Provides vector, matrix, vertex, and triangle structures for the software 3D pipeline:
-//! - Vec3, Vec4, Mat4 (Identity, Translation, Scaling, Rotation X/Y/Z, Perspective Projection)
-//! - 4-component floating-point Color4 for smooth shading interpolation
-//! - Vertex3D and Triangle3D representations with surface normals
 
 pub const PI: f32 = 3.14159265358979323846;
 pub const HALF_PI: f32 = PI / 2.0;
 pub const TWO_PI: f32 = PI * 2.0;
 
-// -----------------------------------------------------------------------------
 // Pure no_std Floating Point Math Helpers (Taylor series & Newton-Raphson)
-// -----------------------------------------------------------------------------
 
 /// Computes the square root of a floating-point number using Newton-Raphson iteration.
 pub fn sqrt_f32(x: f32) -> f32 {
@@ -67,9 +61,7 @@ pub fn tan_f32(rad: f32) -> f32 {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Vector3 (3D coordinates & directions)
-// -----------------------------------------------------------------------------
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -147,9 +139,7 @@ impl Vec3 {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Vector4 (Homogeneous coordinates)
-// -----------------------------------------------------------------------------
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -201,9 +191,7 @@ impl Vec4 {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Matrix4x4 (Row-Major 3D Transformation Matrix)
-// -----------------------------------------------------------------------------
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -356,9 +344,7 @@ impl Mat4 {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Floating Point Color4 for Smooth Vertex Shading Interpolation
-// -----------------------------------------------------------------------------
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -426,9 +412,7 @@ impl Color4 {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Vertex3D & Triangle3D Structures
-// -----------------------------------------------------------------------------
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -475,9 +459,7 @@ impl Triangle3D {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Unit Tests for 3D Math & Structures
-// -----------------------------------------------------------------------------
 
 /// Verification unit test for 3D vector, matrix, vertex, and triangle operations.
 pub fn test_3d_math_and_structures() -> bool {

@@ -1,12 +1,5 @@
 //! Unified Handheld PC Virtual Keyboard & Predictive Swipe IME Gesture Engine.
-//!
 //! Provides an ultra-low-latency in-game virtual keyboard for handheld PCs with zero input lag:
-//! - Multi-Layout Maps: Full QWERTY, Compact Thumb-Pad, and Dual Gamepad Split-Pad
-//! - Spatial Touch Hit-Test Grid with sub-microsecond lookup
-//! - Continuous Swipe Trajectory Smoothing via Catmull-Rom Spline Interpolation
-//! - Shape-Writing Curve Tokenizer with inflection / cusp feature extraction
-//! - Predictive N-Gram Word Candidate Lattice with spatial error tolerance ellipse
-//! - Direct Win32 Virtual Key Event Injection
 
 extern crate alloc;
 
@@ -14,9 +7,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use crate::ui::overlay_plane::PlaneRect;
 
-// =============================================================================
 // 1. Virtual Key Definitions & Layout Modes
-// =============================================================================
 
 /// Distinct key action or character output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -444,9 +435,7 @@ impl VirtualKeyboardLayout {
     }
 }
 
-// =============================================================================
 // 2. Continuous Swipe Trajectory Smoothing & Shape-Writing Tokenizer
-// =============================================================================
 
 /// Single touch sensor sample along a gesture stroke.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -638,9 +627,7 @@ impl ShapeWritingTokenizer {
     }
 }
 
-// =============================================================================
 // 3. Spatial Error Ellipse, Predictive Lattice & Win32 Event Injector
-// =============================================================================
 
 pub const VK_BACK: u8 = 0x08;
 pub const VK_TAB: u8 = 0x09;
@@ -891,9 +878,7 @@ impl PredictiveWordLattice {
 }
 
 
-// =============================================================================
 // 4. Subsystem Verification Suite & Boot Sentinel
-// =============================================================================
 
 /// Verification test suite for Unified Handheld PC Virtual Keyboard & Predictive Swipe IME Gesture Engine (TASK-KNT-112).
 pub fn test_virtual_keyboard_and_swipe_ime_subsystem() -> bool {
@@ -1034,9 +1019,7 @@ pub fn test_virtual_keyboard_and_swipe_ime_subsystem() -> bool {
     true
 }
 
-// -----------------------------------------------------------------------------
 // Unit Tests for Commit 1
-// -----------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
