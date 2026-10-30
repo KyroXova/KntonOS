@@ -356,3 +356,334 @@ pub fn verify_sensor_registers_and_spi_framing() -> bool {
 
     true
 }
+
+// -----------------------------------------------------------------------------
+// Commit 2: Minutiae Feature Extraction, Ridge Frequency & Anti-Spoof Liveness
+// -----------------------------------------------------------------------------
+
+/// Minutia singularity type representing intrinsic fingerprint topological features.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MinutiaType {
+    /// Abrupt termination of an epidermal friction ridge.
+    RidgeEnding,
+    /// Single epidermal friction ridge dividing into two distinct parallel ridges.
+    RidgeBifurcation,
+}
+
+/// Extracted minutia landmark descriptor.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MinutiaPoint {
+    /// Matrix X coordinate [0..63].
+    pub x: u8,
+    /// Matrix Y coordinate [0..63].
+    pub y: u8,
+    /// Topological category (Ending or Bifurcation).
+    pub minutia_type: MinutiaType,
+    /// Ridge tangent orientation angle in degrees [0..359].
+    pub angle_deg: u16,
+    /// Minutia clarity and quality score [0..100].
+    pub quality: u8,
+}
+
+impl MinutiaPoint {
+    pub const fn empty() -> Self {
+        Self {
+            x: 0,
+            y: 0,
+            minutia_type: MinutiaType::RidgeEnding,
+            angle_deg: 0,
+            quality: 0,
+        }
+    }
+}
+
+/// Maximum number of minutiae retained per fingerprint template.
+pub const MAX_MINUTIAE: usize = 48;
+
+/// Collection of extracted minutiae points representing a fingerprint signature.
+#[derive(Clone, Copy)]
+pub struct MinutiaeSet {
+    /// Array of detected minutiae landmarks.
+    pub points: [MinutiaPoint; MAX_MINUTIAE],
+    /// Number of valid minutiae in points array.
+    pub count: usize,
+    /// Estimated center of mass X coordinate.
+    pub center_x: u8,
+    /// Estimated center of mass Y coordinate.
+    pub center_y: u8,
+    /// Average ridge-to-ridge period in pixels.
+    pub average_ridge_period: f32,
+}
+
+impl MinutiaeSet {
+    /// Creates an empty minutiae set.
+    pub const fn new() -> Self {
+        Self {
+            points: [MinutiaPoint::empty(); MAX_MINUTIAE],
+            count: 0,
+            center_x: 32,
+            center_y: 32,
+            average_ridge_period: 0.0,
+        }
+    }
+
+    /// Adds a detected minutia point if capacity permits.
+    pub fn push(&mut self, point: MinutiaPoint) -> bool {
+        if self.count < MAX_MINUTIAE {
+            self.points[self.count] = point;
+            self.count += 1;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// Anti-spoof liveness evaluation assessment.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LivenessAssessment {
+    /// True if the sensor verified genuine living biological human tissue.
+    pub is_live: bool,
+    /// Composite liveness confidence score [0..100] (>= 70 passes).
+    pub liveness_score: u8,
+    /// Measured skin surface capacitive impedance in kilo-Ohms (kOhm).
+    pub capacitive_impedance_kohm: u32,
+    /// True if spatial ridge frequency matches physiological human bounds.
+    pub ridge_frequency_valid: bool,
+    /// True if 3D dermal ridge contrast meets depth criteria (rejecting 2D paper/photos).
+    pub dermal_contrast_valid: bool,
+}
+
+/// Evaluates anti-spoof liveness metrics against capacitive sensor readings.
+pub fn evaluate_liveness(
+    image: &FingerprintImageBuffer,
+    measured_impedance_kohm: u32,
+) -> LivenessAssessment {
+    // 1. Living human skin impedance typically ranges between 50 kOhm and 500 kOhm.
+    // Conductive gelatin/metals are < 20 kOhm, while silicone/plastics are > 2000 kOhm.
+    let impedance_valid = measured_impedance_kohm >= 40 && measured_impedance_kohm <= 600;
+
+    // 2. Dermal contrast check: Living fingerprints have deep alternating ridge/valley relief.
+    // Flat photos or smeared conductive stamps have low variance (< 300).
+    let dermal_contrast_valid = image.variance >= 350;
+
+    // 3. Spectral ridge frequency: Measure horizontal and vertical zero crossings.
+    // Valid human fingerprints have 4 to 12 pixels per ridge cycle at 500 DPI.
+    let mut transitions = 0usize;
+    let threshold = image.mean_intensity;
+    let cy = SENSOR_HEIGHT / 2;
+    for x in 1..SENSOR_WIDTH {
+        let p_prev = image.get_pixel(x - 1, cy) >= threshold;
+        let p_curr = image.get_pixel(x, cy) >= threshold;
+        if p_prev != p_curr {
+            transitions += 1;
+        }
+    }
+
+    // Number of ridge pairs across 64 pixels should typically be between 4 and 12
+    let ridge_frequency_valid = transitions >= 6 && transitions <= 24;
+
+    // Compute composite liveness score
+    let mut score = 0u8;
+    if impedance_valid {
+        score += 40;
+    }
+    if dermal_contrast_valid {
+        score += 35;
+    }
+    if ridge_frequency_valid {
+        score += 25;
+    }
+
+    LivenessAssessment {
+        is_live: score >= 70,
+        liveness_score: score,
+        capacitive_impedance_kohm: measured_impedance_kohm,
+        ridge_frequency_valid,
+        dermal_contrast_valid,
+    }
+}
+
+/// Extracts minutiae feature points from the raw capacitive fingerprint image buffer.
+pub fn extract_minutiae(image: &FingerprintImageBuffer) -> MinutiaeSet {
+    let mut set = MinutiaeSet::new();
+    let threshold = image.mean_intensity;
+
+    // Binarize image: 1 for ridge (darker/higher charge), 0 for valley
+    // We inspect 3x3 neighborhoods inside [4..SENSOR_WIDTH-4, 4..SENSOR_HEIGHT-4] to avoid edge artifacts
+    let mut sum_x: u32 = 0;
+    let mut sum_y: u32 = 0;
+    let mut ridge_pixels: u32 = 0;
+
+    // 8-neighbor offsets in clockwise order:
+    // (0,-1), (1,-1), (1,0), (1,1), (0,1), (-1,1), (-1,0), (-1,-1)
+    const DX: [i32; 8] = [0, 1, 1, 1, 0, -1, -1, -1];
+    const DY: [i32; 8] = [-1, -1, 0, 1, 1, 1, 0, -1];
+    const ANGLES: [u16; 8] = [270, 315, 0, 45, 90, 135, 180, 225];
+
+    for y in 4..(SENSOR_HEIGHT - 4) {
+        for x in 4..(SENSOR_WIDTH - 4) {
+            let center_is_ridge = image.get_pixel(x, y) >= threshold;
+            if !center_is_ridge {
+                continue;
+            }
+
+            sum_x += x as u32;
+            sum_y += y as u32;
+            ridge_pixels += 1;
+
+            // Evaluate Crossing Number (CN) around center pixel
+            let mut neighbors = [0u8; 8];
+            for i in 0..8 {
+                let nx = (x as i32 + DX[i]) as usize;
+                let ny = (y as i32 + DY[i]) as usize;
+                neighbors[i] = if image.get_pixel(nx, ny) >= threshold { 1 } else { 0 };
+            }
+
+            let mut transitions = 0usize;
+            for i in 0..8 {
+                let next = (i + 1) % 8;
+                if neighbors[i] != neighbors[next] {
+                    transitions += 1;
+                }
+            }
+            let cn = transitions / 2;
+
+            if cn == 1 {
+                // Ridge Ending
+                let mut dir_idx = 0;
+                for i in 0..8 {
+                    if neighbors[i] == 1 {
+                        dir_idx = i;
+                        break;
+                    }
+                }
+                let point = MinutiaPoint {
+                    x: x as u8,
+                    y: y as u8,
+                    minutia_type: MinutiaType::RidgeEnding,
+                    angle_deg: ANGLES[dir_idx],
+                    quality: 85,
+                };
+                set.push(point);
+            } else if cn == 3 {
+                // Ridge Bifurcation
+                let point = MinutiaPoint {
+                    x: x as u8,
+                    y: y as u8,
+                    minutia_type: MinutiaType::RidgeBifurcation,
+                    angle_deg: 90,
+                    quality: 90,
+                };
+                set.push(point);
+            }
+        }
+    }
+
+    if ridge_pixels > 0 {
+        set.center_x = (sum_x / ridge_pixels) as u8;
+        set.center_y = (sum_y / ridge_pixels) as u8;
+    }
+
+    // Estimate average ridge period
+    let mut periods = 0usize;
+    let mut total_period_span = 0usize;
+    for y in (8..SENSOR_HEIGHT - 8).step_by(8) {
+        let mut last_peak = 0usize;
+        for x in 4..(SENSOR_WIDTH - 4) {
+            if image.get_pixel(x, y) >= threshold && image.get_pixel(x - 1, y) < threshold {
+                if last_peak > 0 {
+                    let span = x - last_peak;
+                    if span >= 3 && span <= 16 {
+                        total_period_span += span;
+                        periods += 1;
+                    }
+                }
+                last_peak = x;
+            }
+        }
+    }
+    if periods > 0 {
+        set.average_ridge_period = (total_period_span as f32) / (periods as f32);
+    } else {
+        set.average_ridge_period = 7.0; // nominal 500 DPI human ridge width
+    }
+
+    set
+}
+
+/// Verification helper for Commit 2 minutiae extraction and liveness detection.
+pub fn verify_minutiae_extraction_and_liveness() -> bool {
+    let mut img = FingerprintImageBuffer::new();
+
+    // Generate synthetic physiological human fingerprint pattern:
+    // Parallel horizontal ridges with period = 8 pixels, plus deliberate ending & bifurcation
+    for y in 0..SENSOR_HEIGHT {
+        for x in 0..SENSOR_WIDTH {
+            // Period = 8 pixels: alternating high and low intensity
+            let phase = y % 8;
+            let val = if phase < 4 { 210 } else { 40 };
+            img.set_pixel(x, y, val);
+        }
+    }
+
+    // Carve a deliberate ridge ending at (20, 24): gap in ridge
+    for x in 20..SENSOR_WIDTH {
+        img.set_pixel(x, 24, 40);
+    }
+
+    // Carve a deliberate bifurcation at (40, 40) branching into row 41
+    img.set_pixel(40, 41, 210);
+    img.set_pixel(41, 41, 210);
+
+    img.compute_statistics();
+
+    // 1. Minutiae extraction
+    let minutiae = extract_minutiae(&img);
+    if minutiae.count == 0 {
+        return false;
+    }
+
+    // Should find at least one ending or bifurcation
+    let mut has_ending = false;
+    let mut has_bifurcation = false;
+    for i in 0..minutiae.count {
+        match minutiae.points[i].minutia_type {
+            MinutiaType::RidgeEnding => has_ending = true,
+            MinutiaType::RidgeBifurcation => has_bifurcation = true,
+        }
+    }
+    if !has_ending && !has_bifurcation {
+        return false;
+    }
+
+    // 2. Ridge period calculation
+    if minutiae.average_ridge_period < 5.0 || minutiae.average_ridge_period > 11.0 {
+        return false;
+    }
+
+    // 3. Genuine human tissue liveness check (impedance = 150 kOhm)
+    let live_result = evaluate_liveness(&img, 150);
+    if !live_result.is_live || live_result.liveness_score < 70 {
+        return false;
+    }
+
+    // 4. Fake silicone spoof (impedance = 4500 kOhm)
+    let spoof_result = evaluate_liveness(&img, 4500);
+    if spoof_result.is_live || spoof_result.liveness_score >= 70 {
+        return false;
+    }
+
+    // 5. Flat 2D photo spoof (variance = 50)
+    let mut flat_img = FingerprintImageBuffer::new();
+    for p in flat_img.pixels.iter_mut() {
+        *p = 128;
+    }
+    flat_img.compute_statistics();
+    let flat_result = evaluate_liveness(&flat_img, 150);
+    if flat_result.is_live || flat_result.dermal_contrast_valid {
+        return false;
+    }
+
+    true
+}
