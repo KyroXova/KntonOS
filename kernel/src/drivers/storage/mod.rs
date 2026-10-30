@@ -7,9 +7,11 @@ pub mod ahci;
 pub mod nvme;
 pub mod uring;
 pub mod direct_storage;
+pub mod nvme_zns;
 
 pub use uring::*;
 pub use direct_storage::*;
+pub use nvme_zns::*;
 
 pub use nvme::{
     make_aqa, nvme_cq_doorbell, nvme_sq_doorbell, build_identify_controller, build_identify_namespace, build_nvm_read, build_nvm_write,
