@@ -319,6 +319,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Constant buffer pool and ring allocator self-test failed!\r\n");
     }
 
+    // Initialize and verify Direct3D 12 Raytracing Acceleration Structure (BVH) Memory Manager & DispatchRays Engine
+    if !gfx::test_dxr_acceleration_structure_subsystem() {
+        serial_write_str("[KNT-PANIC] Direct3D 12 raytracing acceleration structure self-test failed!\r\n");
+    }
+
     // Initialize and verify AHCI SATA Persistent Storage Subsystem
     if !drivers::storage::test_ahci_sata_subsystem() {
         serial_write_str("[KNT-PANIC] AHCI SATA storage subsystem self-test failed!\r\n");
