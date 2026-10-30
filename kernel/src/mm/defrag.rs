@@ -1,10 +1,5 @@
 //! Transparent Huge Page (2MB THP) Defragmentation & TLB Invalidator.
-//!
 //! Provides:
-//! - Page table PML4/PDPT/PD leaf re-pointing with atomic TLB shootdown invalidation (`invlpg`).
-//! - Transparent 2MB huge page aggregation (collapsing 512 scattered 4KB frames into contiguous 2MB THP).
-//! - Memory barrier synchronization (`SeqCst` fences) protecting concurrent page walks.
-//! - Proactive background defragmentation daemon with dynamic fragmentation threshold triggers.
 
 use core::sync::atomic::{fence, Ordering};
 use super::compactor::CompactionZone;
@@ -59,11 +54,7 @@ pub fn repoint_page_table_leaf(
 }
 
 /// Aggregates 512 scattered 4KB page frames into a single contiguous 2MB Transparent Huge Page.
-/// - Validates 2MB alignment of the virtual base address.
-/// - Verifies that all 512 PTEs are present and homogeneous in permissions.
-/// - Allocates a 2MB-aligned contiguous physical frame.
-/// - Atomically replaces the Page Directory pointer with a 2MB large-page PDE.
-/// - Invalidates the TLB on the 2MB range.
+/// Validates 2MB alignment of the virtual base address.
 pub fn aggregate_2mb_huge_page(
     pt: &PageTable4KB,
     pd: &mut PageDirectoryTable,
@@ -117,9 +108,7 @@ pub fn aggregate_2mb_huge_page(
     Ok(huge_frame)
 }
 
-// -----------------------------------------------------------------------------
 // Proactive Background Defragmentation Daemon
-// -----------------------------------------------------------------------------
 
 /// Policy governing proactive memory compaction and THP defragmentation triggers.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -209,9 +198,7 @@ impl TransparentDefragDaemon {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Unit Tests
-// -----------------------------------------------------------------------------
 
 /// Unit test verifying 2MB huge page aggregation, atomic leaf re-pointing, and TLB invalidation.
 pub fn test_2mb_huge_page_aggregation_and_tlb() -> bool {

@@ -1,7 +1,5 @@
 //! Memory Management Architecture (MM) - Transparent Huge Pages & NUMA Subsystem.
-//!
 //! Subsystem providing 2MB Transparent Huge Pages (THP), large page collapse/split,
-//! zero-fill optimization, AMD 3D V-Cache topology detection, and NUMA core affinity.
 
 pub mod thp;
 pub mod numa;

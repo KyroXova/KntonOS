@@ -1,7 +1,5 @@
 //! NUMA Topology & Cache Affinity Subsystem.
-//!
 //! Provides AMD Zen CCD / 3D V-Cache and Intel Hybrid P/E-core CPUID topology discovery,
-//! NUMA node abstraction, distance matrices, and cache-aware core/memory affinity routing.
 
 /// Identifies the microarchitectural CPU vendor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -326,8 +324,7 @@ impl NumaTopologyManager {
     }
 
     /// Helper creating simulated AMD Ryzen 9 7950X3D dual-CCD topology:
-    /// - CCD0: Node 0 (8 Cores, 16 Threads), 96MB L3 (3D V-Cache), 16 GiB Memory
-    /// - CCD1: Node 1 (8 Cores, 16 Threads), 32MB L3 (Frequency Boosted), 16 GiB Memory
+    /// CCD0: Node 0 (8 Cores, 16 Threads), 96MB L3 (3D V-Cache), 16 GiB Memory
     pub fn create_simulated_amd_x3d_topology() -> Self {
         let mut mgr = Self::new(CpuVendor::Amd);
 
@@ -382,8 +379,7 @@ impl NumaTopologyManager {
     }
 
     /// Helper creating simulated Intel Hybrid (12th-14th Gen) topology:
-    /// - P-Cores: Node 0, Golden Cove P-Cores (8 cores)
-    /// - E-Cores: Node 1, Gracemont E-Cores (8 cores)
+    /// P-Cores: Node 0, Golden Cove P-Cores (8 cores)
     pub fn create_simulated_intel_hybrid_topology() -> Self {
         let mut mgr = Self::new(CpuVendor::Intel);
 
