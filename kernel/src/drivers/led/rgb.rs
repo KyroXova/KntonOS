@@ -1,19 +1,10 @@
-//! Handheld PC Multi-Zone RGB Lighting Driver: Color Math, Gamma Correction & Layout.
-//!
-//! Provides color primitives, 2.2 perceptual gamma correction, HSV color space
-//! conversion, effect generators, game-state reactive aura synchronization,
-//! and Embedded Controller (EC) / I2C hardware register mapping for handheld gaming PCs.
+//! Handheld PC multi-zone RGB lighting driver, color math, gamma, and effects.
 
 use crate::graphics::{sin_f32, TWO_PI};
 
-// -----------------------------------------------------------------------------
-// Gamma 2.2 Perceptual Correction Lookup Table
-// -----------------------------------------------------------------------------
+// Gamma 2.2 perceptual correction lookup table.
 
 /// Precomputed 256-entry lookup table for 2.2 power-law gamma correction.
-///
-/// Maps linear 8-bit input intensity values to perceptual LED PWM duty cycles:
-/// PWM = round(255 * (input / 255.0)^2.2).
 pub static GAMMA_2_2_TABLE: [u8; 256] = [
       0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   1,
       1,   1,   1,   1,   1,   1,   1,   1,   1,   2,   2,   2,   2,   2,   2,   2,
@@ -39,9 +30,7 @@ pub fn apply_gamma_2_2(channel: u8) -> u8 {
     GAMMA_2_2_TABLE[channel as usize]
 }
 
-// -----------------------------------------------------------------------------
-// Rgb8 Color Structure
-// -----------------------------------------------------------------------------
+// Rgb8 color structure.
 
 /// 24-bit TrueColor RGB color representation (8 bits per channel).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -106,9 +95,7 @@ impl Rgb8 {
     }
 }
 
-// -----------------------------------------------------------------------------
-// HSV Color Space
-// -----------------------------------------------------------------------------
+// HSV color space.
 
 /// HSV (Hue, Saturation, Value) cylindrical color space representation.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -195,9 +182,7 @@ impl HsvColor {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Handheld Multi-Zone Layout
-// -----------------------------------------------------------------------------
+// Handheld multi-zone layout.
 
 /// Identifies physical RGB lighting zones on a handheld gaming PC.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -290,9 +275,7 @@ pub const fn get_zone_descriptor(zone: LedZone) -> ZoneDescriptor {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Lighting Effect Generators
-// -----------------------------------------------------------------------------
+// Lighting effect generators.
 
 /// Configurable dynamic lighting effects for handheld console illumination.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -400,9 +383,7 @@ impl LedEffect {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Aura Sync Controller
-// -----------------------------------------------------------------------------
+// Aura sync controller.
 
 /// Synchronization coordination mode across handheld lighting zones.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -545,9 +526,7 @@ impl RgbLightingController {
     }
 }
 
-// -----------------------------------------------------------------------------
-// In-Game Reactive Lighting Synchronization Engine
-// -----------------------------------------------------------------------------
+// In-game reactive lighting synchronization engine.
 
 /// Telemetry metrics streamed from the active game engine or runtime governor.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -670,9 +649,7 @@ impl GameStateAuraSync {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Embedded Controller (EC) / I2C Hardware Register Mapping
-// -----------------------------------------------------------------------------
+// Embedded controller (EC) / I2C hardware register mapping.
 
 /// Hardware register addresses for Handheld Embedded Controller (EC) / I2C RGB LED Driver.
 pub mod ec_regs {
@@ -765,9 +742,7 @@ impl MockEcDevice {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Unit Tests & Verification
-// -----------------------------------------------------------------------------
+// Unit tests and verification.
 
 /// Unit test verifying Rgb8 color mathematics, HSV conversions, gamma table, and multi-zone layout.
 pub fn verify_rgb_math_and_gamma() -> bool {

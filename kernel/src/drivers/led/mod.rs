@@ -6,10 +6,7 @@ pub use rgb::*;
 
 use crate::serial_write_str;
 
-/// Comprehensive verification self-test suite for Handheld PC Multi-Zone RGB Lighting Controller
-/// and Game State Aura Sync Engine.
-///
-/// Emits sentinel [KNT-LIGHTING-RGB-PASS] upon successful validation.
+/// Verification self-test suite for handheld PC multi-zone RGB lighting controller.
 pub fn test_rgb_lighting_subsystem() -> bool {
     serial_write_str("[KNT-LED] Testing handheld multi-zone RGB lighting & Aura Sync engine...\r\n");
 

@@ -1,11 +1,4 @@
-//! Unified Handheld PC USB4/Thunderbolt 4 Dynamic PCIe Tunneling & Hot-Plug eGPU Governor.
-//!
-//! Provides bare-metal transport and bus routing for external graphics enclosures (eGPUs)
-//! over 40 Gbps USB4/Thunderbolt 4 links featuring:
-//! - USB4 Router Configuration Spaces and Transport Adapter Descriptors.
-//! - Dynamic PCIe Gen 4x4 tunneling with credit-based flow control.
-//! - Dynamic bandwidth balancing between DisplayPort video and PCIe graphics/storage payloads.
-//! - Surprise hot-unplug safety barrier intercepting sudden cable disconnects with 0xFFFFFFFF MMIO fallback.
+//! Handheld PC USB4/Thunderbolt 4 dynamic PCIe tunneling and hot-plug eGPU governor.
 
 /// USB4 and Thunderbolt 4 Router and Adapter Configuration Space registers.
 pub mod usb4_registers {
@@ -310,9 +303,6 @@ impl Usb4BandwidthBalancer {
     }
 
     /// Recalculates dynamic bandwidth allocation between isochronous DisplayPort and PCIe.
-    ///
-    /// Isochronous DisplayPort receives guaranteed requested bandwidth (e.g. 18,000 Mbps for DP 1.4 HBR3 4K@144Hz)
-    /// while PCIe receives all remaining bandwidth, clamped to a guaranteed minimum QoS floor (4,000 Mbps).
     pub fn recalculate_allocation(
         &mut self,
         dp_active: bool,
