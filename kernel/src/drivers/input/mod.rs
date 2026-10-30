@@ -362,3 +362,27 @@ pub fn test_imu_and_gamepad_subsystem() -> bool {
     serial_write_str("[KNT-INPUT-IMU-PASS] 6-axis IMU sensor fusion and 1000Hz gamepad input pipeline verified\r\n");
     true
 }
+
+/// Comprehensive verification self-test suite for Gamepad Haptic Vibration Synthesizer
+/// and Dual-Motor Rumble Controller.
+pub fn test_gamepad_haptic_subsystem() -> bool {
+    // 1. Verify vibration waveform synthesizer, ADSR envelopes, and gain scaling
+    if !waveform::verify_waveform_synthesizer() {
+        return false;
+    }
+
+    // 2. Verify dual-motor rumble controller, playback sequence queue, and timeline mixing
+    if !haptic::verify_dual_motor_controller() {
+        return false;
+    }
+
+    // 3. Verify USB HID and gamepad haptic report packet formatting
+    if !haptic::verify_haptic_report_formatting() {
+        return false;
+    }
+
+    // 4. Emit deterministic boot sentinel
+    crate::serial_write_str("[KNT-HAPTIC-RUMBLE-PASS] Gamepad haptic waveform synthesizer and dual-motor rumble verified\r\n");
+
+    true
+}

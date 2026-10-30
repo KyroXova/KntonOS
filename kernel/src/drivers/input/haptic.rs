@@ -386,14 +386,18 @@ pub fn verify_dual_motor_controller() -> bool {
         return false;
     }
 
-    // Step 1: Initial update at t=5ms
+    // Step 1: Initial update at t=0ms (samples t=0ms where phase < 128, then advances by 5ms)
     let motors = controller.update(5);
     if motors.strong_lf == 0 || motors.weak_hf == 0 {
         return false;
     }
 
-    // Step 2: Advance past 50ms duration (advance by 50ms => total 55ms)
-    let motors_end = controller.update(50);
+    // Step 2: Advance past 50ms duration (advance by 50ms => total elapsed = 55ms, finished)
+    // The update will sample (at elapsed=5ms), then advance by 50ms to 55ms, marking it finished
+    // and removing it from active_effects.
+    let _ = controller.update(50);
+    // A subsequent update samples with an empty queue, returning off
+    let motors_end = controller.update(5);
     if motors_end.is_active() {
         return false; // Should be off
     }
