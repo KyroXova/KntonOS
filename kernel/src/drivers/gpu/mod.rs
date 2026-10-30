@@ -12,6 +12,7 @@ pub mod virtio_gpu;
 pub mod panel;
 pub mod rotation;
 pub mod vrr;
+pub mod tdr;
 
 pub use drm::*;
 pub use modeset::*;
@@ -42,6 +43,7 @@ pub use virtio_gpu::{
     VIRTIO_ID_GPU,
 };
 pub use vrr::*;
+pub use tdr::*;
 
 use crate::serial_write_str;
 
