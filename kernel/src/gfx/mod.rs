@@ -5,9 +5,11 @@
 
 pub mod cmdbuf;
 pub mod gpu_queue;
+pub mod texture_stream;
 
 pub use cmdbuf::*;
 pub use gpu_queue::*;
+pub use texture_stream::*;
 
 /// Comprehensive verification self-test suite for Direct3D / Vulkan-Style Command Buffer
 /// Recording and Hardware Queue Submission Engine.

@@ -6,8 +6,10 @@
 pub mod ahci;
 pub mod nvme;
 pub mod uring;
+pub mod direct_storage;
 
 pub use uring::*;
+pub use direct_storage::*;
 
 pub use nvme::{
     make_aqa, nvme_cq_doorbell, nvme_sq_doorbell, build_identify_controller, build_identify_namespace, build_nvm_read, build_nvm_write,
@@ -299,6 +301,139 @@ pub fn test_nvme_uring_subsystem() -> bool {
 
     // 5. Emit boot sentinel
     crate::serial_write_str("[KNT-NVME-URING-PASS] NVMe overlapped async I/O completion engine verified\r\n");
+
+    true
+}
+
+
+/// Comprehensive verification self-test for Zero-Copy DirectStorage NVMe-to-GPU Streaming & Compressed Texture Pipeline.
+///
+/// Emits sentinel [KNT-STORAGE-DIRECT-PASS] upon successful validation.
+pub fn test_direct_storage_subsystem() -> bool {
+    // 1. Verify GPU BAR1 aperture allocation and priority-ordered DirectStorage DMA queue
+    if !direct_storage::verify_direct_storage_queue_and_bar_mapping() {
+        return false;
+    }
+
+    // 2. Verify batched asynchronous I/O completion fence dispatcher and out-of-order CQE tracking
+    if !direct_storage::verify_batched_completion_fence_dispatcher() {
+        return false;
+    }
+
+    // 3. Verify BC1/BC3/BC7 block-compressed texture decoding, mip-level streaming, and VRAM memory-pressure eviction
+    if !crate::gfx::texture_stream::verify_texture_streaming_and_block_compression() {
+        return false;
+    }
+
+    // 4. End-to-end integration scenario:
+    // DirectStorage streaming of a high-resolution 4K character texture into GPU VRAM (BAR1).
+    let bar1_base = 0x0000_0004_0000_0000u64;
+    let bar1_size = 16 * 1024 * 1024 * 1024u64; // 16 GiB
+    let aperture = direct_storage::GpuBarAperture::new(bar1_base, bar1_size);
+
+    let mut ds_queue = direct_storage::DirectStorageQueue::new(aperture, 16);
+    let mut dispatcher = direct_storage::BatchedCompletionDispatcher::new();
+    let mut tex_mgr = crate::gfx::texture_stream::TextureStreamManager::new(aperture, 512 * 1024 * 1024);
+
+    let fence_id = 100;
+    dispatcher.register_fence(fence_id, 0);
+
+    // Register 4K BC7 texture asset (texture ID 200, 12 mips, starting at SSD LBA 50,000)
+    let tex = crate::gfx::texture_stream::StreamingTexture::new(
+        200,
+        crate::gfx::texture_stream::BlockCompressionFormat::Bc7Rgba,
+        4096,
+        4096,
+        12,
+        50_000,
+        512,
+    );
+    tex_mgr.register_texture(tex);
+
+    // Request Mip 1 (High priority) and Mip 0 (Realtime camera viewport visible)
+    let req_mip1 = match tex_mgr.request_mip_level(200, 1, direct_storage::DirectStoragePriority::High, 1) {
+        Ok(Some(r)) => r,
+        _ => return false,
+    };
+    let req_mip0 = match tex_mgr.request_mip_level(200, 0, direct_storage::DirectStoragePriority::Realtime, 1) {
+        Ok(Some(r)) => r,
+        _ => return false,
+    };
+
+    // Enqueue both requests into DirectStorage queue
+    let id_mip1 = match ds_queue.enqueue_texture_read(
+        req_mip1.nsid,
+        req_mip1.start_lba,
+        req_mip1.block_count,
+        req_mip1.block_size,
+        req_mip1.gpu_vram_dest,
+        req_mip1.texture_id,
+        req_mip1.mip_level,
+        req_mip1.priority,
+        req_mip1.fence_value,
+    ) {
+        Ok(id) => id,
+        Err(_) => return false,
+    };
+
+    let id_mip0 = match ds_queue.enqueue_texture_read(
+        req_mip0.nsid,
+        req_mip0.start_lba,
+        req_mip0.block_count,
+        req_mip0.block_size,
+        req_mip0.gpu_vram_dest,
+        req_mip0.texture_id,
+        req_mip0.mip_level,
+        req_mip0.priority,
+        req_mip0.fence_value,
+    ) {
+        Ok(id) => id,
+        Err(_) => return false,
+    };
+
+    // Batch submission to NVMe SQ: Realtime (Mip 0) must lead High (Mip 1)
+    let batch = ds_queue.create_submission_batch();
+    if batch.len() != 2 || batch[0].0 != id_mip0 || batch[1].0 != id_mip1 {
+        return false;
+    }
+
+    // Submit batch to completion dispatcher tied to Fence 100 -> 1
+    let req_ids = alloc::vec![id_mip0, id_mip1];
+    let total_bytes = (req_mip0.block_count as u64 + req_mip1.block_count as u64) * 512;
+    let _ = dispatcher.submit_batch(req_ids, total_bytes, fence_id, 1, 10_000_000);
+
+    // Simulate NVMe DMA hardware completion out-of-order: complete Mip 1 first, then Mip 0
+    let c1 = ds_queue.mark_completed(id_mip1).expect("id_mip1 mark failed");
+    tex_mgr.on_mip_stream_complete(c1.texture_id, c1.mip_level, c1.gpu_vram_dest);
+    let _ = dispatcher.process_completion(id_mip1, 10_001_500);
+
+    // Fence must not be signaled yet (target value 1)
+    if dispatcher.is_fence_reached(fence_id, 1) {
+        return false;
+    }
+
+    // Complete Mip 0 (final request in batch)
+    let c0 = ds_queue.mark_completed(id_mip0).expect("id_mip0 mark failed");
+    tex_mgr.on_mip_stream_complete(c0.texture_id, c0.mip_level, c0.gpu_vram_dest);
+    let comp_event = dispatcher.process_completion(id_mip0, 10_002_000);
+
+    if comp_event != Some((1, fence_id, 1)) {
+        return false;
+    }
+
+    // Fence 100 must now be reached!
+    if !dispatcher.is_fence_reached(fence_id, 1) || dispatcher.get_fence_value(fence_id) != 1 {
+        return false;
+    }
+
+    // Texture Mip 0 must now be resident in VRAM
+    let resident_tex = &tex_mgr.textures[0];
+    if resident_tex.resident_highest_mip != 0 || !resident_tex.mips[0].is_resident {
+        return false;
+    }
+
+    // 5. Emit deterministic boot sentinel
+    crate::serial_write_str("[KNT-STORAGE-DIRECT-PASS] DirectStorage NVMe-to-GPU DMA streaming and BC texture pipeline verified\r\n");
 
     true
 }
