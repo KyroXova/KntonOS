@@ -456,7 +456,7 @@ impl ConcurrentComputeScheduler {
         compute_jobs: &[ComputeShaderWorkload],
         graphics_job: &GraphicsRasterWorkload,
         sync_hub: &mut TimelineSyncHub,
-        fence: &GpuTimelineFence,
+        fence_id: u32,
         fence_target_val: u64,
     ) -> Result<ConcurrentExecutionMetrics, &'static str> {
         let mut total_workgroups: u64 = 0;
@@ -502,11 +502,15 @@ impl ConcurrentComputeScheduler {
         let overlap_efficiency = ((overlapped_cycles * 100) / min_cycles) as u32;
 
         // 4. Signal timeline fence monotonically
-        fence.signal(fence_target_val)?;
-        fence.complete(fence_target_val);
+        if let Some(fence) = sync_hub.get_fence(fence_id) {
+            fence.signal(fence_target_val)?;
+            fence.complete(fence_target_val);
+        } else {
+            return Err("Timeline fence not found in sync hub");
+        }
 
         // 5. Register and resolve cross-queue sync to present
-        sync_hub.synchronize_compute_to_graphics_present(fence.fence_id, fence_target_val)?;
+        sync_hub.synchronize_compute_to_graphics_present(fence_id, fence_target_val)?;
         sync_hub.resolve_dependencies();
 
         Ok(ConcurrentExecutionMetrics {
@@ -568,4 +572,171 @@ impl AsyncComputeQueue {
     pub fn pending_count(&self) -> usize {
         self.pending_buffers.len()
     }
+}
+
+
+// -----------------------------------------------------------------------------
+// Subsystem Verification Self-Test
+// -----------------------------------------------------------------------------
+
+/// Comprehensive verification self-test suite for Zero-Copy GPU Asynchronous Compute Dispatch
+/// & Shader Execution Fence Engine.
+///
+/// Emits sentinel [KNT-GPU-COMPUTE-PASS] upon successful validation.
+pub fn test_async_compute_subsystem() -> bool {
+    // 1. Verify Compute PSO, descriptor table, and command stream encoding
+    let pso = ComputePipelineState::new(
+        1,
+        0x0000_7000_0000_1000,
+        ThreadgroupDimension::new(8, 8, 1),
+        4096,
+        10,
+    );
+    if pso.threadgroup_size.total_threads() != 64 {
+        return false;
+    }
+
+    let mut table = DescriptorTable::new(0);
+    table.add_slot(DescriptorSlot::new(0, DescriptorType::Uav, 0x4000_0000, 1024 * 1024, 64));
+    table.add_slot(DescriptorSlot::new(1, DescriptorType::Srv, 0x5000_0000, 2048 * 1024, 32));
+    table.add_slot(DescriptorSlot::new(2, DescriptorType::Cbv, 0x6000_0000, 256, 16));
+    if table.slot_count() != 3 {
+        return false;
+    }
+
+    let mut cmd_buf = AsyncComputeCommandBuffer::new(101);
+    cmd_buf.set_pipeline_state(pso);
+    cmd_buf.set_descriptor_table(table);
+    cmd_buf.uav_barrier(1, 0x4000_0000);
+    if cmd_buf.dispatch(16, 16, 1).is_err() {
+        return false;
+    }
+    if cmd_buf.total_workgroups != 256 {
+        return false;
+    }
+
+    let mut queue = AsyncComputeQueue::new(1);
+    queue.submit(cmd_buf);
+    let processed = queue.process_pending();
+    if processed != 1 || queue.completed_workgroups != 256 || queue.completed_dispatches != 1 {
+        return false;
+    }
+
+    // 2. Verify 64-bit GpuTimelineFence lock-free atomic monotonic progression and timeout
+    let fence = GpuTimelineFence::new(1, 10);
+    if fence.current_value() != 10 || !fence.is_completed(10) || fence.is_completed(11) {
+        return false;
+    }
+    if fence.signal(10).is_ok() || fence.signal(9).is_ok() {
+        return false;
+    }
+    if fence.signal(15).is_err() {
+        return false;
+    }
+    fence.complete(15);
+    if !fence.is_completed(15) || fence.current_value() != 15 {
+        return false;
+    }
+    if fence.wait_timeout_ticks(20, 50) {
+        return false;
+    }
+
+    // 3. Verify Multi-Queue Synchronization via TimelineSyncHub
+    let mut sync_hub = TimelineSyncHub::new();
+    let sync_fence_id = sync_hub.register_fence(100);
+
+    if sync_hub.add_dependency(crate::gfx::gpu_fence::QueueSyncType::Compute, crate::gfx::gpu_fence::QueueSyncType::Graphics, sync_fence_id, 105).is_err() {
+        return false;
+    }
+    if sync_hub.is_queue_unblocked(crate::gfx::gpu_fence::QueueSyncType::Graphics) {
+        return false;
+    }
+    {
+        let sync_fence = match sync_hub.get_fence(sync_fence_id) {
+            Some(f) => f,
+            None => return false,
+        };
+        if sync_fence.signal(105).is_err() {
+            return false;
+        }
+        sync_fence.complete(105);
+    }
+    if !sync_hub.is_queue_unblocked(crate::gfx::gpu_fence::QueueSyncType::Graphics) {
+        return false;
+    }
+    let resolved = sync_hub.resolve_dependencies();
+    if resolved != 1 || sync_hub.pending_dependency_count() != 0 {
+        return false;
+    }
+
+    // 4. Verify Fine-Grained Memory Barrier transitions and cache flushes
+    let uav_bar = ComputeMemoryBarrier::uav(1, 0x4000_0000);
+    let trans_bar = ComputeMemoryBarrier::transition(
+        2,
+        0x4000_0000,
+        ResourceState::UNORDERED_ACCESS,
+        ResourceState::PIXEL_SHADER_RESOURCE,
+        PipelineStageFlags::COMPUTE_SHADER,
+        PipelineStageFlags::PIXEL_SHADER,
+    );
+    if !uav_bar.is_uav() || !trans_bar.is_valid_transition() {
+        return false;
+    }
+
+    // 5. Verify Concurrent Workgroup Pipeline Scheduling (Compute + Graphics Overlap)
+    let mut scheduler = ConcurrentComputeScheduler::new(16);
+    let compute_jobs = [
+        ComputeShaderWorkload {
+            workload_type: ComputeWorkloadType::PhysicsSimulation,
+            pso,
+            dispatch: DispatchPayload::new(8, 8, 1),
+            uav_resource_address: 0x4000_0000,
+        },
+        ComputeShaderWorkload {
+            workload_type: ComputeWorkloadType::GpuSkinning,
+            pso,
+            dispatch: DispatchPayload::new(16, 4, 1),
+            uav_resource_address: 0x4000_1000,
+        },
+        ComputeShaderWorkload {
+            workload_type: ComputeWorkloadType::FrustumCulling,
+            pso,
+            dispatch: DispatchPayload::new(32, 2, 1),
+            uav_resource_address: 0x4000_2000,
+        },
+    ];
+    let graphics_pass = GraphicsRasterWorkload {
+        name: "MainSceneGBufferRaster",
+        draw_call_count: 128,
+        estimated_raster_cycles: 2000,
+        input_resource_address: Some(0x4000_0000),
+    };
+
+    let run_fence_id = sync_hub.register_fence(0);
+    match scheduler.execute_concurrent_pass(&compute_jobs, &graphics_pass, &mut sync_hub, run_fence_id, 1) {
+        Ok(metrics) => {
+            if metrics.total_compute_workgroups != 192 {
+                return false;
+            }
+            if metrics.concurrent_overlapped_cycles == 0 || metrics.overlap_efficiency_pct == 0 {
+                return false;
+            }
+            if metrics.uav_barriers_flushed != 3 || metrics.transitions_executed != 1 {
+                return false;
+            }
+            if let Some(fence) = sync_hub.get_fence(run_fence_id) {
+                if !fence.is_completed(1) {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
+        Err(_) => return false,
+    }
+
+    // 6. Emit deterministic boot sentinel
+    crate::serial_write_str("[KNT-GPU-COMPUTE-PASS] Asynchronous compute dispatch and GPU timeline fence engine verified\r\n");
+
+    true
 }
