@@ -1,19 +1,4 @@
-//! Unified Handheld PC Fingerprint Sensor & Biometric Windows Hello Token Engine.
-//!
-//! Provides bare-metal driver support for power-button integrated capacitive fingerprint
-//! sensors (Goodix GF3208 / FPC1020 series) connected over high-speed SPI.
-//!
-//! In handheld gaming PCs (ROG Ally, Ayaneo, Legion Go, GPD Win), the capacitive fingerprint
-//! sensor is embedded directly into the physical power button to enable single-touch power-on
-//! and instantaneous biometric authentication into the OS and gaming storefronts.
-//!
-//! This module implements:
-//! - High-speed SPI transport framing, command packets, and hardware register control.
-//! - Raw 64x64 8-bit grayscale capacitive image acquisition with exposure/gain control.
-//! - Minutiae feature extraction (ridge endings and bifurcations) with spatial angle tracking.
-//! - Ridge frequency spectral analysis and anti-spoof liveness detection (capacitive impedance).
-//! - Biometric template enrollment, storage, and secure matching (FAR < 1:100,000).
-//! - Win32 Biometric Framework (`WINBIO_TOKEN`) cryptographically signed Windows Hello tokens.
+//! Handheld PC fingerprint sensor driver and biometric Windows Hello token engine.
 
 /// Hardware register addresses and command opcodes for the capacitive fingerprint sensor.
 pub mod registers {
@@ -357,9 +342,7 @@ pub fn verify_sensor_registers_and_spi_framing() -> bool {
     true
 }
 
-// -----------------------------------------------------------------------------
-// Commit 2: Minutiae Feature Extraction, Ridge Frequency & Anti-Spoof Liveness
-// -----------------------------------------------------------------------------
+// Minutiae feature extraction, ridge frequency, and anti-spoof liveness detection.
 
 /// Minutia singularity type representing intrinsic fingerprint topological features.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -688,9 +671,7 @@ pub fn verify_minutiae_extraction_and_liveness() -> bool {
     true
 }
 
-// -----------------------------------------------------------------------------
-// Commit 3: Biometric Template Matching & Windows Hello Auth Token Issuer
-// -----------------------------------------------------------------------------
+// Biometric template matching and Windows Hello auth token issuer.
 
 use crate::crypto::sha256::{hmac_sha256, Sha256};
 

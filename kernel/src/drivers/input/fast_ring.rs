@@ -1,9 +1,4 @@
-//! Zero-Latency Kernel-Bypassed Input Polling Ring Buffer.
-//!
-//! Provides a lock-free Single-Producer Single-Consumer (SPSC) circular ring
-//! designed for direct userspace memory mapping. High-performance gaming runtimes
-//! and esports engines poll input state directly from userspace shared memory
-//! with sub-microsecond latency and 0 system calls per sample.
+//! Zero-latency kernel-bypassed input polling ring buffer.
 
 extern crate alloc;
 
@@ -132,10 +127,7 @@ impl FastRingHeader {
     }
 }
 
-/// Zero-Latency Kernel-Bypassed Input Ring Buffer.
-///
-/// Contains the shared header and ring slots. Can export memory descriptors
-/// to be mapped directly into userspace process address space.
+/// Zero-latency kernel-bypassed input ring buffer supporting direct userspace mapping.
 pub struct FastInputRingBuffer {
     pub header: FastRingHeader,
     pub buffer: Vec<FastInputSample>,
@@ -159,10 +151,7 @@ impl FastInputRingBuffer {
         }
     }
 
-    /// Pushes a new input sample into the ring buffer from the kernel producer.
-    ///
-    /// If the ring is full, drops the oldest unread sample by advancing the tail
-    /// and incrementing the dropped sample counter (lossless for current state).
+    /// Pushes a new input sample into the ring buffer, dropping oldest on overflow.
     pub fn push(&mut self, mut sample: FastInputSample) {
         let head = self.header.head.load(Ordering::Relaxed);
         let tail = self.header.tail.load(Ordering::Acquire);
@@ -249,10 +238,7 @@ pub struct UserspaceRingDescriptor {
     pub sample_stride: u32,
 }
 
-/// Simulated Direct Userspace View of the Fast Input Ring.
-///
-/// Demonstrates how a game engine or high-performance userspace client consumes
-/// samples directly from shared memory with 0 syscalls.
+/// Direct userspace view of the fast input ring for zero-syscall sample consumption.
 pub struct DirectUserspaceRingView {
     header_ptr: *const FastRingHeader,
     buffer_ptr: *const FastInputSample,
@@ -448,15 +434,7 @@ pub struct RawFastInputReport {
     pub raw_right_trigger: u16,
 }
 
-/// 1000Hz High-Speed Input Polling Dispatcher.
-///
-/// Orchestrates the entire input processing chain:
-/// 1. Hall-effect magnetic resting baseline calibration
-/// 2. 1-Euro adaptive low-pass filtering (jitter suppression)
-/// 3. Anti-rebound analog smoothing (snapback protection)
-/// 4. Radial deadzone shaping and power curves
-/// 5. Trigger normalization and digital actuation
-/// 6. Direct lock-free SPSC ring buffer writing for userspace zero-copy consumption
+/// High-speed 1000Hz input polling dispatcher and pipeline orchestrator.
 pub struct FastInputPollingDispatcher {
     pub ring: FastInputRingBuffer,
     pub left_stick_filter: OneEuroFilter2D,
