@@ -774,3 +774,252 @@ impl TilePoolCompactor {
     }
 }
 
+// -----------------------------------------------------------------------------
+// Sparse Virtual Texture LRU Eviction Governor & Memory Pressure Responder
+// -----------------------------------------------------------------------------
+
+/// Candidate physical tile evaluated for eviction during memory pressure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EvictionCandidate {
+    /// Physical tile index in the pool.
+    pub physical_tile_id: u32,
+    /// Owner texture ID.
+    pub owner_texture_id: u32,
+    /// Virtual coordinate in the texture.
+    pub virtual_coord: TileCoordinate,
+    /// Eviction priority level.
+    pub priority: TileEvictionPriority,
+    /// LRU access timestamp.
+    pub lru_timestamp: u64,
+}
+
+/// Record of an individual evicted tile for telemetry and debugging.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EvictedTileRecord {
+    /// Physical tile slot freed in the pool.
+    pub physical_tile_id: u32,
+    /// Texture whose virtual mapping was unmapped.
+    pub owner_texture_id: u32,
+    /// Virtual coordinate unmapped.
+    pub virtual_coord: TileCoordinate,
+    /// Priority tier at time of eviction.
+    pub priority: TileEvictionPriority,
+    /// LRU timestamp at time of eviction.
+    pub lru_timestamp: u64,
+}
+
+/// Result of an automated memory pressure eviction pass.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EvictionResult {
+    /// Number of physical 64KB tiles evicted and freed.
+    pub tiles_evicted: usize,
+    /// Total bytes of VRAM freed back to the physical pool.
+    pub bytes_freed: usize,
+    /// Number of free 64KB physical tiles before eviction.
+    pub initial_free_tiles: usize,
+    /// Number of free 64KB physical tiles after eviction.
+    pub final_free_tiles: usize,
+    /// List of textures whose Min-LOD clamp was updated `(texture_id, new_min_lod)`.
+    pub updated_min_lods: Vec<(u32, f32)>,
+    /// Audit log of all tiles evicted during this pass.
+    pub evicted_records: Vec<EvictedTileRecord>,
+}
+
+/// Sparse Virtual Texture LRU Eviction Governor & Memory Pressure Responder.
+///
+/// Implements D3D12 Tier 2/3 compliant texture residency management:
+/// - Monitors tile pool memory pressure against high-watermark thresholds.
+/// - Evicts unreferenced, low-priority, or high-index (fine LOD) tiles in strict LRU order.
+/// - Protects pinned tiles and critical coarse mips / mip tails from eviction.
+/// - Performs zero-overhead NULL tile unmapping on evicted coordinates.
+/// - Dynamically recalculates Min-LOD clamping to prevent shader sampling artifacts.
+#[derive(Debug, Clone)]
+pub struct SparseVirtualTextureEvictionGovernor {
+    /// Pool utilization threshold (e.g., 0.85 for 85%) that triggers automated eviction.
+    pub high_watermark_ratio: f32,
+    /// Target free tile ratio (e.g., 0.25 for 25% headroom) to restore during eviction.
+    pub target_free_ratio: f32,
+    /// Cumulative count of memory pressure eviction events triggered.
+    pub total_eviction_events: usize,
+    /// Cumulative count of 64KB physical tiles evicted across all events.
+    pub total_tiles_evicted: usize,
+}
+
+impl SparseVirtualTextureEvictionGovernor {
+    /// Creates a new eviction governor with specified watermarks.
+    pub const fn new(high_watermark_ratio: f32, target_free_ratio: f32) -> Self {
+        Self {
+            high_watermark_ratio,
+            target_free_ratio,
+            total_eviction_events: 0,
+            total_tiles_evicted: 0,
+        }
+    }
+
+    /// Evaluates whether pool utilization exceeds the high-watermark threshold.
+    #[inline(always)]
+    pub fn is_under_pressure(&self, pool: &PhysicalTilePool) -> bool {
+        pool.utilization_ratio() >= self.high_watermark_ratio
+    }
+
+    /// Computes the number of physical tiles needed to restore the pool to the target headroom.
+    pub fn calculate_deficit(&self, pool: &PhysicalTilePool) -> usize {
+        let target_free = ((pool.capacity as f32) * self.target_free_ratio) as usize;
+        let current_free = pool.free_tile_count();
+        if current_free < target_free {
+            target_free - current_free
+        } else {
+            0
+        }
+    }
+
+    /// Dynamically recalculates the minimum resident LOD clamp for a sparse virtual texture.
+    ///
+    /// If fine mips have unmapped tiles, the GPU sampler clamps sampling to coarser resident mips.
+    pub fn recalculate_min_lod(texture: &mut SparseVirtualTexture) -> f32 {
+        let mut min_lod: f32 = 0.0;
+
+        for sub in texture.subresources.iter() {
+            let start = sub.start_tile_index_in_resource;
+            let end = start + sub.total_tiles;
+            let has_unmapped = texture.mapping_table.mappings[start..end]
+                .iter()
+                .any(|entry| !entry.is_resident());
+
+            if has_unmapped {
+                min_lod = (sub.mip_level + 1) as f32;
+            } else {
+                // If a mip is fully resident and we reached coarse levels, clamp at current min_lod
+                break;
+            }
+        }
+
+        let max_clamp = (texture.desc.mip_levels.saturating_sub(1)) as f32;
+        let clamped = if min_lod > max_clamp { max_clamp } else { min_lod };
+        texture.min_resident_lod = clamped;
+        clamped
+    }
+
+    /// Gathers and sorts all candidate tiles eligible for eviction.
+    ///
+    /// Excludes pinned tiles and Critical priority tiles.
+    /// Sorts candidates primarily by `priority` ascending (Low first), then by `lru_timestamp` ascending (oldest first).
+    pub fn collect_candidates(pool: &PhysicalTilePool) -> Vec<EvictionCandidate> {
+        let mut candidates = Vec::new();
+
+        for tile in pool.tiles.iter() {
+            if tile.is_allocated && !tile.is_pinned && tile.priority != TileEvictionPriority::Critical {
+                candidates.push(EvictionCandidate {
+                    physical_tile_id: tile.physical_tile_id,
+                    owner_texture_id: tile.owner_texture_id,
+                    virtual_coord: tile.virtual_coord,
+                    priority: tile.priority,
+                    lru_timestamp: tile.lru_timestamp,
+                });
+            }
+        }
+
+        // Sort: lowest priority first (Low < Normal < High), then oldest access (lowest timestamp)
+        candidates.sort_by(|a, b| {
+            match a.priority.cmp(&b.priority) {
+                core::cmp::Ordering::Equal => a.lru_timestamp.cmp(&b.lru_timestamp),
+                other => other,
+            }
+        });
+
+        candidates
+    }
+
+    /// Evicts up to `target_count` physical tiles from the pool, unmapping virtual coordinates
+    /// in the provided sparse virtual textures and recalculating their Min-LOD clamps.
+    pub fn evict_target_tiles(
+        &mut self,
+        pool: &mut PhysicalTilePool,
+        textures: &mut [SparseVirtualTexture],
+        target_count: usize,
+    ) -> EvictionResult {
+        let initial_free = pool.free_tile_count();
+        let candidates = Self::collect_candidates(pool);
+        let mut evicted_records = Vec::new();
+        let mut affected_textures = Vec::new();
+
+        for candidate in candidates.iter().take(target_count) {
+            let pid = candidate.physical_tile_id;
+
+            // Unmap referencing virtual tiles in all textures
+            for tex in textures.iter_mut() {
+                let mut texture_affected = false;
+                for entry in tex.mapping_table.mappings.iter_mut() {
+                    match entry {
+                        TileResidencyState::Resident { physical_tile_id }
+                        | TileResidencyState::Aliased { physical_tile_id }
+                            if *physical_tile_id == pid =>
+                        {
+                            *entry = TileResidencyState::Unmapped;
+                            texture_affected = true;
+                        }
+                        _ => {}
+                    }
+                }
+                if texture_affected && !affected_textures.contains(&tex.desc.texture_id) {
+                    affected_textures.push(tex.desc.texture_id);
+                }
+            }
+
+            // Free physical tile slot in the pool
+            if let Ok(freed) = pool.free_or_unalias(pid) {
+                if freed {
+                    evicted_records.push(EvictedTileRecord {
+                        physical_tile_id: pid,
+                        owner_texture_id: candidate.owner_texture_id,
+                        virtual_coord: candidate.virtual_coord,
+                        priority: candidate.priority,
+                        lru_timestamp: candidate.lru_timestamp,
+                    });
+                }
+            }
+        }
+
+        // Recalculate Min-LOD clamps for affected textures
+        let mut updated_min_lods = Vec::new();
+        for tex in textures.iter_mut() {
+            if affected_textures.contains(&tex.desc.texture_id) {
+                let new_min_lod = Self::recalculate_min_lod(tex);
+                updated_min_lods.push((tex.desc.texture_id, new_min_lod));
+            }
+        }
+
+        let evicted_count = evicted_records.len();
+        self.total_eviction_events += 1;
+        self.total_tiles_evicted += evicted_count;
+
+        EvictionResult {
+            tiles_evicted: evicted_count,
+            bytes_freed: evicted_count * D3D12_TILED_RESOURCE_TILE_SIZE_IN_BYTES,
+            initial_free_tiles: initial_free,
+            final_free_tiles: pool.free_tile_count(),
+            updated_min_lods,
+            evicted_records,
+        }
+    }
+
+    /// Evaluates memory pressure and executes automated eviction if utilization exceeds high watermark.
+    pub fn respond_to_memory_pressure(
+        &mut self,
+        pool: &mut PhysicalTilePool,
+        textures: &mut [SparseVirtualTexture],
+    ) -> Option<EvictionResult> {
+        if !self.is_under_pressure(pool) {
+            return None;
+        }
+
+        let deficit = self.calculate_deficit(pool);
+        if deficit == 0 {
+            return None;
+        }
+
+        Some(self.evict_target_tiles(pool, textures, deficit))
+    }
+}
+
+
