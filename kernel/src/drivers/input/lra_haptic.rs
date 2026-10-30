@@ -374,3 +374,272 @@ pub fn verify_lra_back_emf_and_pll_tracking() -> bool {
 
     true
 }
+
+
+// -----------------------------------------------------------------------------
+// Multi-Zone Spatial Haptic Routing
+// -----------------------------------------------------------------------------
+
+/// Physical haptic actuator zone on the handheld device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HapticZone {
+    LeftPalm = 0,
+    RightPalm = 1,
+    LeftTrigger = 2,
+    RightTrigger = 3,
+}
+
+/// Total number of discrete physical haptic actuator zones.
+pub const HAPTIC_ZONE_COUNT: usize = 4;
+
+/// Bitmask for selecting one or more haptic zones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HapticZoneMask(pub u8);
+
+impl HapticZoneMask {
+    pub const LEFT_PALM: Self = Self(1 << 0);
+    pub const RIGHT_PALM: Self = Self(1 << 1);
+    pub const LEFT_TRIGGER: Self = Self(1 << 2);
+    pub const RIGHT_TRIGGER: Self = Self(1 << 3);
+
+    pub const ALL_PALMS: Self = Self((1 << 0) | (1 << 1));
+    pub const ALL_TRIGGERS: Self = Self((1 << 2) | (1 << 3));
+    pub const ALL_ZONES: Self = Self(0x0F);
+
+    pub const fn contains(&self, zone: HapticZone) -> bool {
+        (self.0 & (1 << (zone as u8))) != 0
+    }
+
+    pub const fn union(&self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+}
+
+/// Instantaneous drive output commanded to a single zone's LRA driver IC.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ZoneDriveOutput {
+    /// Actuator zone identifier.
+    pub zone: HapticZone,
+    /// Commanded amplitude level [0..255].
+    pub amplitude: u8,
+    /// Current drive frequency in Hz (dynamically tracked by PLL).
+    pub frequency_hz: f32,
+    /// Commanded phase offset in degrees (0.0 to 360.0).
+    pub phase_deg: f32,
+    /// Whether this zone is actively vibrating.
+    pub active: bool,
+}
+
+impl ZoneDriveOutput {
+    pub const fn off(zone: HapticZone) -> Self {
+        Self {
+            zone,
+            amplitude: 0,
+            frequency_hz: LRA_NOMINAL_CENTER_FREQ_HZ,
+            phase_deg: 0.0,
+            active: false,
+        }
+    }
+}
+
+/// Spatial haptic command describing a localized or wide tactile sensation.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpatialHapticCommand {
+    /// Base vibration intensity [0..255].
+    pub base_intensity: u8,
+    /// Stereo horizontal pan [-1.0 (full left) .. +1.0 (full right)].
+    pub pan_x: f32,
+    /// Zone emphasis: 0.0 = pure palm grips, 1.0 = pure resistive triggers, 0.5 = balanced.
+    pub trigger_emphasis: f32,
+    /// Target zone mask selecting which actuators receive this effect.
+    pub target_mask: HapticZoneMask,
+}
+
+impl SpatialHapticCommand {
+    pub const fn new(
+        base_intensity: u8,
+        pan_x: f32,
+        trigger_emphasis: f32,
+        target_mask: HapticZoneMask,
+    ) -> Self {
+        Self {
+            base_intensity,
+            pan_x,
+            trigger_emphasis,
+            target_mask,
+        }
+    }
+
+    pub const fn center_all(intensity: u8) -> Self {
+        Self {
+            base_intensity: intensity,
+            pan_x: 0.0,
+            trigger_emphasis: 0.0,
+            target_mask: HapticZoneMask::ALL_ZONES,
+        }
+    }
+
+    pub const fn trigger_click(intensity: u8, right_trigger: bool) -> Self {
+        let mask = if right_trigger {
+            HapticZoneMask::RIGHT_TRIGGER
+        } else {
+            HapticZoneMask::LEFT_TRIGGER
+        };
+        let pan = if right_trigger { 1.0 } else { -1.0 };
+        Self {
+            base_intensity: intensity,
+            pan_x: pan,
+            trigger_emphasis: 1.0,
+            target_mask: mask,
+        }
+    }
+}
+
+/// Multi-zone spatial haptic routing governor managing 4 physical LRA actuators.
+#[derive(Debug, Clone)]
+pub struct MultiZoneHapticRouter {
+    /// Dedicated PLL tracker for each of the 4 zones.
+    pub plls: [LraPllTracker; HAPTIC_ZONE_COUNT],
+    /// Current drive outputs for each zone.
+    pub outputs: [ZoneDriveOutput; HAPTIC_ZONE_COUNT],
+}
+
+impl MultiZoneHapticRouter {
+    /// Initializes multi-zone router with default handheld LRA resonant frequencies.
+    /// Palms default to 175 Hz (deep rumble), triggers default to 235 Hz (crisp click).
+    pub fn new() -> Self {
+        let mut palm_cfg = LraPllConfig::default_handheld();
+        palm_cfg.nominal_freq_hz = 175.0;
+
+        let mut trigger_cfg = LraPllConfig::default_handheld();
+        trigger_cfg.nominal_freq_hz = 235.0;
+
+        Self {
+            plls: [
+                LraPllTracker::new(palm_cfg),
+                LraPllTracker::new(palm_cfg),
+                LraPllTracker::new(trigger_cfg),
+                LraPllTracker::new(trigger_cfg),
+            ],
+            outputs: [
+                ZoneDriveOutput::off(HapticZone::LeftPalm),
+                ZoneDriveOutput::off(HapticZone::RightPalm),
+                ZoneDriveOutput::off(HapticZone::LeftTrigger),
+                ZoneDriveOutput::off(HapticZone::RightTrigger),
+            ],
+        }
+    }
+
+    /// Evaluates spatial routing matrix for a given spatial haptic command.
+    pub fn route_command(&mut self, cmd: SpatialHapticCommand) -> [ZoneDriveOutput; HAPTIC_ZONE_COUNT] {
+        let pan = cmd.pan_x.clamp(-1.0, 1.0);
+        let emphasis = cmd.trigger_emphasis.clamp(0.0, 1.0);
+
+        // Left / Right spatial panning gains
+        let left_gain = if pan <= 0.0 { 1.0 } else { 1.0 - pan };
+        let right_gain = if pan >= 0.0 { 1.0 } else { 1.0 + pan };
+
+        // Palm vs Trigger emphasis gains
+        let palm_gain = 1.0 - emphasis;
+        let trigger_gain = emphasis;
+
+        let zones = [
+            (HapticZone::LeftPalm, left_gain * palm_gain),
+            (HapticZone::RightPalm, right_gain * palm_gain),
+            (HapticZone::LeftTrigger, left_gain * trigger_gain),
+            (HapticZone::RightTrigger, right_gain * trigger_gain),
+        ];
+
+        for (idx, &(zone, spatial_gain)) in zones.iter().enumerate() {
+            let active = cmd.target_mask.contains(zone) && spatial_gain > 0.001 && cmd.base_intensity > 0;
+            let amp = if active {
+                let scaled = (cmd.base_intensity as f32) * spatial_gain + 0.5;
+                (scaled as u8).min(255)
+            } else {
+                0
+            };
+
+            self.outputs[idx] = ZoneDriveOutput {
+                zone,
+                amplitude: amp,
+                frequency_hz: self.plls[idx].current_drive_freq_hz,
+                phase_deg: 0.0,
+                active: amp > 0,
+            };
+        }
+
+        self.outputs
+    }
+
+    /// Feeds a back-EMF zero-crossing event to the corresponding zone's PLL tracker.
+    pub fn update_zone_resonance(&mut self, zone: HapticZone, event: ZeroCrossingEvent) {
+        let idx = zone as usize;
+        if idx < HAPTIC_ZONE_COUNT {
+            self.plls[idx].process_zero_crossing(event);
+            self.outputs[idx].frequency_hz = self.plls[idx].current_drive_freq_hz;
+        }
+    }
+
+    /// Halts all active actuators.
+    pub fn stop_all(&mut self) {
+        for idx in 0..HAPTIC_ZONE_COUNT {
+            self.outputs[idx].amplitude = 0;
+            self.outputs[idx].active = false;
+        }
+    }
+}
+
+/// Unit test verifying multi-zone spatial haptic routing.
+pub fn verify_multizone_spatial_routing() -> bool {
+    let mut router = MultiZoneHapticRouter::new();
+
+    // 1. Initial State Check
+    // Palms should be 175 Hz, Triggers should be 235 Hz
+    if (router.plls[HapticZone::LeftPalm as usize].current_drive_freq_hz - 175.0).abs() > 0.1 {
+        return false;
+    }
+    if (router.plls[HapticZone::RightTrigger as usize].current_drive_freq_hz - 235.0).abs() > 0.1 {
+        return false;
+    }
+
+    // 2. Full Center Palm Rumble (pan = 0.0, emphasis = 0.0)
+    let cmd_palm = SpatialHapticCommand::new(200, 0.0, 0.0, HapticZoneMask::ALL_ZONES);
+    let out = router.route_command(cmd_palm);
+    // Both Left and Right palms should receive full 200 intensity
+    if out[HapticZone::LeftPalm as usize].amplitude != 200 || out[HapticZone::RightPalm as usize].amplitude != 200 {
+        return false;
+    }
+    // Triggers should be 0 because trigger_emphasis is 0.0
+    if out[HapticZone::LeftTrigger as usize].amplitude != 0 || out[HapticZone::RightTrigger as usize].amplitude != 0 {
+        return false;
+    }
+
+    // 3. Hard Left Stereo Panning (pan = -1.0, emphasis = 0.0)
+    let cmd_left = SpatialHapticCommand::new(200, -1.0, 0.0, HapticZoneMask::ALL_PALMS);
+    let out_left = router.route_command(cmd_left);
+    if out_left[HapticZone::LeftPalm as usize].amplitude != 200 {
+        return false;
+    }
+    if out_left[HapticZone::RightPalm as usize].amplitude != 0 {
+        return false;
+    }
+
+    // 4. Isolated Right Trigger Tactical Click (pan = 1.0, emphasis = 1.0)
+    let cmd_r_trig = SpatialHapticCommand::trigger_click(255, true);
+    let out_trig = router.route_command(cmd_r_trig);
+    if out_trig[HapticZone::RightTrigger as usize].amplitude != 255 {
+        return false;
+    }
+    if out_trig[HapticZone::LeftTrigger as usize].amplitude != 0 {
+        return false;
+    }
+    if out_trig[HapticZone::LeftPalm as usize].amplitude != 0 || out_trig[HapticZone::RightPalm as usize].amplitude != 0 {
+        return false;
+    }
+    // Frequency for Right Trigger should match its tuned 235 Hz
+    if (out_trig[HapticZone::RightTrigger as usize].frequency_hz - 235.0).abs() > 0.1 {
+        return false;
+    }
+
+    true
+}
