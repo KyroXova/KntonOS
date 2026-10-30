@@ -292,3 +292,219 @@ pub fn verify_ring_suballocation_and_alignment() -> bool {
 
     true
 }
+
+
+// -----------------------------------------------------------------------------
+// Multi-Frame Ring Chunk Retirement
+// -----------------------------------------------------------------------------
+
+/// Metadata for a recorded frame's constant buffer allocations in the ring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameChunk {
+    /// Incremental frame index (e.g. 1, 2, 3...).
+    pub frame_index: u64,
+    /// 64-bit GPU timeline fence value that signals frame completion.
+    pub fence_value: u64,
+    /// Ring offset where this frame's allocations started.
+    pub ring_start_offset: usize,
+    /// Ring offset where this frame's allocations ended (head at frame end).
+    pub ring_end_offset: usize,
+    /// Total bytes allocated within this frame.
+    pub allocated_bytes: usize,
+    /// Whether this frame encountered a ring buffer wrap-around.
+    pub wrapped: bool,
+    /// Wrap-around padding bytes at buffer end (if wrapped).
+    pub wrap_padding: usize,
+}
+
+/// Tracks multi-frame constant buffer allocations and retires completed chunks
+/// based on monotonic GPU timeline fence progression.
+pub struct FrameRetirementTracker {
+    /// Active frame currently being recorded.
+    pub current_frame_index: u64,
+    /// Start head offset of the active frame.
+    pub current_frame_start: usize,
+    /// Accumulated allocated bytes in the active frame.
+    pub current_frame_bytes: usize,
+    /// Whether the active frame has wrapped around to 0.
+    pub current_frame_wrapped: bool,
+    /// Wrap padding recorded in the active frame.
+    pub current_frame_padding: usize,
+    /// Queue of pending in-flight frame chunks awaiting GPU retirement.
+    pub pending_chunks: Vec<FrameChunk>,
+    /// Highest fence value retired so far.
+    pub last_retired_fence_value: u64,
+    /// Total frames successfully retired.
+    pub total_frames_retired: u64,
+}
+
+impl FrameRetirementTracker {
+    /// Creates a new frame retirement tracker.
+    pub fn new() -> Self {
+        Self {
+            current_frame_index: 0,
+            current_frame_start: 0,
+            current_frame_bytes: 0,
+            current_frame_wrapped: false,
+            current_frame_padding: 0,
+            pending_chunks: Vec::new(),
+            last_retired_fence_value: 0,
+            total_frames_retired: 0,
+        }
+    }
+
+    /// Marks the start of a new frame's command buffer recording.
+    pub fn begin_frame(&mut self, frame_index: u64, ring: &ConstantBufferRingAllocator) {
+        self.current_frame_index = frame_index;
+        self.current_frame_start = ring.head;
+        self.current_frame_bytes = 0;
+        self.current_frame_wrapped = false;
+        self.current_frame_padding = 0;
+    }
+
+    /// Notifies the tracker if an allocation within the current frame caused a ring wrap-around.
+    pub fn record_wrap(&mut self, padding_bytes: usize) {
+        self.current_frame_wrapped = true;
+        self.current_frame_padding = padding_bytes;
+    }
+
+    /// Ends recording for the current frame and registers its chunk with the specified GPU fence value.
+    pub fn end_frame(&mut self, ring: &ConstantBufferRingAllocator, fence_value: u64) {
+        let chunk = FrameChunk {
+            frame_index: self.current_frame_index,
+            fence_value,
+            ring_start_offset: self.current_frame_start,
+            ring_end_offset: ring.head,
+            allocated_bytes: self.current_frame_bytes,
+            wrapped: self.current_frame_wrapped,
+            wrap_padding: self.current_frame_padding,
+        };
+
+        self.pending_chunks.push(chunk);
+
+        // Advance frame start for next frame
+        self.current_frame_start = ring.head;
+        self.current_frame_bytes = 0;
+        self.current_frame_wrapped = false;
+        self.current_frame_padding = 0;
+    }
+
+    /// Retires all completed frame chunks whose fence values are <= `completed_fence_value`.
+    ///
+    /// Reclaims memory by advancing the ring allocator's `tail` pointer to the newest
+    /// retired frame's end offset, freeing space for subsequent frames without stalls.
+    pub fn retire_completed_frames(
+        &mut self,
+        ring: &mut ConstantBufferRingAllocator,
+        completed_fence_value: u64,
+    ) -> usize {
+        let mut total_reclaimed_bytes = 0usize;
+        let mut newest_tail = ring.tail;
+        let mut retired_count = 0usize;
+
+        while let Some(chunk) = self.pending_chunks.first() {
+            if chunk.fence_value <= completed_fence_value {
+                newest_tail = chunk.ring_end_offset;
+                total_reclaimed_bytes += chunk.allocated_bytes + chunk.wrap_padding;
+                self.last_retired_fence_value = chunk.fence_value;
+                self.total_frames_retired += 1;
+                retired_count += 1;
+                self.pending_chunks.remove(0);
+            } else {
+                break;
+            }
+        }
+
+        if retired_count > 0 {
+            ring.tail = newest_tail;
+            ring.allocated_bytes = ring.allocated_bytes.saturating_sub(total_reclaimed_bytes);
+            if ring.head == ring.tail {
+                // Ring is completely empty; reset pointers to 0 for maximum contiguous headroom
+                ring.head = 0;
+                ring.tail = 0;
+                ring.end_padding = 0;
+                ring.allocated_bytes = 0;
+            }
+        }
+
+        total_reclaimed_bytes
+    }
+
+    /// Number of frames currently in-flight on the GPU.
+    pub fn in_flight_frame_count(&self) -> usize {
+        self.pending_chunks.len()
+    }
+}
+
+/// Unit test verifying multi-frame ring chunk retirement synchronized with timeline fence progression.
+pub fn verify_frame_retirement_and_fence_sync() -> bool {
+    let capacity = 32 * 1024; // 32 KiB
+    let base_gpu_va = 0x9000_0000_u64;
+    let mut ring = ConstantBufferRingAllocator::new(capacity, base_gpu_va);
+    let mut tracker = FrameRetirementTracker::new();
+
+    // 1. Frame 1: Allocates 2 x 256 bytes (512 bytes total), Fence value = 10
+    tracker.begin_frame(1, &ring);
+    let s1 = ring.allocate(256).expect("F1 slice 1 failed");
+    let s2 = ring.allocate(256).expect("F1 slice 2 failed");
+    tracker.current_frame_bytes += s1.aligned_size_bytes + s2.aligned_size_bytes;
+    tracker.end_frame(&ring, 10);
+
+    if ring.head != 512 || ring.tail != 0 || tracker.in_flight_frame_count() != 1 {
+        return false;
+    }
+
+    // 2. Frame 2: Allocates 1024 bytes, Fence value = 20
+    tracker.begin_frame(2, &ring);
+    let s3 = ring.allocate(1024).expect("F2 slice failed");
+    tracker.current_frame_bytes += s3.aligned_size_bytes;
+    tracker.end_frame(&ring, 20);
+
+    if ring.head != 1536 || ring.tail != 0 || tracker.in_flight_frame_count() != 2 {
+        return false;
+    }
+
+    // 3. Frame 3: Allocates 512 bytes, Fence value = 30
+    tracker.begin_frame(3, &ring);
+    let s4 = ring.allocate(512).expect("F3 slice failed");
+    tracker.current_frame_bytes += s4.aligned_size_bytes;
+    tracker.end_frame(&ring, 30);
+
+    if ring.head != 2048 || ring.tail != 0 || tracker.in_flight_frame_count() != 3 {
+        return false;
+    }
+
+    // 4. Test Fence Progression:
+    // Signal GPU completed fence value = 5 (less than Frame 1's fence 10)
+    // Nothing should retire
+    let reclaimed_0 = tracker.retire_completed_frames(&mut ring, 5);
+    if reclaimed_0 != 0 || ring.tail != 0 || tracker.in_flight_frame_count() != 3 {
+        return false;
+    }
+
+    // Signal GPU completed fence value = 15 (covers Frame 1 with fence 10)
+    // Frame 1 must retire: tail advances to 512, reclaimed 512 bytes
+    let reclaimed_f1 = tracker.retire_completed_frames(&mut ring, 15);
+    if reclaimed_f1 != 512 || ring.tail != 512 || tracker.in_flight_frame_count() != 2 {
+        return false;
+    }
+    if ring.allocated_bytes != 1536 {
+        return false;
+    }
+
+    // Signal GPU completed fence value = 30 (covers Frame 2 and Frame 3)
+    // Both frames retire: tail catches up to head (2048 -> resets to 0 when empty)
+    let reclaimed_f2_f3 = tracker.retire_completed_frames(&mut ring, 30);
+    if reclaimed_f2_f3 != 1536 || tracker.in_flight_frame_count() != 0 {
+        return false;
+    }
+    // Ring should be completely clean and reset
+    if ring.head != 0 || ring.tail != 0 || ring.allocated_bytes != 0 {
+        return false;
+    }
+    if tracker.total_frames_retired != 3 {
+        return false;
+    }
+
+    true
+}
