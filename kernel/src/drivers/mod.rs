@@ -3,6 +3,7 @@
 pub mod virtio;
 pub mod pci_db;
 pub mod pci_scanner;
+pub mod pci;
 pub mod audio;
 pub mod usb;
 pub mod gpu;
