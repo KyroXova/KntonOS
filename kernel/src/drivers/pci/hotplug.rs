@@ -257,7 +257,12 @@ impl PcieSlotController {
         // 2. Presence Detect Changed (PDC)
         if (status_bits & PCIE_SLOTSTA_PDC) != 0 {
             self.slot_sta &= !PCIE_SLOTSTA_PDC;
-            let is_present = (self.slot_sta & PCIE_SLOTSTA_PDS_PRESENT) != 0;
+            let is_present = (status_bits & PCIE_SLOTSTA_PDS_PRESENT) != 0;
+            if is_present {
+                self.slot_sta |= PCIE_SLOTSTA_PDS_PRESENT;
+            } else {
+                self.slot_sta &= !PCIE_SLOTSTA_PDS_PRESENT;
+            }
             let event = HotplugEvent::PresenceChanged { card_present: is_present };
 
             let action = if is_present {

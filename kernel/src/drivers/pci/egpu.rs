@@ -144,7 +144,7 @@ impl PciResourceWindowPool {
             mmio32_limit: 0xFE00_0000,
             next_mmio32: 0xE000_0000,
             pref64_base: 0x0000_0004_0000_0000,
-            pref64_limit: 0x0000_0008_0000_0000,
+            pref64_limit: 0x0000_0040_0000_0000,
             next_pref64: 0x0000_0004_0000_0000,
         }
     }
@@ -276,15 +276,19 @@ impl DynamicBridgeManager {
         let base_address = match bar_type {
             BarType::Mmio32 => {
                 // Must fit within bridge 32-bit non-prefetchable window
-                let align = (size as u32).max(4096);
+                let align = if size.is_power_of_two() {
+                    (size as u64).min(16 * 1024 * 1024).max(4096)
+                } else {
+                    4096
+                };
                 let current_used = self
                     .assigned_bars
                     .iter()
                     .filter(|b| b.bar_type == BarType::Mmio32)
                     .map(|b| b.size)
                     .sum::<u64>();
-                let candidate = (self.bridge_config.mem_base_32 as u64 + current_used + (align as u64 - 1))
-                    & !(align as u64 - 1);
+                let candidate = (self.bridge_config.mem_base_32 as u64 + current_used + (align - 1))
+                    & !(align - 1);
                 if candidate + size > self.bridge_config.mem_limit_32 as u64 {
                     return Err("BAR exceeds bridge MMIO32 window");
                 }
@@ -292,7 +296,11 @@ impl DynamicBridgeManager {
             }
             BarType::Mmio64Prefetchable => {
                 // Fits within bridge 64-bit prefetchable window (VRAM aperture)
-                let align = size.max(1024 * 1024);
+                let align = if size.is_power_of_two() {
+                    size.min(16 * 1024 * 1024).max(1024 * 1024)
+                } else {
+                    16 * 1024 * 1024
+                };
                 let current_used = self
                     .assigned_bars
                     .iter()
