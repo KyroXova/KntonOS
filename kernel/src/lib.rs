@@ -21,6 +21,7 @@ pub mod terminal;
 pub mod power;
 pub mod mm;
 pub mod trace;
+pub mod bpf;
 
 pub use memory::ALLOCATOR;
 
@@ -273,6 +274,11 @@ pub extern "C" fn kmain() -> ! {
     net::init();
     if !net::test_network_stack() {
         serial_write_str("[KNT-PANIC] Network stack self-test failed!\r\n");
+    }
+
+    // Initialize and verify in-kernel eBPF Packet & Event Filter Subsystem
+    if !bpf::test_bpf_filter_subsystem() {
+        serial_write_str("[KNT-PANIC] eBPF packet and event filter self-test failed!\r\n");
     }
 
     // Verify Unix Domain Sockets (AF_UNIX) & Local IPC Engine
