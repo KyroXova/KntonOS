@@ -28,6 +28,7 @@ pub mod audio;
 pub mod time;
 pub mod video;
 pub mod sys;
+pub mod ui;
 
 pub use memory::ALLOCATOR;
 
@@ -410,6 +411,11 @@ pub extern "C" fn kmain() -> ! {
     // Verify Low-Latency In-Game Bluetooth LE Gamepad & Wireless Headset Audio Streamer (TASK-KNT-106)
     if !net::test_wireless_ble_subsystem() {
         serial_write_str("[KNT-PANIC] Wireless BLE gamepad and audio streaming self-test failed!\r\n");
+    }
+
+    // Verify Unified Game State Overlay Compositor & Zero-Copy Hardware Cursor Plane Subsystem (TASK-KNT-109)
+    if !ui::test_game_overlay_and_cursor_subsystem() {
+        serial_write_str("[KNT-PANIC] Game state overlay compositor and cursor plane self-test failed!\r\n");
     }
 
     // Initialize Desktop Shell Compositor & Window Manager
