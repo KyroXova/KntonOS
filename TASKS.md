@@ -98,13 +98,16 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-071 | Direct3D / Vulkan-Style Command Buffer Recording & Kernel Hardware Queue Submission Engine | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-071-gpu-cmdbuf.md) |
 | TASK-KNT-072 | Direct-to-Disk Kernel Hibernation (S4 State) Memory Dump & LZ4 Fast-Restoration Engine | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-072-hibernate-s4.md) |
 | TASK-KNT-073 | Kernel Dynamic Instrumentation Probes (kprobes / ftrace Style) & Instruction Detour Engine | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-073-kprobes-ftrace.md) |
-| TASK-KNT-074 | Unified Handheld PC Ambient Light Sensor (ALS) & HDR Auto-Brightness / Contrast Governor | Claimed | TASK-KNT-050 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-074-als-hdr.md) |
-| TASK-KNT-075 | Real-Time Kernel Audio Spatializer & Binaural HRTF 3D Positional Audio DSP Pipeline | Claimed | TASK-KNT-060 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-075-audio-spatializer.md) |
-| TASK-KNT-076 | Kernel-Direct PCIe Hot-Plug Event Daemon & External eGPU Hot-Connect Controller | Claimed | TASK-KNT-056 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-076-pcie-egpu.md) |
+| TASK-KNT-074 | Unified Handheld PC Ambient Light Sensor (ALS) & HDR Auto-Brightness / Contrast Governor | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-074-als-hdr.md) |
+| TASK-KNT-075 | Real-Time Kernel Audio Spatializer & Binaural HRTF 3D Positional Audio DSP Pipeline | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-075-audio-spatializer.md) |
+| TASK-KNT-076 | Kernel-Direct PCIe Hot-Plug Event Daemon & External eGPU Hot-Connect Controller | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-076-pcie-egpu.md) |
+| TASK-KNT-077 | Unified Handheld PC Battery Gauge, Coulomb Counter, & Smart Charging State Machine | Claimed | TASK-KNT-035 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-077-battery-gauge.md) |
+| TASK-KNT-078 | Zero-Latency Kernel-Bypassed Input Polling Ring & Micro-Jitter Smoothing Filter | Claimed | TASK-KNT-051 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-078-input-ring.md) |
+| TASK-KNT-079 | Dynamic VMM Kernel Memory Compactor & Transparent Page Defragmentation Engine | Claimed | TASK-KNT-052 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-079-memory-compactor.md) |
 
 ## Active reservations
 
 - `kernel/src/pkg/`: reserved by ArdenKestrel for TASK-KNT-045.
-- `kernel/src/drivers/sensor/als.rs`, `kernel/src/drivers/sensor/brightness.rs`: reserved by Jules Martin for TASK-KNT-074.
-- `kernel/src/audio/hrtf.rs`, `kernel/src/audio/spatializer.rs`: reserved by Ada Chen for TASK-KNT-075.
-- `kernel/src/drivers/pci/hotplug.rs`, `kernel/src/drivers/pci/egpu.rs`: reserved by Priya Nair for TASK-KNT-076.
+- `kernel/src/power/battery.rs`, `kernel/src/power/charger.rs`: reserved by Jules Martin for TASK-KNT-077.
+- `kernel/src/drivers/input/fast_ring.rs`, `kernel/src/drivers/input/jitter.rs`: reserved by Priya Nair for TASK-KNT-078.
+- `kernel/src/mm/compactor.rs`, `kernel/src/mm/defrag.rs`: reserved by Ada Chen for TASK-KNT-079.
