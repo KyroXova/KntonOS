@@ -229,6 +229,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Display scanout rotation and panel orientation self-test failed!\r\n");
     }
 
+    // Initialize and verify PCIe Function-Level Reset (FLR) & GPU Timeout Detection and Recovery (TDR)
+    if !drivers::gpu::test_pcie_flr_and_gpu_tdr_subsystem() {
+        serial_write_str("[KNT-PANIC] PCIe FLR and GPU TDR subsystem self-test failed!\r\n");
+    }
+
     // Initialize and verify AHCI SATA Persistent Storage Subsystem
     if !drivers::storage::test_ahci_sata_subsystem() {
         serial_write_str("[KNT-PANIC] AHCI SATA storage subsystem self-test failed!\r\n");

@@ -358,6 +358,43 @@ impl GpuTdrManager {
 
 /// Unit test verifying non-destructive context recovery, orphan resource reclamation,
 /// and ring buffer re-initialization.
+/// Unit test verifying watchdog fence progression, timeout detection, and status updates.
+pub fn verify_gpu_watchdog_progression() -> bool {
+    let mut watchdog = GpuEngineWatchdog::new(GpuEngineType::Render3D, 2000, 1000);
+
+    // Normal progression: fence submitted at 1000ms, completed at 1500ms (elapsed 500ms < 2000ms)
+    let fence1 = EngineFence::new(101, GpuEngineType::Render3D, 1, 1000);
+    watchdog.submit_fence(fence1);
+
+    if watchdog.poll_watchdog(1500).is_some() {
+        return false; // Should not time out
+    }
+    watchdog.signal_fence_completed(101, 1500);
+    if watchdog.last_completed_fence != 101 || watchdog.active_fence.is_some() {
+        return false;
+    }
+
+    // Hang condition: fence submitted at 2000ms, polled at 4500ms (elapsed 2500ms >= 2000ms)
+    let fence2 = EngineFence::new(102, GpuEngineType::Render3D, 2, 2000);
+    watchdog.submit_fence(fence2);
+
+    match watchdog.poll_watchdog(4500) {
+        Some(timed_out) => {
+            if timed_out.fence_id != 102
+                || timed_out.context_id != 2
+                || timed_out.status != FenceStatus::TimedOut
+                || !watchdog.is_engine_hung
+                || watchdog.consecutive_hang_count != 1
+            {
+                return false;
+            }
+        }
+        None => return false,
+    }
+
+    true
+}
+
 pub fn verify_tdr_context_recovery_and_reclamation() -> bool {
     let mut tdr = GpuTdrManager::new(2000, 1000);
     let mut pci = MockPciConfigSpace::new_mock_pcie_gpu(0x10DE, 0x1F02, true);
@@ -429,6 +466,29 @@ pub fn verify_tdr_context_recovery_and_reclamation() -> bool {
     if render_ring.head_ptr != 0 || render_ring.tail_ptr != 0 || render_ring.sequence_id != 2 {
         return false;
     }
+
+    true
+}
+
+/// Comprehensive verification suite for PCIe FLR hardware reset and GPU TDR recovery.
+pub fn test_pcie_flr_and_gpu_tdr_subsystem() -> bool {
+    // 1. Verify PCIe Function-Level Reset (FLR) capabilities and hardware state restoration
+    if !crate::drivers::pci::flr::verify_pcie_flr_logic() {
+        return false;
+    }
+
+    // 2. Verify GPU engine watchdog execution fence progression and hang detection
+    if !verify_gpu_watchdog_progression() {
+        return false;
+    }
+
+    // 3. Verify non-destructive context recovery, orphan resource reclamation, and ring buffer re-initialization
+    if !verify_tdr_context_recovery_and_reclamation() {
+        return false;
+    }
+
+    // 4. Emit deterministic boot sentinel
+    crate::serial_write_str("[KNT-DRV-TDR-PASS] PCIe FLR hardware reset and GPU TDR recovery verified\r\n");
 
     true
 }
