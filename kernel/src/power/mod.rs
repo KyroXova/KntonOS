@@ -13,8 +13,10 @@ pub mod s3_resume;
 pub mod fan;
 pub mod thermal;
 pub mod hibernate;
+pub mod lz4_restore;
 
 pub use hibernate::*;
+pub use lz4_restore::*;
 
 pub use s3_resume::*;
 pub use fan::*;
