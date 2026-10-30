@@ -11,9 +11,11 @@ pub mod epb;
 pub mod freeze;
 pub mod s3_resume;
 pub mod fan;
+pub mod thermal;
 
 pub use s3_resume::*;
 pub use fan::*;
+pub use thermal::*;
 
 pub use freeze::*;
 
