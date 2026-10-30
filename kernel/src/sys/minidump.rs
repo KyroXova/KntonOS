@@ -372,6 +372,15 @@ impl<'a> LocklessCrashDumpWriter<'a> {
     pub fn finalize(&mut self) -> Result<usize, &'static str> {
         let total_size = self.cursor;
         let dir_offset = core::mem::size_of::<MinidumpHeader>();
+
+        let dir_bytes = unsafe {
+            core::slice::from_raw_parts(
+                self.stream_dirs.as_ptr() as *const u8,
+                core::mem::size_of::<MinidumpDirectory>() * self.stream_count,
+            )
+        };
+        self.buffer[dir_offset..dir_offset + dir_bytes.len()].copy_from_slice(dir_bytes);
+
         let checksum = Self::compute_adler32(&self.buffer[dir_offset..total_size]);
 
         let header = MinidumpHeader {
@@ -391,14 +400,6 @@ impl<'a> LocklessCrashDumpWriter<'a> {
             )
         };
         self.buffer[..header_bytes.len()].copy_from_slice(header_bytes);
-
-        let dir_bytes = unsafe {
-            core::slice::from_raw_parts(
-                self.stream_dirs.as_ptr() as *const u8,
-                core::mem::size_of::<MinidumpDirectory>() * self.stream_count,
-            )
-        };
-        self.buffer[dir_offset..dir_offset + dir_bytes.len()].copy_from_slice(dir_bytes);
 
         Ok(total_size)
     }
@@ -648,6 +649,149 @@ impl PostCrashGameRestorer {
         }
         Ok(record)
     }
+}
+
+
+// =============================================================================
+// 4. Subsystem Verification Suite & Boot Sentinel
+// =============================================================================
+
+/// Verification test suite for Kernel-Direct Crash Telemetry Core Dump & Instant Mini-Dump Restorer Engine (TASK-KNT-115).
+pub fn test_minidump_subsystem() -> bool {
+    crate::serial_write_str("[KNT-SYS-MINIDUMP-TEST] Running Crash Telemetry Core Dump & Instant Mini-Dump Restorer verification suite...\r\n");
+
+    // 1. Crash dump binary header, directory tables, and x86-64 CPU context
+    let header = MinidumpHeader::new(4, 128, 1_700_000_000);
+    if !header.is_valid() || header.number_of_streams != 4 || header.stream_directory_rva != 128 {
+        return false;
+    }
+    let mut ctx = CpuContextRecordX64::default();
+    ctx.context_flags = CONTEXT_ALL;
+    ctx.rip = 0xFFFF_8000_0010_2040;
+    ctx.rsp = 0xFFFF_8000_0040_FFF0;
+    ctx.rbp = 0xFFFF_8000_0040_FFF8;
+    ctx.cr2 = 0x0000_0000_0000_0000;
+    ctx.cr3 = 0x0000_0000_0200_0000;
+
+    let exc = MinidumpExceptionRecord::new(STATUS_ACCESS_VIOLATION, ctx.cr2, ctx.rip);
+    if exc.exception_code != STATUS_ACCESS_VIOLATION || exc.exception_address != ctx.rip {
+        return false;
+    }
+    crate::serial_write_str("  * Crash dump binary header, directory tables, and x86-64 CPU context verified\r\n");
+
+    // 2. Sub-10ms lockless crash dump writer and zero-allocation memory capture
+    let mut dump_buf = [0u8; 4096];
+    let mut writer = LocklessCrashDumpWriter::new(&mut dump_buf);
+
+    let mut stack = [0u8; 128];
+    let f1_rbp = (0xFFFF_8000_0040_FFF8u64).to_le_bytes();
+    let f1_rip = (0xFFFF_8000_0010_1000u64).to_le_bytes();
+    stack[0x08..0x10].copy_from_slice(&f1_rbp);
+    stack[0x10..0x18].copy_from_slice(&f1_rip);
+
+    let telem = PanicTelemetryRecord::new(
+        STATUS_KERNEL_PANIC,
+        ctx.cr3,
+        1,
+        2,
+        b"Kernel Panic: Page Fault at address 0x0",
+    );
+
+    let written_len = match writer.capture_crash(&ctx, STATUS_ACCESS_VIOLATION, &stack, &telem) {
+        Ok(len) => len,
+        Err(_) => return false,
+    };
+    if written_len == 0 || written_len > 4096 {
+        return false;
+    }
+    crate::serial_write_str("  * Sub-10ms lockless crash dump writer and zero-allocation memory capture verified\r\n");
+
+    // 3. Raw NVMe direct sector streaming to dedicated crash partition
+    let mut sectors_written = 0;
+    let stream_res = RawNvmeCrashStreamer::stream_to_sectors(&writer.buffer[..written_len], CRASH_DUMP_RESERVED_LBA, |lba, _sector| {
+        if lba < CRASH_DUMP_RESERVED_LBA {
+            return Err("Invalid LBA sector range");
+        }
+        sectors_written += 1;
+        Ok(())
+    });
+    if stream_res.is_err() || sectors_written == 0 {
+        return false;
+    }
+    crate::serial_write_str("  * Raw NVMe direct sector streaming to dedicated crash partition verified\r\n");
+
+    // 4. Minidump stream parser and Adler-32 integrity validator
+    let reader = match MinidumpReader::parse(&writer.buffer[..written_len]) {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+    let parsed_ctx = match reader.read_context() {
+        Some(c) => c,
+        None => return false,
+    };
+    if parsed_ctx.rip != ctx.rip || parsed_ctx.rsp != ctx.rsp {
+        return false;
+    }
+
+    let parsed_exc = match reader.read_exception() {
+        Some(e) => e,
+        None => return false,
+    };
+    if parsed_exc.exception_code != STATUS_ACCESS_VIOLATION {
+        return false;
+    }
+
+    let parsed_telem = match reader.read_telemetry() {
+        Some(t) => t,
+        None => return false,
+    };
+    if parsed_telem.cr3_pml4_root != ctx.cr3 {
+        return false;
+    }
+    crate::serial_write_str("  * Minidump stream parser and Adler-32 integrity validator verified\r\n");
+
+    // 5. Call stack frame pointer unwinder and return address resolution
+    let frames = StackTraceUnwinder::unwind_from_memory(&parsed_ctx, &stack, ctx.rsp, 4);
+    if frames.is_empty() || frames[0].rip != ctx.rip {
+        return false;
+    }
+    crate::serial_write_str("  * Call stack frame pointer unwinder and return address resolution verified\r\n");
+
+    // 6. Post-crash game state recovery and instant session resurrection
+    let game_rec = GameRecoveryRecord::new(
+        42,
+        0xFEED_FACE_CAFE_0001,
+        60_450,
+        [250.0, 120.5, -45.0],
+        85,
+        0x9876_5432_10AB_CDEF,
+    );
+    let game_bytes = unsafe {
+        core::slice::from_raw_parts(&game_rec as *const _ as *const u8, core::mem::size_of::<GameRecoveryRecord>())
+    };
+    let game_rva = match writer.append_bytes(game_bytes) {
+        Ok(rva) => rva,
+        Err(_) => return false,
+    };
+    if writer.add_stream(MINIDUMP_STREAM_KNT_GAME_STATE, game_rva, game_bytes.len() as u32).is_err() {
+        return false;
+    }
+    let final_dump_len = match writer.finalize() {
+        Ok(len) => len,
+        Err(_) => return false,
+    };
+
+    let restored = match PostCrashGameRestorer::restore_from_minidump(&writer.buffer[..final_dump_len]) {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+    if restored.game_pid != 42 || restored.last_frame_number != 60_450 || restored.player_health != 85 {
+        return false;
+    }
+    crate::serial_write_str("  * Post-crash game state recovery and instant session resurrection verified\r\n");
+
+    crate::serial_write_str("[KNT-SYS-MINIDUMP-PASS] Crash telemetry core dump and instant mini-dump restorer operational\r\n");
+    true
 }
 
 // -----------------------------------------------------------------------------

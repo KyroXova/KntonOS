@@ -579,6 +579,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Milestone 100 health matrix and benchmark supervisor self-test failed!\r\n");
     }
 
+    // Verify Kernel-Direct Crash Telemetry Core Dump & Instant Mini-Dump Restorer Engine (TASK-KNT-115)
+    if !sys::test_minidump_subsystem() {
+        serial_write_str("[KNT-PANIC] Crash telemetry core dump and minidump restorer self-test failed!\r\n");
+    }
+
     // Spawn and execute initial Win32 PE64 userland process (/bin/init.exe)
     if !pe::run_init_process() {
         serial_write_str("[KNT-PANIC] Initial Win32 user process execution failed!\r\n");
