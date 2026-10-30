@@ -1266,3 +1266,409 @@ impl DisplayMirrorStreamer {
         self.congestion_governor.update_network_stats(q_depth, rtt_us, packets_lost);
     }
 }
+
+
+// -----------------------------------------------------------------------------
+// In-Kernel Verification Self-Test Suite
+// -----------------------------------------------------------------------------
+
+/// Verify zero-copy frame capture ring slot allocation, state transitions, and backlog handling.
+pub fn test_frame_capture_ring() -> bool {
+    let mut ring = FrameCaptureRing::new(3, 512);
+
+    // Acquire all 3 slots
+    let slot0 = match ring.acquire_capture_slot(32, 16, HdrPixelFormat::Hdr10R10G10B10A2, 10_000) {
+        Ok(id) => id,
+        Err(_) => return false,
+    };
+    let slot1 = match ring.acquire_capture_slot(32, 16, HdrPixelFormat::Hdr10R10G10B10A2, 20_000) {
+        Ok(id) => id,
+        Err(_) => return false,
+    };
+    let slot2 = match ring.acquire_capture_slot(32, 16, HdrPixelFormat::Hdr10R10G10B10A2, 30_000) {
+        Ok(id) => id,
+        Err(_) => return false,
+    };
+
+    if slot0 != 0 || slot1 != 1 || slot2 != 2 {
+        return false;
+    }
+
+    // 4th acquisition should fail due to ring capacity exhaustion
+    if ring.acquire_capture_slot(32, 16, HdrPixelFormat::Hdr10R10G10B10A2, 40_000).is_ok() {
+        return false;
+    }
+    if ring.frames_dropped != 1 {
+        return false;
+    }
+
+    // Commit slot 0
+    if ring.commit_captured_frame(slot0).is_err() {
+        return false;
+    }
+    if ring.slots[slot0 as usize].state != CaptureSlotState::Ready {
+        return false;
+    }
+
+    // Acquire ready frame for streaming
+    let ready_slot = ring.acquire_ready_frame();
+    if ready_slot != Some(slot0) {
+        return false;
+    }
+    if ring.slots[slot0 as usize].state != CaptureSlotState::Streaming {
+        return false;
+    }
+
+    // Release slot 0 back to free pool
+    if ring.release_frame(slot0).is_err() {
+        return false;
+    }
+    if ring.slots[slot0 as usize].state != CaptureSlotState::Free {
+        return false;
+    }
+
+    // Now acquiring another slot should reuse slot 0
+    let slot_new = match ring.acquire_capture_slot(32, 16, HdrPixelFormat::Hdr10R10G10B10A2, 50_000) {
+        Ok(id) => id,
+        Err(_) => return false,
+    };
+    if slot_new != slot0 {
+        return false;
+    }
+
+    true
+}
+
+/// Verify fixed-point integer Reinhard and ACES filmic tonemapping curve math.
+pub fn test_fixed_point_tonemapping_curves() -> bool {
+    // 1. Zero input must map to zero output
+    if apply_tonemap_reinhard(0, 262144) != 0 {
+        return false;
+    }
+    if apply_tonemap_aces(0) != 0 {
+        return false;
+    }
+
+    // 2. Reference SDR paper-white (1.0 = 65536) ACES tonemap mapping
+    let aces_1_0 = apply_tonemap_aces(65536);
+    // In ACES curve, 1.0 maps to ~0.80 (between 50000 and 55000 in Q16.16)
+    if aces_1_0 < 50000 || aces_1_0 > 55000 {
+        return false;
+    }
+
+    // 3. Peak HDR highlight (4.0x = 262144) must roll off smoothly and not exceed 1.0 (65536)
+    let aces_4_0 = apply_tonemap_aces(262144);
+    if aces_4_0 <= aces_1_0 || aces_4_0 > 65536 {
+        return false;
+    }
+
+    // 4. Extended Reinhard curve verification with white point 4.0x
+    let rein_1_0 = apply_tonemap_reinhard(65536, 262144);
+    let rein_4_0 = apply_tonemap_reinhard(262144, 262144);
+    if rein_1_0 == 0 || rein_4_0 <= rein_1_0 || rein_4_0 > 65536 {
+        return false;
+    }
+
+    // 5. Monotonicity verification
+    let steps = [0u32, 16384, 32768, 65536, 131072, 262144, 524288];
+    let mut prev_aces = 0u32;
+    let mut prev_rein = 0u32;
+    for &x in &steps {
+        let tm_a = apply_tonemap_aces(x);
+        let tm_r = apply_tonemap_reinhard(x, 262144);
+        if tm_a < prev_aces || tm_r < prev_rein {
+            return false;
+        }
+        prev_aces = tm_a;
+        prev_rein = tm_r;
+    }
+
+    true
+}
+
+/// Verify BT.2020 to BT.709 color gamut compressor and highlight desaturation.
+pub fn test_color_gamut_compression() -> bool {
+    // 1. Neutral gray (R=G=B) must remain neutral through BT.2020 -> BT.709 conversion
+    let gray_q16 = 32768i32;
+    let (r_out, g_out, b_out) = apply_bt2020_to_bt709_gamut(gray_q16, gray_q16, gray_q16);
+    let r_err = (r_out - gray_q16).abs();
+    let g_err = (g_out - gray_q16).abs();
+    let b_err = (b_out - gray_q16).abs();
+    if r_err > 2 || g_err > 2 || b_err > 2 {
+        return false;
+    }
+
+    // 2. Highlight desaturation: high luminance colors must desaturate towards white
+    let (r_norm, g_norm, _b_norm) = apply_highlight_desaturation(30000, 10000, 10000, 65536);
+    let norm_chroma_diff = (r_norm as i64 - g_norm as i64).abs();
+
+    // High brightness near peak white (e.g. 64000)
+    let (r_high, g_high, b_high) = apply_highlight_desaturation(64000, 50000, 50000, 65536);
+    let high_chroma_diff = (r_high as i64 - g_high as i64).abs();
+
+    // Chroma difference must be reduced at extreme highlight (desaturation effect)
+    if high_chroma_diff >= norm_chroma_diff {
+        return false;
+    }
+    if r_high > 65536 || g_high > 65536 || b_high > 65536 {
+        return false;
+    }
+
+    true
+}
+
+/// Verify scanline chunker, MTU packet slicing, CRC16, and binary header serialization.
+pub fn test_scanline_chunker_and_packet_protocol() -> bool {
+    let chunker = ScanlineChunker::new(512);
+
+    // Create test tonemapped buffer: 32 pixels wide, 10 lines tall, RGBA8888 (128 bytes/line = 1280 bytes total)
+    let total_bytes = 1280;
+    let mut test_buf = alloc::vec![0u8; total_bytes];
+    for (i, byte) in test_buf.iter_mut().enumerate() {
+        *byte = (i & 0xFF) as u8;
+    }
+
+    let chunks = chunker.chunk_frame(
+        42,
+        1_000_000,
+        true,
+        &test_buf,
+        32,
+        10,
+        HdrPixelFormat::SdrRgba8888,
+    );
+
+    // 1280 bytes / 512 = 3 chunks (512, 512, 256)
+    if chunks.len() != 3 {
+        return false;
+    }
+
+    // Verify chunk 0
+    let c0 = &chunks[0];
+    if c0.payload.len() != 512 || c0.header.chunk_index != 0 || c0.header.chunk_count != 3 {
+        return false;
+    }
+    if (c0.header.flags & PACKET_FLAG_KEYFRAME) == 0 {
+        return false;
+    }
+    if (c0.header.flags & PACKET_FLAG_LAST_CHUNK) != 0 {
+        return false;
+    }
+    if c0.header.crc16 != MirrorStreamPacketHeader::compute_crc16(&c0.payload) {
+        return false;
+    }
+
+    // Verify last chunk
+    let c2 = &chunks[2];
+    if c2.payload.len() != 256 || c2.header.chunk_index != 2 {
+        return false;
+    }
+    if (c2.header.flags & PACKET_FLAG_LAST_CHUNK) == 0 {
+        return false;
+    }
+    if c2.header.crc16 != MirrorStreamPacketHeader::compute_crc16(&c2.payload) {
+        return false;
+    }
+
+    // Verify 32-byte header serialization and roundtrip deserialization
+    let serialized = c0.header.to_bytes();
+    if serialized.len() != 32 {
+        return false;
+    }
+    let deserialized = match MirrorStreamPacketHeader::from_bytes(&serialized) {
+        Some(h) => h,
+        None => return false,
+    };
+    if deserialized != c0.header {
+        return false;
+    }
+
+    true
+}
+
+/// Verify PTS synchronization, stale frame detector, and adaptive congestion governor.
+pub fn test_pts_sync_and_congestion_governor() -> bool {
+    // 1. PTS sync governor
+    let mut pts_gov = PtsSyncGovernor::new(33_333); // 33.3 ms threshold
+
+    // Current clock 100_000, frame PTS 100_000 -> fresh
+    if pts_gov.is_frame_stale(100_000, 100_000) {
+        return false;
+    }
+
+    // Current clock 150_000, frame PTS 100_000 (latency = 50 ms > 33.3 ms) -> stale!
+    if !pts_gov.is_frame_stale(100_000, 150_000) {
+        return false;
+    }
+
+    // Clock sync feedback
+    pts_gov.record_clock_sync(100_000, 100_500, 200);
+    let target_pts = pts_gov.compute_target_pts(200_000);
+    if target_pts == 0 {
+        return false;
+    }
+
+    // 2. Adaptive congestion governor
+    let mut cong_gov = AdaptiveCongestionGovernor::new(64, 25_000);
+
+    // Nominal state
+    if cong_gov.level != CongestionLevel::Nominal {
+        return false;
+    }
+    if cong_gov.should_drop_frame(false) {
+        return false;
+    }
+    if cong_gov.recommended_pixel_format() != HdrPixelFormat::SdrRgba8888 {
+        return false;
+    }
+
+    // Backlog surge: queue depth 55/64 (>80%), RTT 40 ms -> Critical congestion
+    cong_gov.update_network_stats(55, 40_000, 15);
+    if cong_gov.level != CongestionLevel::Critical {
+        return false;
+    }
+    // Critical level: all non-keyframes must be dropped
+    if !cong_gov.should_drop_frame(false) {
+        return false;
+    }
+    // Keyframe must NOT be dropped
+    if cong_gov.should_drop_frame(true) {
+        return false;
+    }
+    // Recommended format should downgrade to compact RGB565
+    if cong_gov.recommended_pixel_format() != HdrPixelFormat::SdrRgb565 {
+        return false;
+    }
+
+    // Link recovery: queue clears, RTT drops to 1 ms
+    cong_gov.update_network_stats(2, 1000, 0);
+    if cong_gov.level != CongestionLevel::Nominal {
+        return false;
+    }
+
+    true
+}
+
+/// Verify end-to-end frame capture, HDR tonemapping, packetization, and transmission.
+pub fn test_end_to_end_hdr_streaming_pipeline() -> bool {
+    let mut streamer = DisplayMirrorStreamer::new(
+        4,
+        16384,
+        TonemapParameters::default_hdr10(),
+        32,
+    );
+
+    let width: u16 = 20;
+    let height: u16 = 10;
+    let bpp = HdrPixelFormat::Hdr10R10G10B10A2.bytes_per_pixel();
+    let _frame_bytes = (width as usize) * (height as usize) * bpp;
+
+    // Acquire capture slot
+    let slot_id = match streamer.capture_ring.acquire_capture_slot(
+        width,
+        height,
+        HdrPixelFormat::Hdr10R10G10B10A2,
+        100_000,
+    ) {
+        Ok(id) => id,
+        Err(_) => return false,
+    };
+
+    // Populate frame buffer with synthetic HDR gradient
+    {
+        let slot = &mut streamer.capture_ring.slots[slot_id as usize];
+        for i in 0..(width as usize * height as usize) {
+            let offset = i * 4;
+            // Ramp from midtone (512) to peak highlight (1023)
+            let val = (512 + (i % 512)) as u16;
+            let packed = pack_r10g10b10a2(val, val / 2, val / 4, 3);
+            let bytes = packed.to_le_bytes();
+            slot.buffer[offset..offset + 4].copy_from_slice(&bytes);
+        }
+    }
+
+    // Commit frame
+    if streamer.capture_ring.commit_captured_frame(slot_id).is_err() {
+        return false;
+    }
+
+    // Process frame through tonemapper and scanline chunker
+    let chunk_count = match streamer.process_capture_slot(slot_id, 100_000) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    if chunk_count == 0 || streamer.tx_queue.is_empty() {
+        return false;
+    }
+
+    // Poll transmitted packets from transmission queue
+    let packets = streamer.poll_transmit_packets(10);
+    if packets.is_empty() {
+        return false;
+    }
+
+    for packet in &packets {
+        if packet.header.magic != STREAM_MAGIC {
+            return false;
+        }
+        if packet.header.crc16 != MirrorStreamPacketHeader::compute_crc16(&packet.payload) {
+            return false;
+        }
+    }
+
+    true
+}
+
+/// Comprehensive verification self-test suite for Kernel-Direct Real-Time In-Game
+/// Frame Capture HDR Tonemapper & Ultra-Low-Latency Display Mirroring Streamer.
+///
+/// Emits sentinel [KNT-VIDEO-HDR-STREAM-PASS] upon successful validation.
+pub fn test_video_hdr_stream_subsystem() -> bool {
+    crate::serial_write_str("[KNT-VIDEO-HDR-STREAM-TEST] Running frame capture HDR tonemapper & display mirroring verification suite...\r\n");
+
+    // 1. Verify zero-copy frame capture ring buffer slot allocation and state transitions
+    if !test_frame_capture_ring() {
+        crate::serial_write_str("[KNT-PANIC] Direct frame capture zero-copy ring buffer verification failed!\r\n");
+        return false;
+    }
+    crate::serial_write_str("  * Direct frame capture zero-copy ring buffer and slot lifecycle verified\r\n");
+
+    // 2. Verify fixed-point integer Reinhard and ACES filmic tonemapping curves
+    if !test_fixed_point_tonemapping_curves() {
+        crate::serial_write_str("[KNT-PANIC] Fixed-point Reinhard and ACES tonemapping curves verification failed!\r\n");
+        return false;
+    }
+    crate::serial_write_str("  * Fixed-point integer Reinhard and ACES filmic tonemapping curves verified\r\n");
+
+    // 3. Verify BT.2020-to-BT.709 wide color gamut compression and highlight desaturation
+    if !test_color_gamut_compression() {
+        crate::serial_write_str("[KNT-PANIC] BT.2020 to BT.709 color gamut compressor verification failed!\r\n");
+        return false;
+    }
+    crate::serial_write_str("  * BT.2020-to-BT.709 wide color gamut compression and highlight desaturation verified\r\n");
+
+    // 4. Verify display mirroring scanline chunker, MTU packet slicing, and CRC16
+    if !test_scanline_chunker_and_packet_protocol() {
+        crate::serial_write_str("[KNT-PANIC] Scanline chunker and packet protocol verification failed!\r\n");
+        return false;
+    }
+    crate::serial_write_str("  * Display mirroring scanline chunker, MTU packet slicing, and CRC16 verified\r\n");
+
+    // 5. Verify presentation timestamp (PTS) synchronization, stale frame detector, and adaptive congestion governor
+    if !test_pts_sync_and_congestion_governor() {
+        crate::serial_write_str("[KNT-PANIC] PTS sync and adaptive congestion governor verification failed!\r\n");
+        return false;
+    }
+    crate::serial_write_str("  * Presentation timestamp (PTS) sync, stale frame detector, and adaptive congestion governor verified\r\n");
+
+    // 6. Verify end-to-end frame capture, tonemapping, packetization, and transmission pipeline
+    if !test_end_to_end_hdr_streaming_pipeline() {
+        crate::serial_write_str("[KNT-PANIC] End-to-end frame capture HDR tonemapper and display mirroring pipeline verification failed!\r\n");
+        return false;
+    }
+    crate::serial_write_str("  * End-to-end frame capture, tonemapping, packetization, and transmission pipeline verified\r\n");
+
+    crate::serial_write_str("[KNT-VIDEO-HDR-STREAM-PASS] Kernel-direct real-time frame capture HDR tonemapper and display mirroring streamer operational\r\n");
+    true
+}
