@@ -219,6 +219,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] DRM/KMS modesetting subsystem self-test failed!\r\n");
     }
 
+    // Initialize and verify Hardware Variable Refresh Rate (VRR) & Dynamic VBLANK Presentation Timing
+    if !drivers::gpu::test_vrr_subsystem() {
+        serial_write_str("[KNT-PANIC] Hardware VRR and dynamic timing self-test failed!\r\n");
+    }
+
     // Initialize and verify AHCI SATA Persistent Storage Subsystem
     if !drivers::storage::test_ahci_sata_subsystem() {
         serial_write_str("[KNT-PANIC] AHCI SATA storage subsystem self-test failed!\r\n");
