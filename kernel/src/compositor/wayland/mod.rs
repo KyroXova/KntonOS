@@ -5,6 +5,9 @@
 
 use alloc::vec::Vec;
 
+pub mod shm;
+pub use shm::*;
+
 /// Standard Wayland wire protocol message header:
 /// - 32-bit sender object ID
 /// - 16-bit opcode
