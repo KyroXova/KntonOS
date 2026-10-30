@@ -387,6 +387,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Direct3D 12 optical flow & frame interpolation self-test failed!\r\n");
     }
 
+    // Initialize and verify Direct3D 12 Dynamic Tile Pool Memory Compactor & Sparse Virtual Texture Eviction Engine
+    if !gfx::test_tile_pool_compactor_and_eviction_subsystem() {
+        serial_write_str("[KNT-PANIC] Direct3D 12 tile pool memory compactor & eviction self-test failed!\r\n");
+    }
+
     // Initialize and verify AHCI SATA Persistent Storage Subsystem
     if !drivers::storage::test_ahci_sata_subsystem() {
         serial_write_str("[KNT-PANIC] AHCI SATA storage subsystem self-test failed!\r\n");
