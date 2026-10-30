@@ -1,7 +1,5 @@
 //! POSIX & Win32 Access Control List (ACL) and Security Identifier (SID) Models.
-//!
 //! Provides granular file permission enforcement, Access Control Entries (ACE),
-//! POSIX mode bits (rwx for owner/group/others), and Win32 discretionary access control (DACL).
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -347,9 +345,6 @@ impl AccessControlList {
 
     /// Evaluates requested access mask against ACL entries.
     /// Follows standard NT DACL evaluation:
-    /// 1. Deny ACE matching subject SID immediately denies the intersecting bits.
-    /// 2. Allow ACE matching subject SID or Everyone grants rights.
-    /// 3. Returns true only if all requested bits are granted and none denied.
     pub fn check_access(&self, subject: &SecurityIdentifier, requested: FileAccessMask) -> bool {
         if subject.is_root() {
             return true;

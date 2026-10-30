@@ -1,8 +1,5 @@
 //! FAT32 Persistent File System Driver for KntonOS
-//!
 //! Implements Microsoft FAT32 specification volume geometry, BIOS Parameter Block (BPB)
-//! parsing, cluster-to-sector address resolution, cluster chain traversal,
-//! free cluster allocation, 32-byte directory entry parsing, and VFS Inode/FileSystem integration.
 
 use alloc::string::String;
 use alloc::sync::Arc;
@@ -293,7 +290,6 @@ impl BiosParameterBlock32 {
     }
 
     /// Converts a cluster number into its starting absolute LBA sector number.
-    ///
     /// Valid clusters start at cluster 2.
     pub fn cluster_to_sector(&self, cluster: u32) -> Result<u64, FsError> {
         if cluster < 2 {

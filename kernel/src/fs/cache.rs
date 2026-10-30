@@ -1,7 +1,5 @@
 //! VFS Unified Inode Cache, LRU Eviction, and Read-Write Lock Manager.
-//!
 //! Provides a 128-entry fast-lookup inode cache with LRU aging, hit/miss metrics,
-//! and fine-grained byte-range / file-level lock tracking for concurrent VFS access.
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;
