@@ -517,6 +517,10 @@ pub extern "C" fn kmain() -> ! {
     if !drivers::input::test_hall_effect_subsystem() {
         serial_write_str("[KNT-PANIC] Hall effect magnetic joystick and trigger calibration self-test failed!\r\n");
     }
+    // Initialize and verify Handheld PC Multi-Zone Haptic Force-Feedback Trigger & Active Resistance Motor Governor (TASK-KNT-125)
+    if !drivers::input::test_trigger_motor_subsystem() {
+        serial_write_str("[KNT-PANIC] Trigger motor force-feedback governor self-test failed!\r\n");
+    }
     // Initialize and verify Handheld PC Fingerprint Sensor & Biometric Windows Hello Token Engine
     if !drivers::input::test_biometric_fingerprint_subsystem() {
         serial_write_str("[KNT-PANIC] Biometric fingerprint and Windows Hello token self-test failed!\r\n");
