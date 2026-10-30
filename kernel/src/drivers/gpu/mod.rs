@@ -1,10 +1,15 @@
 //! GPU and Display Acceleration Subsystem for KntonOS.
 //!
 //! Provides modular hardware driver infrastructure for VirtIO GPU (2D/3D hardware
-//! acceleration, display scanouts, EDID mode discovery, and zero-copy backbuffer sharing).
+//! acceleration, display scanouts, EDID mode discovery, and zero-copy backbuffer sharing)
+//! and Direct Rendering Manager / Kernel Mode Setting (DRM/KMS) hardware scanout pipelines.
 
+pub mod drm;
+pub mod modeset;
 pub mod virtio_gpu;
 
+pub use drm::*;
+pub use modeset::*;
 pub use virtio_gpu::{
     test_gpu_command_submit_and_resource_allocation, test_scanout_flush_and_zero_copy_handover,
     test_virtio_gpu_packet_structures, test_virtio_gpu_subsystem, VirtioGpuCtrlHdr,
