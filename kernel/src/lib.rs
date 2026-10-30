@@ -137,6 +137,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Memory compactor and defragmentation self-test failed!\r\n");
     }
 
+    // Initialize and verify Micro-Kernel Lock-Free Ring Buffer Object Pool & Slab Cache Allocator
+    if !mem::test_slab_allocator_subsystem() {
+        serial_write_str("[KNT-PANIC] Slab cache and magazine allocator self-test failed!\r\n");
+    }
+
     // Initialize SMP multi-core discovery and Local APIC timer
     arch::init_smp();
 
