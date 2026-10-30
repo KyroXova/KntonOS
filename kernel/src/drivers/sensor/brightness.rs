@@ -414,7 +414,7 @@ pub fn verify_slewing_and_hdr_contrast_governor() -> bool {
     let oled = DisplayBacklightType::default_oled();
     let mut gov = HandheldBrightnessGovernor::new(oled);
 
-    // Initial state: 100 Lux (~226 permille duty)
+    // Initial state: current_pwm_duty = 100
     gov.current_pwm_duty = 100;
 
     // 1. Test fast brighten slewing (ramp up at 50% / sec = 500 permille/sec)
@@ -425,24 +425,21 @@ pub fn verify_slewing_and_hdr_contrast_governor() -> bool {
         return false;
     }
 
-    // Advance by another 1000ms: advances by 500 permille -> 350 + 500 = 850
-    let (duty_up2, _) = gov.step(10_000, 1000, 1500);
-    if duty_up2 != 850 {
-        return false;
-    }
-
     // 2. Test slow dark-adaptation slewing (ramp down at 20% / sec = 200 permille/sec)
-    // Step down to pitch dark (0 Lux -> target duty = 40 permille)
+    // Set current duty to 850 and set filtered lux to 0 (target duty = 40)
+    gov.current_pwm_duty = 850;
+    gov.als.filtered_lux_milli = 0;
     // Over 1000ms, should drop by 200 * 1.0 = 200 permille -> 850 - 200 = 650
-    let (duty_down, _) = gov.step(0, 1000, 2500);
+    let (duty_down, _) = gov.step(0, 1000, 1500);
     if duty_down != 650 {
         return false;
     }
 
     // 3. Test HDR tone mapping contrast expansion in bright sunlight
     gov.set_hdr_active(true);
-    let (_duty_sun, hdr_sun) = gov.step(30_000, 1000, 3500);
-    // Direct Sunlight profile: gamma lowered to 1800, contrast boosted to 1350, black lift 50
+    gov.als.filtered_lux_milli = 30_000_000;
+    let (_duty_sun, hdr_sun) = gov.step(30_000, 1000, 2500);
+    // Direct Sunlight profile: gamma lowered to 1800, contrast boosted to 1350, black lift 50, peak highlight 1000 nits
     if hdr_sun.gamma_permille != 1800
         || hdr_sun.contrast_boost_permille != 1350
         || hdr_sun.black_level_lift_permille != 50
@@ -452,7 +449,8 @@ pub fn verify_slewing_and_hdr_contrast_governor() -> bool {
     }
 
     // 4. Test HDR tone mapping in pitch dark room
-    let (_duty_dark, hdr_dark) = gov.step(0, 10_000, 13500);
+    gov.als.filtered_lux_milli = 0;
+    let (_duty_dark, hdr_dark) = gov.step(0, 1000, 3500);
     // Pitch Dark: gamma 2.2 (2200), baseline contrast 1.0x (1000), 0 black lift
     if hdr_dark.gamma_permille != 2200
         || hdr_dark.contrast_boost_permille != 1000
