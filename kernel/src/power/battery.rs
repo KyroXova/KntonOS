@@ -1,16 +1,7 @@
 //! Smart Battery System (SBS / ACPI _BST, _BIX) & Coulomb Counting Fuel Gauge.
-//!
 //! Provides high-precision handheld battery monitoring:
-//! - ACPI `_BST` (Battery Status) and `_BIX` (Battery Information Extended) structures
-//! - Coulomb counting charge integration with microampere-hour accumulation
-//! - State of Charge (SoC %) and State of Health (SoH %) estimators
-//! - Open-Circuit Voltage (OCV) calibration curves for zero-current drift correction
-//! - Low-battery critical thresholds (10% warning, <= 3% emergency S4 hibernation trigger)
-//! - Thermal discharge protector guarding against thermal runaway and cold lithium plating
 
-// -----------------------------------------------------------------------------
 // ACPI Battery Structures & Status Flags
-// -----------------------------------------------------------------------------
 
 /// ACPI `_BST` state bitflags.
 #[repr(transparent)]
@@ -92,9 +83,7 @@ impl BatteryInfoExtended {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Power Actions & Thermal Protection
-// -----------------------------------------------------------------------------
 
 /// Recommended system action based on battery energy reserve.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,9 +113,7 @@ pub enum ThermalProtectionState {
     UnderTempWarning,
 }
 
-// -----------------------------------------------------------------------------
 // High-Precision Coulomb Counter & Fuel Gauge
-// -----------------------------------------------------------------------------
 
 /// Open-Circuit Voltage (OCV) calibration point (Cell mV -> SoC permille).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -193,7 +180,6 @@ impl SmartBatteryGauge {
     }
 
     /// Advances Coulomb counter integration over `elapsed_ms` with current rate in mA.
-    ///
     /// 1 mAh = 3,600,000 mA * ms.
     pub fn update(&mut self, current_ma: i32, voltage_mv: u32, temp_dci: i16, elapsed_ms: u32) {
         self.status.present_rate_ma = current_ma;
@@ -335,9 +321,7 @@ impl SmartBatteryGauge {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Unit Tests & Verification
-// -----------------------------------------------------------------------------
 
 /// Unit test verifying battery gauge initialization, Coulomb counting integration, and OCV recalibration.
 pub fn verify_battery_gauge_and_coulomb_counter() -> bool {
@@ -358,8 +342,6 @@ pub fn verify_battery_gauge_and_coulomb_counter() -> bool {
 
     // 2. Simulate steady discharge under gaming load: -2500 mA (approx 18.5W on 7.4V)
     // Over 360,000 ms (6 minutes = 0.1 hr):
-    // Discharge = 2500 mA * 0.1 hr = 250 mAh.
-    // Remaining should be 4800 - 250 = 4550 mAh.
     gauge.update(-2500, 7600, 320, 360_000);
 
     if gauge.status.remaining_capacity_mah != 4550 {
@@ -375,8 +357,6 @@ pub fn verify_battery_gauge_and_coulomb_counter() -> bool {
 
     // 3. Simulate high-power USB-PD charging at +3000 mA
     // Over 120,000 ms (2 minutes = 1/30 hr = 0.0333 hr):
-    // Charge = 3000 mA * (2 / 60 hr) = 100 mAh.
-    // Remaining should be 4550 + 100 = 4650 mAh.
     gauge.update(3000, 8100, 350, 120_000);
 
     if gauge.status.remaining_capacity_mah != 4650 {

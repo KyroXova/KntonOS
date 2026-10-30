@@ -1,14 +1,7 @@
 //! USB Type-C Power Delivery (USB-PD) Contract Negotiator & CCCV Smart Charger Engine.
-//!
 //! Provides comprehensive charging management for handheld gaming PCs:
-//! - USB-PD 3.0 contract negotiation (5V, 9V, 15V, 20V up to 100W)
-//! - Multi-stage CCCV (Constant Current, Constant Voltage) charging state machine
-//! - Direct AC bypass charging (power pass-through) eliminating battery heat during gaming
-//! - Thermal charging current throttling protecting lithium cells against degradation
 
-// -----------------------------------------------------------------------------
 // USB-PD Contracts & Power Delivery
-// -----------------------------------------------------------------------------
 
 /// Standard USB Type-C Power Delivery voltage rails.
 #[repr(u32)]
@@ -39,9 +32,7 @@ impl UsbPdContract {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Charging State Machine & Profiles
-// -----------------------------------------------------------------------------
 
 /// Stages of the smart battery charging lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -225,9 +216,7 @@ impl SmartChargerController {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Unit Tests & Verification
-// -----------------------------------------------------------------------------
 
 /// Unit test verifying USB-PD contract negotiation, CCCV state transitions, bypass charging, and thermal throttling.
 pub fn verify_usb_pd_and_cccv_charging() -> bool {
