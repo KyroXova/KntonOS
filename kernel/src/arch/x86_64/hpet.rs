@@ -8,8 +8,10 @@
 //! - Monotonic nanosecond clock (CLOCK_MONOTONIC) and fast TSC calibration engine.
 
 use core::mem::size_of;
+use core::sync::atomic::{AtomicU64, Ordering};
 use crate::arch::x86_64::acpi::AcpiHeader;
 use crate::arch::x86_64::power::GenericAddressStructure;
+use crate::memory::spinlock::Spinlock;
 
 /// ACPI HPET Table 4-byte signature: ASCII "HPET".
 pub const HPET_SIGNATURE: &[u8; 4] = b"HPET";
@@ -588,6 +590,170 @@ pub fn verify_hpet_counter_and_timers() -> bool {
     // 6. Disable HPET
     dev.disable();
     if dev.is_enabled() {
+        return false;
+    }
+
+    true
+}
+
+// ============================================================================
+// Monotonic Nanosecond Clock & Fast TSC Calibration Engine
+// ============================================================================
+
+/// Global HPET device driver instance.
+pub static HPET_DEVICE: Spinlock<Option<HpetDevice>> = Spinlock::new(None);
+
+/// Calibrated CPU Time Stamp Counter (TSC) frequency in Hertz.
+pub static CALIBRATED_TSC_HZ: AtomicU64 = AtomicU64::new(0);
+
+/// Converts raw HPET 64-bit main counter ticks to nanoseconds using 128-bit math.
+#[inline(always)]
+pub fn ticks_to_nanoseconds(ticks: u64, period_fs: u32) -> u64 {
+    ((ticks as u128) * (period_fs as u128) / 1_000_000) as u64
+}
+
+/// Converts a nanosecond duration to raw HPET counter ticks.
+#[inline(always)]
+pub fn nanoseconds_to_ticks(ns: u64, period_fs: u32) -> u64 {
+    if period_fs == 0 {
+        0
+    } else {
+        ((ns as u128) * 1_000_000 / (period_fs as u128)) as u64
+    }
+}
+
+/// Returns current monotonic time in nanoseconds since HPET initialization.
+pub fn monotonic_time_ns() -> u64 {
+    let guard = HPET_DEVICE.lock();
+    if let Some(ref dev) = *guard {
+        let ticks = dev.read_main_counter();
+        ticks_to_nanoseconds(ticks, dev.info.counter_clk_period_fs)
+    } else {
+        let tsc_hz = CALIBRATED_TSC_HZ.load(Ordering::Relaxed);
+        if tsc_hz > 0 {
+            let tsc = read_tsc();
+            ((tsc as u128) * 1_000_000_000 / (tsc_hz as u128)) as u64
+        } else {
+            0
+        }
+    }
+}
+
+/// Returns current monotonic time in microseconds.
+#[inline(always)]
+pub fn monotonic_time_us() -> u64 {
+    monotonic_time_ns() / 1_000
+}
+
+/// Returns current monotonic time in milliseconds.
+#[inline(always)]
+pub fn monotonic_time_ms() -> u64 {
+    monotonic_time_ns() / 1_000_000
+}
+
+/// Suspends execution for at least the specified duration in nanoseconds.
+pub fn monotonic_sleep_ns(ns: u64) {
+    let start = monotonic_time_ns();
+    while monotonic_time_ns().saturating_sub(start) < ns {
+        core::hint::spin_loop();
+    }
+}
+
+/// Reads the CPU 64-bit Time Stamp Counter via RDTSC instruction.
+#[inline(always)]
+pub fn read_tsc() -> u64 {
+    unsafe { core::arch::x86_64::_rdtsc() }
+}
+
+/// Calculates TSC frequency from sampled delta TSC, delta HPET ticks, and HPET clock period.
+pub fn calibrate_tsc_with_samples(tsc_start: u64, tsc_end: u64, hpet_ticks: u64, period_fs: u32) -> u64 {
+    let delta_tsc = tsc_end.saturating_sub(tsc_start);
+    if hpet_ticks == 0 || period_fs == 0 {
+        return 0;
+    }
+    let denom = (hpet_ticks as u128) * (period_fs as u128);
+    let numer = (delta_tsc as u128) * 1_000_000_000_000_000u128;
+    (numer / denom) as u64
+}
+
+/// Calibrates the CPU TSC frequency using HPET over a target sampling window (e.g. 5,000 microseconds).
+pub fn calibrate_tsc(dev: &mut HpetDevice, duration_us: u64) -> u64 {
+    if dev.is_simulated {
+        // Deterministic synthetic baseline: 2.5 GHz
+        let freq = 2_500_000_000u64;
+        CALIBRATED_TSC_HZ.store(freq, Ordering::SeqCst);
+        return freq;
+    }
+
+    let target_ticks = nanoseconds_to_ticks(duration_us * 1_000, dev.info.counter_clk_period_fs);
+    if target_ticks == 0 {
+        return 0;
+    }
+
+    let start_hpet = dev.read_main_counter();
+    let start_tsc = read_tsc();
+
+    while dev.read_main_counter().saturating_sub(start_hpet) < target_ticks {
+        core::hint::spin_loop();
+    }
+
+    let end_tsc = read_tsc();
+    let end_hpet = dev.read_main_counter();
+    let actual_hpet_ticks = end_hpet.saturating_sub(start_hpet);
+
+    let freq = calibrate_tsc_with_samples(
+        start_tsc,
+        end_tsc,
+        actual_hpet_ticks,
+        dev.info.counter_clk_period_fs,
+    );
+
+    CALIBRATED_TSC_HZ.store(freq, Ordering::SeqCst);
+    freq
+}
+
+/// Verification self-test for monotonic nanosecond time arithmetic and TSC calibration.
+pub fn verify_hpet_monotonic_and_tsc() -> bool {
+    // 1. Ticks to nanoseconds round-trip test (100ns tick period = 10,000,000 fs)
+    let period_fs = 10_000_000u32;
+    let ticks = 50_000u64; // 50,000 ticks * 100ns = 5,000,000 ns (5 ms)
+    let ns = ticks_to_nanoseconds(ticks, period_fs);
+    if ns != 5_000_000 {
+        return false;
+    }
+
+    let round_trip_ticks = nanoseconds_to_ticks(ns, period_fs);
+    if round_trip_ticks != ticks {
+        return false;
+    }
+
+    // 2. Monotonic progression verification
+    let mut last_ns = 0u64;
+    for tick_step in 1..=10 {
+        let current_ns = ticks_to_nanoseconds(tick_step * 10_000, period_fs);
+        if current_ns <= last_ns {
+            return false;
+        }
+        last_ns = current_ns;
+    }
+
+    // 3. TSC calibration math verification
+    // Simulate 5ms duration on a 3.0 GHz processor:
+    // 5ms = 50,000 HPET ticks @ 10 MHz.
+    // In 5ms, 3.0 GHz CPU cycles = 3,000,000,000 * 0.005 = 15,000,000 cycles.
+    let tsc_start = 100_000_000u64;
+    let tsc_end = tsc_start + 15_000_000u64;
+    let hpet_ticks = 50_000u64;
+    let calibrated_hz = calibrate_tsc_with_samples(tsc_start, tsc_end, hpet_ticks, period_fs);
+    if calibrated_hz != 3_000_000_000 {
+        return false;
+    }
+
+    // 4. Device driver TSC calibration interface
+    let info = HpetInfo::default_q35();
+    let mut dev = HpetDevice::new(info, true);
+    let dev_calibrated_hz = calibrate_tsc(&mut dev, 5_000);
+    if dev_calibrated_hz != 2_500_000_000 || CALIBRATED_TSC_HZ.load(Ordering::Relaxed) != 2_500_000_000 {
         return false;
     }
 
