@@ -107,13 +107,16 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-080 | Unified Handheld PC Gyro Aiming & Motion Assist Dynamic Angle Governor | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-080-gyro-aiming.md) |
 | TASK-KNT-081 | Zero-Copy Direct Storage Direct3D 12 Compressed GpuTexture Streaming Pipeline | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-081-direct-storage.md) |
 | TASK-KNT-082 | Real-Time Game Audio Equalizer (Parametric 10-Band EQ & Dynamic Bass Booster) | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-082-audio-eq.md) |
-| TASK-KNT-083 | Unified Handheld PC Backlight PWM Modulator & Flicker-Free DC Dimming Governor | Claimed | TASK-KNT-074 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-083-backlight-pwm.md) |
-| TASK-KNT-084 | Zero-Copy GPU Asynchronous Compute Dispatch & Shader Execution Fence Engine | Claimed | TASK-KNT-071 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-084-gpu-compute.md) |
-| TASK-KNT-085 | Micro-Kernel Lock-Free Ring Buffer Object Pool & Slab Cache Allocator | Claimed | TASK-KNT-079 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-085-slab-allocator.md) |
+| TASK-KNT-083 | Unified Handheld PC Backlight PWM Modulator & Flicker-Free DC Dimming Governor | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-083-backlight-pwm.md) |
+| TASK-KNT-084 | Zero-Copy GPU Asynchronous Compute Dispatch & Shader Execution Fence Engine | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-084-gpu-compute.md) |
+| TASK-KNT-085 | Micro-Kernel Lock-Free Ring Buffer Object Pool & Slab Cache Allocator | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-085-slab-allocator.md) |
+| TASK-KNT-086 | Unified Handheld PC Multi-Zone Haptic Actuator & Resonant Frequency Tracking Governor | Claimed | TASK-KNT-066 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-086-lra-haptics.md) |
+| TASK-KNT-087 | Kernel-Direct NVMe ZNS (Zoned Namespaces) & Copy Offload Engine | Claimed | TASK-KNT-067 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-087-nvme-zns.md) |
+| TASK-KNT-088 | High-Frequency Kernel High-Resolution Timers (hrtimer) & Red-Black Tree Wheel Engine | Claimed | TASK-KNT-047 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-088-hrtimer.md) |
 
 ## Active reservations
 
 - `kernel/src/pkg/`: reserved by ArdenKestrel for TASK-KNT-045.
-- `kernel/src/drivers/display/backlight.rs`, `kernel/src/drivers/display/pwm.rs`: reserved by Jules Martin for TASK-KNT-083.
-- `kernel/src/gfx/compute.rs`, `kernel/src/gfx/gpu_fence.rs`: reserved by Priya Nair for TASK-KNT-084.
-- `kernel/src/mem/slab.rs`, `kernel/src/mem/magazine.rs`: reserved by Ada Chen for TASK-KNT-085.
+- `kernel/src/drivers/input/lra_haptic.rs`, `kernel/src/drivers/input/haptic_brake.rs`: reserved by Jules Martin for TASK-KNT-086.
+- `kernel/src/drivers/storage/nvme_zns.rs`, `kernel/src/drivers/storage/copy_offload.rs`: reserved by Priya Nair for TASK-KNT-087.
+- `kernel/src/time/hrtimer.rs`, `kernel/src/time/wheel.rs`: reserved by Ada Chen for TASK-KNT-088.
