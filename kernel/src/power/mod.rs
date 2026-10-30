@@ -10,8 +10,10 @@ pub mod cstate;
 pub mod epb;
 pub mod freeze;
 pub mod s3_resume;
+pub mod fan;
 
 pub use s3_resume::*;
+pub use fan::*;
 
 pub use freeze::*;
 
