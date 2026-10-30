@@ -544,7 +544,7 @@ pub struct NvmeIdentifyController {
     pub hmmin: u32,
     pub tnvmcap: [u8; 16],
     pub unvmcap: [u8; 16],
-    pub rsvd320: [u8; 192],
+    pub rsvd312: [u8; 200],
     pub sqes: u8,
     pub cqes: u8,
     pub maxcmd: u16,

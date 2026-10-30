@@ -201,6 +201,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] AHCI SATA storage subsystem self-test failed!\r\n");
     }
 
+    // Initialize and verify NVMe Storage Controller Subsystem
+    if !drivers::storage::test_nvme_subsystem() {
+        serial_write_str("[KNT-PANIC] NVMe storage subsystem self-test failed!\r\n");
+    }
+
     // Initialize Embedded Network Protocol Stack (ARP, IPv4, ICMP, UDP, TCP)
     net::init();
     if !net::test_network_stack() {
