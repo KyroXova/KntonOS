@@ -153,6 +153,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Dynamic power governor self-test failed!\r\n");
     }
 
+    // Initialize and verify Dynamic Core Parking, C-State Governor, & EPB/EPP Manager
+    if !power::test_core_parking_and_cstate_subsystem() {
+        serial_write_str("[KNT-PANIC] Core parking and C-state governor self-test failed!\r\n");
+    }
+
     // Initialize Virtual File System & mount demo initramfs
     fs::init();
     if !fs::test_vfs_subsystem() {

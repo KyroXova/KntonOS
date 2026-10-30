@@ -94,3 +94,27 @@ pub fn test_power_governor_subsystem() -> bool {
 
     true
 }
+
+/// Comprehensive verification self-test suite for Dynamic Core Parking,
+/// C-State Governor, and Energy-Performance Bias (EPB / EPP).
+pub fn test_core_parking_and_cstate_subsystem() -> bool {
+    // 1. Verify CPU core parking topology table, runqueue load evaluation, and park/unpark transitions
+    if !verify_core_parking_topology_and_load() {
+        return false;
+    }
+
+    // 2. Verify autonomous C-state residency selection and break-even latency analysis
+    if !verify_cstate_governor_and_latency() {
+        return false;
+    }
+
+    // 3. Verify Energy-Performance Bias (EPB) and EPP hardware MSR governor profiles
+    if !verify_epb_and_epp_profiles() {
+        return false;
+    }
+
+    // 4. Emit deterministic boot sentinel
+    crate::serial_write_str("[KNT-POWER-PARK-PASS] Dynamic core parking, C-state governor, and EPB/EPP profiles verified\r\n");
+
+    true
+}
