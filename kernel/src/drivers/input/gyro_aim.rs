@@ -428,3 +428,174 @@ pub fn verify_activation_modes_and_calibration() -> bool {
 
     true
 }
+
+// -----------------------------------------------------------------------------
+// Multi-Axis Gyroscope Zero-Drift & Motion Aiming Governor (TASK-KNT-131)
+// -----------------------------------------------------------------------------
+
+/// Conversion factor: Degrees to Radians.
+pub const DEG2RAD: f32 = PI / 180.0;
+/// Conversion factor: Radians to Degrees.
+pub const RAD2DEG: f32 = 180.0 / PI;
+
+/// Tri-axial gyroscope angular velocity representation in physical degrees per second (°/s).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GyroAngularVelocity {
+    /// Roll angular rate in °/s (rotation around longitudinal axis).
+    pub roll_dps: f32,
+    /// Pitch angular rate in °/s (rotation around lateral axis).
+    pub pitch_dps: f32,
+    /// Yaw angular rate in °/s (rotation around vertical axis).
+    pub yaw_dps: f32,
+    /// Capture timestamp in microseconds.
+    pub timestamp_us: u64,
+}
+
+impl GyroAngularVelocity {
+    /// Creates a new angular velocity reading.
+    pub const fn new(roll_dps: f32, pitch_dps: f32, yaw_dps: f32, timestamp_us: u64) -> Self {
+        Self {
+            roll_dps,
+            pitch_dps,
+            yaw_dps,
+            timestamp_us,
+        }
+    }
+
+    /// Converts the angular velocity tuple to radians per second: (pitch, yaw, roll).
+    #[inline(always)]
+    pub fn to_rad_per_sec(&self) -> (f32, f32, f32) {
+        (
+            self.pitch_dps * DEG2RAD,
+            self.yaw_dps * DEG2RAD,
+            self.roll_dps * DEG2RAD,
+        )
+    }
+
+    /// Computes the Euclidean angular velocity vector norm in °/s.
+    #[inline(always)]
+    pub fn magnitude_dps(&self) -> f32 {
+        crate::graphics::sqrt_f32(
+            self.roll_dps * self.roll_dps
+                + self.pitch_dps * self.pitch_dps
+                + self.yaw_dps * self.yaw_dps,
+        )
+    }
+}
+
+/// Persistent zero-bias calibration registers for IMU background bias compensation.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GyroBiasRegisters {
+    /// Zero-rate offset for roll axis in °/s.
+    pub bias_roll_dps: f32,
+    /// Zero-rate offset for pitch axis in °/s.
+    pub bias_pitch_dps: f32,
+    /// Zero-rate offset for yaw axis in °/s.
+    pub bias_yaw_dps: f32,
+    /// Number of stationary frames accumulated into current bias estimate.
+    pub sample_count: u32,
+    /// Flag indicating if background calibration converged.
+    pub is_calibrated: bool,
+}
+
+impl GyroBiasRegisters {
+    /// Creates an initial uncalibrated bias register block.
+    pub const fn new() -> Self {
+        Self {
+            bias_roll_dps: 0.0,
+            bias_pitch_dps: 0.0,
+            bias_yaw_dps: 0.0,
+            sample_count: 0,
+            is_calibrated: false,
+        }
+    }
+
+    /// Resets accumulated calibration registers.
+    pub fn reset(&mut self) {
+        self.bias_roll_dps = 0.0;
+        self.bias_pitch_dps = 0.0;
+        self.bias_yaw_dps = 0.0;
+        self.sample_count = 0;
+        self.is_calibrated = false;
+    }
+}
+
+/// Motion aiming sensitivity transfer curve profiles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AimingCurveType {
+    /// Linear 1:1 proportional response curve.
+    Linear,
+    /// Power curve (y = x^gamma) providing fine control in the center and quick turns on edges.
+    Exponential,
+    /// Dual-zone response: reduced sensitivity in micro-aim core, linear transition outside.
+    DualZone,
+}
+
+/// Configuration profile governing motion transfer, deadzones, and acceleration.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GyroAimProfile {
+    /// Curve profile type.
+    pub curve_type: AimingCurveType,
+    /// Base sensitivity scaling multiplier.
+    pub base_sensitivity: f32,
+    /// Exponential gamma exponent (typically 1.2 to 1.8).
+    pub exponent: f32,
+    /// Tremor deadzone floor in °/s (micro-movements below this are suppressed).
+    pub tremor_deadzone_dps: f32,
+    /// Speed threshold in °/s above which high-speed angular acceleration engages.
+    pub acceleration_threshold_dps: f32,
+    /// Maximum acceleration multiplier for quick flick turns.
+    pub max_acceleration_multiplier: f32,
+}
+
+impl GyroAimProfile {
+    /// Default handheld aiming configuration tuned for competitive FPS and precision navigation.
+    pub const fn default_competitive() -> Self {
+        Self {
+            curve_type: AimingCurveType::Exponential,
+            base_sensitivity: 1.0,
+            exponent: 1.4,
+            tremor_deadzone_dps: 0.25, // 0.25 °/s tremor suppression
+            acceleration_threshold_dps: 30.0, // 30 °/s flick threshold
+            max_acceleration_multiplier: 2.5,
+        }
+    }
+}
+
+/// Verification helper for Commit 1 angular velocity structures and aiming curves.
+pub fn verify_gyro_angular_structures_and_curves() -> bool {
+    // 1. Verify GyroAngularVelocity Initialization & Unit Conversion
+    let gyro = GyroAngularVelocity::new(0.0, 90.0, 0.0, 10_000);
+    if gyro.pitch_dps != 90.0 || gyro.timestamp_us != 10_000 {
+        return false;
+    }
+
+    let (pitch_rad, yaw_rad, roll_rad) = gyro.to_rad_per_sec();
+    // 90° = PI / 2 radians (~1.57079 rad)
+    if (pitch_rad - (PI / 2.0)).abs() > 0.001 || yaw_rad != 0.0 || roll_rad != 0.0 {
+        return false;
+    }
+    if (gyro.magnitude_dps() - 90.0).abs() > 0.001 {
+        return false;
+    }
+
+    // 2. Verify GyroBiasRegisters
+    let mut bias_regs = GyroBiasRegisters::new();
+    if bias_regs.is_calibrated || bias_regs.sample_count != 0 {
+        return false;
+    }
+    bias_regs.bias_yaw_dps = 0.5;
+    bias_regs.is_calibrated = true;
+    bias_regs.reset();
+    if bias_regs.bias_yaw_dps != 0.0 || bias_regs.is_calibrated {
+        return false;
+    }
+
+    // 3. Verify Aiming Profile Defaults
+    let profile = GyroAimProfile::default_competitive();
+    if profile.curve_type != AimingCurveType::Exponential || profile.tremor_deadzone_dps != 0.25 {
+        return false;
+    }
+
+    true
+}
