@@ -20,8 +20,9 @@ pub use hda::{
 };
 
 pub use mixer::{
-    verify_audio_mixer, AudioChannel, AudioMixer, AudioSampleQueue, PcmSample, DEFAULT_VOLUME,
-    MAX_CHANNELS, QUEUE_CAPACITY,
+    apply_pan, verify_audio_mixer, verify_soft_knee_limiter_and_gain, AudioChannel, AudioMixer,
+    AudioSampleQueue, PcmSample, SoftKneeLimiter, DEFAULT_VOLUME, MAX_CHANNELS, MAX_GAIN,
+    QUEUE_CAPACITY, UNITY_GAIN,
 };
 
 /// Comprehensive verification of the real-time audio subsystem.
