@@ -46,9 +46,9 @@ pub enum ClickTransition {
     /// No change in contact or click state.
     None,
     /// Capacitive touch contact engaged (Hover -> CapacitiveTouch).
-    TouchContactDown,
+    TouchpadContactDown,
     /// Capacitive touch contact released (CapacitiveTouch -> Hover).
-    TouchContactUp,
+    TouchpadContactUp,
     /// Physical pressure click actuated (CapacitiveTouch -> PressureClick).
     PressureClickDown,
     /// Physical pressure click released (PressureClick -> CapacitiveTouch).
@@ -264,7 +264,7 @@ impl SingleTouchpad {
                         ClickTransition::PressureClickDown
                     } else {
                         self.click_stage = TouchpadClickStage::CapacitiveTouch;
-                        ClickTransition::TouchContactDown
+                        ClickTransition::TouchpadContactDown
                     }
                 } else {
                     ClickTransition::None
@@ -273,7 +273,7 @@ impl SingleTouchpad {
             TouchpadClickStage::CapacitiveTouch => {
                 if !has_contact {
                     self.click_stage = TouchpadClickStage::Hover;
-                    ClickTransition::TouchContactUp
+                    ClickTransition::TouchpadContactUp
                 } else if pressure >= self.click_config.click_press_threshold {
                     self.click_stage = TouchpadClickStage::PressureClick;
                     ClickTransition::PressureClickDown
@@ -284,7 +284,7 @@ impl SingleTouchpad {
             TouchpadClickStage::PressureClick => {
                 if !has_contact {
                     self.click_stage = TouchpadClickStage::Hover;
-                    ClickTransition::TouchContactUp
+                    ClickTransition::TouchpadContactUp
                 } else if pressure < self.click_config.click_release_threshold {
                     self.click_stage = TouchpadClickStage::CapacitiveTouch;
                     ClickTransition::PressureClickUp
@@ -572,7 +572,7 @@ pub fn verify_dual_stage_click_and_haptic_ticks() -> bool {
     }
 
     // 2. Light touch (pressure = 400 > touch_threshold: 50, but < click_press: 2048)
-    // Must transition to CapacitiveTouch with TouchContactDown
+    // Must transition to CapacitiveTouch with TouchpadContactDown
     let s_touch = RawTouchpadSample {
         pad_id: TouchpadId::Right,
         raw_x: 0,
@@ -585,7 +585,7 @@ pub fn verify_dual_stage_click_and_haptic_ticks() -> bool {
     if m_touch.click_stage != TouchpadClickStage::CapacitiveTouch {
         return false;
     }
-    if m_touch.click_transition != ClickTransition::TouchContactDown {
+    if m_touch.click_transition != ClickTransition::TouchpadContactDown {
         return false;
     }
 
@@ -663,7 +663,7 @@ pub fn verify_dual_stage_click_and_haptic_ticks() -> bool {
     }
 
     // 7. Lift thumb completely off touchpad surface
-    // Must transition to Hover with TouchContactUp
+    // Must transition to Hover with TouchpadContactUp
     let s_lift = RawTouchpadSample {
         pad_id: TouchpadId::Right,
         raw_x: 3277,
@@ -676,7 +676,237 @@ pub fn verify_dual_stage_click_and_haptic_ticks() -> bool {
     if m_lift.click_stage != TouchpadClickStage::Hover {
         return false;
     }
-    if m_lift.click_transition != ClickTransition::TouchContactUp {
+    if m_lift.click_transition != ClickTransition::TouchpadContactUp {
+        return false;
+    }
+
+    true
+}
+
+// -----------------------------------------------------------------------------
+// High-Precision Multi-Finger Capacitive Gesture Engine (TASK-KNT-128)
+// -----------------------------------------------------------------------------
+
+/// Maximum concurrent contact points tracked across the capacitive matrix.
+pub const MAX_TOUCHPAD_CONTACTS: usize = 5;
+
+/// Operational lifecycle state of an individual capacitive contact point.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TouchpadContactState {
+    /// Contact slot inactive or unassigned.
+    Inactive,
+    /// Finger initial contact down on surface.
+    TouchDown,
+    /// Finger stationary and pressing on surface.
+    Holding,
+    /// Finger gliding across surface with valid velocity vector.
+    Moving,
+    /// Finger breaking surface contact.
+    LiftUp,
+}
+
+/// Detailed capacitive finger contact descriptor with ellipse geometry.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TouchpadContact {
+    /// Unique hardware tracking ID for this contact.
+    pub contact_id: u8,
+    /// Current contact lifecycle state.
+    pub state: TouchpadContactState,
+    /// Sub-pixel horizontal coordinate (0.0 .. 1920.0).
+    pub x: f32,
+    /// Sub-pixel vertical coordinate (0.0 .. 1080.0).
+    pub y: f32,
+    /// Surface pressure measurement (0..4095).
+    pub pressure_z: u16,
+    /// Major axis radius of contact ellipse in sensor pitch units.
+    pub major_axis: u16,
+    /// Minor axis radius of contact ellipse in sensor pitch units.
+    pub minor_axis: u16,
+    /// Contact orientation angle in degrees (-90 .. 90).
+    pub orientation_deg: i16,
+    /// Timestamp of contact observation in microseconds.
+    pub timestamp_us: u64,
+}
+
+impl TouchpadContact {
+    /// Creates an empty inactive contact slot.
+    pub const fn empty(contact_id: u8) -> Self {
+        Self {
+            contact_id,
+            state: TouchpadContactState::Inactive,
+            x: 0.0,
+            y: 0.0,
+            pressure_z: 0,
+            major_axis: 0,
+            minor_axis: 0,
+            orientation_deg: 0,
+            timestamp_us: 0,
+        }
+    }
+}
+
+/// Multi-contact raw frame decoded from capacitive controller I2C/HID report.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TouchpadFrame {
+    /// Number of active physical fingers detected on the pad (0..MAX_TOUCHPAD_CONTACTS).
+    pub contact_count: u8,
+    /// Array of tracked contact descriptors.
+    pub contacts: [TouchpadContact; MAX_TOUCHPAD_CONTACTS],
+    /// Physical dome switch / pressure click active.
+    pub physical_button_down: bool,
+    /// Frame capture timestamp in microseconds.
+    pub timestamp_us: u64,
+}
+
+impl TouchpadFrame {
+    /// Creates a blank frame with 0 contacts.
+    pub const fn empty(timestamp_us: u64) -> Self {
+        Self {
+            contact_count: 0,
+            contacts: [
+                TouchpadContact::empty(0),
+                TouchpadContact::empty(1),
+                TouchpadContact::empty(2),
+                TouchpadContact::empty(3),
+                TouchpadContact::empty(4),
+            ],
+            physical_button_down: false,
+            timestamp_us,
+        }
+    }
+
+    /// Decodes a 24-byte multi-touch report packet into a structured TouchpadFrame.
+    pub fn decode_packet(bytes: &[u8], timestamp_us: u64) -> Result<Self, &'static str> {
+        if bytes.len() < 4 {
+            return Err("Touchpad packet too short");
+        }
+
+        let report_id = bytes[0];
+        if report_id != 0x3F && report_id != 0x12 {
+            return Err("Invalid touchpad report ID");
+        }
+
+        let count = (bytes[1] as usize).min(MAX_TOUCHPAD_CONTACTS);
+        let button = (bytes[2] & 0x01) != 0;
+
+        let mut frame = Self::empty(timestamp_us);
+        frame.contact_count = count as u8;
+        frame.physical_button_down = button;
+
+        // Each contact payload is 4 bytes: [ID_state, X_lo, X_hi_Y_lo, Y_hi]
+        let mut offset = 3;
+        for i in 0..count {
+            if offset + 4 > bytes.len() {
+                break;
+            }
+            let b_id_state = bytes[offset];
+            let id = b_id_state & 0x0F;
+            let is_down = (b_id_state & 0x10) != 0;
+
+            let x_raw = (bytes[offset + 1] as u16) | (((bytes[offset + 2] & 0x0F) as u16) << 8);
+            let y_raw = ((bytes[offset + 2] >> 4) as u16) | ((bytes[offset + 3] as u16) << 4);
+
+            frame.contacts[i] = TouchpadContact {
+                contact_id: id,
+                state: if is_down { TouchpadContactState::Moving } else { TouchpadContactState::TouchDown },
+                x: x_raw as f32,
+                y: y_raw as f32,
+                pressure_z: 1024,
+                major_axis: 12,
+                minor_axis: 8,
+                orientation_deg: 0,
+                timestamp_us,
+            };
+            offset += 4;
+        }
+
+        Ok(frame)
+    }
+}
+
+/// High-level multi-finger gesture types recognized by the gesture engine.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TouchpadGestureType {
+    /// No gesture active.
+    None,
+    /// 1-Finger discrete tap at coordinate.
+    SingleTap { x: f32, y: f32 },
+    /// 1-Finger cursor displacement drag.
+    SingleDrag { dx: f32, dy: f32 },
+    /// 2-Finger scroll with vertical and horizontal displacement.
+    TwoFingerScroll { delta_x: f32, delta_y: f32, is_inertial: bool },
+    /// 2-Finger pinch-to-zoom scaling factor delta.
+    TwoFingerPinchZoom { scale_delta: f32, center_x: f32, center_y: f32 },
+    /// 3-Finger fast horizontal swipe (e.g. desktop/workspace switch).
+    ThreeFingerSwipeHorizontal { swipe_left: bool },
+    /// 3-Finger fast vertical swipe (e.g. window overview / task view).
+    ThreeFingerSwipeVertical { swipe_up: bool },
+}
+
+/// Gesture recognition state lifecycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TouchpadGestureState {
+    Possible,
+    Began,
+    Changed,
+    Ended,
+    Cancelled,
+}
+
+/// High-level gesture event delivered to window manager and input compositor.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TouchpadGestureEvent {
+    /// Recognized gesture type with motion payload.
+    pub gesture_type: TouchpadGestureType,
+    /// Gesture state lifecycle phase.
+    pub state: TouchpadGestureState,
+    /// Number of active fingers driving this gesture.
+    pub finger_count: u8,
+    /// Event occurrence timestamp in microseconds.
+    pub timestamp_us: u64,
+}
+
+/// Verification helper for Commit 1 contact structures, decoders, and gesture descriptors.
+pub fn verify_touchpad_contact_structures_and_decoders() -> bool {
+    // 1. Verify Empty Frame Initialization
+    let frame = TouchpadFrame::empty(10_000);
+    if frame.contact_count != 0 || frame.physical_button_down || frame.timestamp_us != 10_000 {
+        return false;
+    }
+
+    // 2. Verify Multi-Touch Raw Packet Decoding
+    // Report ID 0x3F, 2 contacts, Button Down (0x01)
+    // Contact 0: ID 0, state down (0x10), X = 800 (0x320: lo=0x20, hi=0x03), Y = 600 (0x258: lo=0x05, hi=0x25)
+    // Contact 1: ID 1, state down (0x11), X = 1200 (0x4B0: lo=0xB0, hi=0x04), Y = 900 (0x384: lo=0x08, hi=0x38)
+    let raw_packet: [u8; 11] = [
+        0x3F, 0x02, 0x01,
+        0x10, 0x20, 0x53, 0x25,
+        0x11, 0xB0, 0x84, 0x38,
+    ];
+
+    let decoded = match TouchpadFrame::decode_packet(&raw_packet, 20_000) {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+
+    if decoded.contact_count != 2 || !decoded.physical_button_down {
+        return false;
+    }
+    if decoded.contacts[0].contact_id != 0 || decoded.contacts[0].x != 800.0 || decoded.contacts[0].y != 600.0 {
+        return false;
+    }
+    if decoded.contacts[1].contact_id != 1 || decoded.contacts[1].x != 1200.0 || decoded.contacts[1].y != 900.0 {
+        return false;
+    }
+
+    // 3. Verify Gesture Event Structure
+    let event = TouchpadGestureEvent {
+        gesture_type: TouchpadGestureType::TwoFingerScroll { delta_x: 0.0, delta_y: -15.5, is_inertial: false },
+        state: TouchpadGestureState::Changed,
+        finger_count: 2,
+        timestamp_us: 20_500,
+    };
+    if event.finger_count != 2 || event.state != TouchpadGestureState::Changed {
         return false;
     }
 
