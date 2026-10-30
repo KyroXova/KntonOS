@@ -677,6 +677,225 @@ impl UnixSocketTable {
     pub fn exists(&self, handle: SocketHandle) -> bool {
         self.sockets.contains_key(&handle)
     }
+
+    pub fn socketpair(
+        &mut self,
+        sock_type: SocketType,
+        h1: SocketHandle,
+        h2: SocketHandle,
+    ) -> Result<(), UnixSocketError> {
+        let mut s1 = UnixSocket::new(h1, sock_type);
+        let mut s2 = UnixSocket::new(h2, sock_type);
+
+        s1.state = SocketState::Connected;
+        s1.address = Some(UnixSocketAddress::Unnamed);
+        s1.peer_handle = Some(h2);
+        s1.peer_cred = Some(s2.cred);
+
+        s2.state = SocketState::Connected;
+        s2.address = Some(UnixSocketAddress::Unnamed);
+        s2.peer_handle = Some(h1);
+        s2.peer_cred = Some(s1.cred);
+
+        self.sockets.insert(h1, s1);
+        self.sockets.insert(h2, s2);
+        Ok(())
+    }
+
+    pub fn send(&mut self, handle: SocketHandle, data: &[u8]) -> Result<usize, UnixSocketError> {
+        let (peer_handle, sock_type, nonblocking) = {
+            let sock = self.sockets.get(&handle).ok_or(UnixSocketError::NotFound)?;
+            if sock.state != SocketState::Connected {
+                return Err(UnixSocketError::NotConnected);
+            }
+            if sock.peer_closed {
+                return Err(UnixSocketError::BrokenPipe);
+            }
+            let ph = sock.peer_handle.ok_or(UnixSocketError::NotConnected)?;
+            (ph, sock.sock_type, sock.nonblocking)
+        };
+
+        let sender_meta = {
+            let sock = self.sockets.get(&handle).ok_or(UnixSocketError::NotFound)?;
+            (sock.address.clone(), sock.cred)
+        };
+
+        let peer = self.sockets.get_mut(&peer_handle).ok_or(UnixSocketError::BrokenPipe)?;
+        if peer.peer_closed {
+            return Err(UnixSocketError::BrokenPipe);
+        }
+
+        match sock_type {
+            SocketType::SockStream => {
+                let written = peer.stream_rx.write(data);
+                if written == 0 && !data.is_empty() {
+                    if nonblocking {
+                        return Err(UnixSocketError::WouldBlock);
+                    }
+                    return Err(UnixSocketError::WouldBlock);
+                }
+                Ok(written)
+            }
+            SocketType::SockSeqPacket => {
+                let pkt = UnixDatagramPacket::new(sender_meta.0, Some(sender_meta.1), data.to_vec());
+                peer.dgram_rx.push(pkt)?;
+                Ok(data.len())
+            }
+            SocketType::SockDgram => {
+                let pkt = UnixDatagramPacket::new(sender_meta.0, Some(sender_meta.1), data.to_vec());
+                peer.dgram_rx.push(pkt)?;
+                Ok(data.len())
+            }
+            _ => Err(UnixSocketError::InvalidArgument),
+        }
+    }
+
+    pub fn recv(&mut self, handle: SocketHandle, buf: &mut [u8]) -> Result<usize, UnixSocketError> {
+        let sock = self.sockets.get_mut(&handle).ok_or(UnixSocketError::NotFound)?;
+        if sock.state != SocketState::Connected && sock.state != SocketState::Bound {
+            return Err(UnixSocketError::NotConnected);
+        }
+
+        match sock.sock_type {
+            SocketType::SockStream => {
+                let read_bytes = sock.stream_rx.read(buf);
+                if read_bytes > 0 {
+                    Ok(read_bytes)
+                } else if sock.peer_closed {
+                    Ok(0)
+                } else if sock.nonblocking {
+                    Err(UnixSocketError::WouldBlock)
+                } else {
+                    Err(UnixSocketError::WouldBlock)
+                }
+            }
+            SocketType::SockSeqPacket => {
+                if let Some(pkt) = sock.dgram_rx.pop() {
+                    let to_read = core::cmp::min(buf.len(), pkt.data.len());
+                    buf[..to_read].copy_from_slice(&pkt.data[..to_read]);
+                    Ok(to_read)
+                } else if sock.peer_closed {
+                    Ok(0)
+                } else if sock.nonblocking {
+                    Err(UnixSocketError::WouldBlock)
+                } else {
+                    Err(UnixSocketError::WouldBlock)
+                }
+            }
+            SocketType::SockDgram => {
+                if let Some(pkt) = sock.dgram_rx.pop() {
+                    let to_read = core::cmp::min(buf.len(), pkt.data.len());
+                    buf[..to_read].copy_from_slice(&pkt.data[..to_read]);
+                    Ok(to_read)
+                } else if sock.nonblocking {
+                    Err(UnixSocketError::WouldBlock)
+                } else {
+                    Err(UnixSocketError::WouldBlock)
+                }
+            }
+            _ => Err(UnixSocketError::InvalidArgument),
+        }
+    }
+
+    pub fn sendto(
+        &mut self,
+        handle: SocketHandle,
+        data: &[u8],
+        target_sun: Option<&sockaddr_un>,
+    ) -> Result<usize, UnixSocketError> {
+        if data.len() > DEFAULT_DATAGRAM_MAX_BYTES {
+            return Err(UnixSocketError::MessageTooLong);
+        }
+
+        let target_handle = if let Some(sun) = target_sun {
+            let addr = sun.to_address();
+            match addr {
+                UnixSocketAddress::Pathname(ref path) => {
+                    if let Some(&h) = self.pathname_bindings.get(path) {
+                        h
+                    } else if let Some(h) = VFS.lock().get_socket_node(path) {
+                        h
+                    } else {
+                        return Err(UnixSocketError::NotFound);
+                    }
+                }
+                UnixSocketAddress::Abstract(ref name) => {
+                    *self.abstract_bindings.get(name).ok_or(UnixSocketError::NotFound)?
+                }
+                UnixSocketAddress::Unnamed => return Err(UnixSocketError::InvalidArgument),
+            }
+        } else {
+            let sock = self.sockets.get(&handle).ok_or(UnixSocketError::NotFound)?;
+            sock.peer_handle.ok_or(UnixSocketError::NotConnected)?
+        };
+
+        let sender_meta = {
+            let sock = self.sockets.get(&handle).ok_or(UnixSocketError::NotFound)?;
+            (sock.address.clone(), sock.cred)
+        };
+
+        let target_sock = self.sockets.get_mut(&target_handle).ok_or(UnixSocketError::NotFound)?;
+        let pkt = UnixDatagramPacket::new(sender_meta.0, Some(sender_meta.1), data.to_vec());
+        target_sock.dgram_rx.push(pkt)?;
+        Ok(data.len())
+    }
+
+    pub fn recvfrom(
+        &mut self,
+        handle: SocketHandle,
+        buf: &mut [u8],
+    ) -> Result<(usize, Option<UnixSocketAddress>, Option<ucred>), UnixSocketError> {
+        let sock = self.sockets.get_mut(&handle).ok_or(UnixSocketError::NotFound)?;
+        if let Some(pkt) = sock.dgram_rx.pop() {
+            let to_read = core::cmp::min(buf.len(), pkt.data.len());
+            buf[..to_read].copy_from_slice(&pkt.data[..to_read]);
+            Ok((to_read, pkt.sender_addr, pkt.sender_cred))
+        } else if sock.peer_closed {
+            Ok((0, None, None))
+        } else if sock.nonblocking {
+            Err(UnixSocketError::WouldBlock)
+        } else {
+            Err(UnixSocketError::WouldBlock)
+        }
+    }
+
+    pub fn is_readable(&self, handle: SocketHandle) -> bool {
+        if let Some(sock) = self.sockets.get(&handle) {
+            match sock.state {
+                SocketState::Listening => !sock.pending_connections.is_empty(),
+                SocketState::Connected | SocketState::Bound => {
+                    !sock.stream_rx.is_empty() || !sock.dgram_rx.is_empty() || sock.peer_closed
+                }
+                _ => false,
+            }
+        } else {
+            false
+        }
+    }
+
+    pub fn is_writable(&self, handle: SocketHandle) -> bool {
+        if let Some(sock) = self.sockets.get(&handle) {
+            match sock.state {
+                SocketState::Connected => {
+                    if sock.peer_closed {
+                        false
+                    } else if let Some(peer_h) = sock.peer_handle {
+                        if let Some(peer) = self.sockets.get(&peer_h) {
+                            !peer.peer_closed && peer.stream_rx.available_write() > 0
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                }
+                SocketState::Bound => true,
+                _ => false,
+            }
+        } else {
+            false
+        }
+    }
 }
 
 pub static UNIX_SOCKET_TABLE: Spinlock<UnixSocketTable> = Spinlock::new(UnixSocketTable::new());
@@ -722,4 +941,35 @@ pub fn unix_close(handle: SocketHandle) -> Result<(), UnixSocketError> {
 pub fn unix_set_nonblocking(handle: SocketHandle, nonblocking: bool) -> Result<(), UnixSocketError> {
     let _ = GLOBAL_SOCKET_TABLE.set_nonblocking(handle, nonblocking);
     UNIX_SOCKET_TABLE.lock().set_nonblocking(handle, nonblocking)
+}
+
+pub fn unix_socketpair(sock_type: SocketType) -> Result<(SocketHandle, SocketHandle), UnixSocketError> {
+    let h1 = GLOBAL_SOCKET_TABLE
+        .create_socket(SocketDomain::AfUnix, sock_type, SocketProtocol::Default)
+        .map_err(|_| UnixSocketError::BufferFull)?;
+    let h2 = GLOBAL_SOCKET_TABLE
+        .create_socket(SocketDomain::AfUnix, sock_type, SocketProtocol::Default)
+        .map_err(|_| UnixSocketError::BufferFull)?;
+
+    UNIX_SOCKET_TABLE.lock().socketpair(sock_type, h1, h2)?;
+    Ok((h1, h2))
+}
+
+pub fn unix_send(handle: SocketHandle, data: &[u8]) -> Result<usize, UnixSocketError> {
+    UNIX_SOCKET_TABLE.lock().send(handle, data)
+}
+
+pub fn unix_recv(handle: SocketHandle, buf: &mut [u8]) -> Result<usize, UnixSocketError> {
+    UNIX_SOCKET_TABLE.lock().recv(handle, buf)
+}
+
+pub fn unix_sendto(handle: SocketHandle, data: &[u8], target: Option<&sockaddr_un>) -> Result<usize, UnixSocketError> {
+    UNIX_SOCKET_TABLE.lock().sendto(handle, data, target)
+}
+
+pub fn unix_recvfrom(
+    handle: SocketHandle,
+    buf: &mut [u8],
+) -> Result<(usize, Option<UnixSocketAddress>, Option<ucred>), UnixSocketError> {
+    UNIX_SOCKET_TABLE.lock().recvfrom(handle, buf)
 }

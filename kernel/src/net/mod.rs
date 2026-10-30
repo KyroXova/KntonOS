@@ -26,7 +26,8 @@ pub use af_unix::{
     UnixStreamRingBuffer, AF_UNIX, DEFAULT_DATAGRAM_MAX_BYTES, DEFAULT_DATAGRAM_MAX_PACKETS,
     DEFAULT_STREAM_BUFFER_CAPACITY, UNIX_PATH_MAX,
     unix_accept, unix_bind, unix_close, unix_connect, unix_getpeercred, unix_listen,
-    unix_set_credentials, unix_set_nonblocking, unix_socket, UnixSocket, UnixSocketTable,
+    unix_recv, unix_recvfrom, unix_send, unix_sendto, unix_set_credentials,
+    unix_set_nonblocking, unix_socket, unix_socketpair, UnixSocket, UnixSocketTable,
     UNIX_SOCKET_TABLE,
 };
 pub use arp::{ArpCache, ArpPacket, ARP_OP_REPLY, ARP_OP_REQUEST};
@@ -58,7 +59,7 @@ pub use server::{
     RouteHandler, ServerRequest, ServerResponse,
 };
 pub use socket::{
-    accept, accept_unix, bind, bind_unix, close, connect_unix, getpeercred, connect, listen, recv, recvfrom, send, sendto, set_nonblocking, socket,
+    accept, accept_unix, bind, bind_unix, close, connect_unix, getpeercred, socketpair, connect, listen, recv, recvfrom, send, sendto, set_nonblocking, socket,
     verify_socket_table, Socket, SocketDomain, SocketError, SocketHandle, SocketProtocol,
     SocketState, SocketTable, SocketType, GLOBAL_SOCKET_TABLE, INVALID_SOCKET,
 };

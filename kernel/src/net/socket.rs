@@ -365,7 +365,20 @@ impl SocketTable {
     }
 
     /// Sends stream data over a connected socket.
-    pub fn send(&self, handle: SocketHandle, data: &[u8]) -> Result<usize, SocketError> {
+        pub fn send(&self, handle: SocketHandle, data: &[u8]) -> Result<usize, SocketError> {
+        {
+            let inner = self.inner.lock();
+            let sock = inner.sockets.get(&handle).ok_or(SocketError::InvalidHandle)?;
+            if sock.domain == SocketDomain::AfUnix {
+                drop(inner);
+                return crate::net::af_unix::UNIX_SOCKET_TABLE.lock().send(handle, data).map_err(|e| match e {
+                    crate::net::af_unix::UnixSocketError::BrokenPipe => SocketError::BrokenPipe,
+                    crate::net::af_unix::UnixSocketError::WouldBlock => SocketError::WouldBlock,
+                    crate::net::af_unix::UnixSocketError::NotConnected => SocketError::NotConnected,
+                    _ => SocketError::InvalidHandle,
+                });
+            }
+        }
         let mut inner = self.inner.lock();
 
         let (peer_handle, peer_addr) = {
@@ -403,7 +416,19 @@ impl SocketTable {
     }
 
     /// Receives stream data from a socket.
-    pub fn recv(&self, handle: SocketHandle, buf: &mut [u8]) -> Result<usize, SocketError> {
+        pub fn recv(&self, handle: SocketHandle, buf: &mut [u8]) -> Result<usize, SocketError> {
+        {
+            let inner = self.inner.lock();
+            let sock = inner.sockets.get(&handle).ok_or(SocketError::InvalidHandle)?;
+            if sock.domain == SocketDomain::AfUnix {
+                drop(inner);
+                return crate::net::af_unix::UNIX_SOCKET_TABLE.lock().recv(handle, buf).map_err(|e| match e {
+                    crate::net::af_unix::UnixSocketError::WouldBlock => SocketError::WouldBlock,
+                    crate::net::af_unix::UnixSocketError::NotConnected => SocketError::NotConnected,
+                    _ => SocketError::InvalidHandle,
+                });
+            }
+        }
         let mut inner = self.inner.lock();
         let sock = inner.sockets.get_mut(&handle).ok_or(SocketError::InvalidHandle)?;
 
@@ -422,13 +447,25 @@ impl SocketTable {
     }
 
     /// Sends a connectionless UDP datagram to a specific destination.
-    pub fn sendto(
+        pub fn sendto(
         &self,
         handle: SocketHandle,
         data: &[u8],
         addr: [u8; 4],
         port: u16,
     ) -> Result<usize, SocketError> {
+        {
+            let inner = self.inner.lock();
+            let sock = inner.sockets.get(&handle).ok_or(SocketError::InvalidHandle)?;
+            if sock.domain == SocketDomain::AfUnix {
+                drop(inner);
+                return crate::net::af_unix::UNIX_SOCKET_TABLE.lock().sendto(handle, data, None).map_err(|e| match e {
+                    crate::net::af_unix::UnixSocketError::WouldBlock => SocketError::WouldBlock,
+                    crate::net::af_unix::UnixSocketError::BufferFull => SocketError::WouldBlock,
+                    _ => SocketError::InvalidHandle,
+                });
+            }
+        }
         let mut inner = self.inner.lock();
 
         let src_port = {
@@ -467,11 +504,22 @@ impl SocketTable {
     }
 
     /// Receives a datagram from a UDP socket.
-    pub fn recvfrom(
+        pub fn recvfrom(
         &self,
         handle: SocketHandle,
         buf: &mut [u8],
     ) -> Result<(usize, ([u8; 4], u16)), SocketError> {
+        {
+            let inner = self.inner.lock();
+            let sock = inner.sockets.get(&handle).ok_or(SocketError::InvalidHandle)?;
+            if sock.domain == SocketDomain::AfUnix {
+                drop(inner);
+                return crate::net::af_unix::UNIX_SOCKET_TABLE.lock().recvfrom(handle, buf).map(|(n, _, _)| (n, ([0, 0, 0, 0], 0))).map_err(|e| match e {
+                    crate::net::af_unix::UnixSocketError::WouldBlock => SocketError::WouldBlock,
+                    _ => SocketError::InvalidHandle,
+                });
+            }
+        }
         let mut inner = self.inner.lock();
         let sock = inner.sockets.get_mut(&handle).ok_or(SocketError::InvalidHandle)?;
 
@@ -622,6 +670,34 @@ impl SocketTable {
     pub fn getpeercred(&self, handle: SocketHandle) -> Result<crate::net::af_unix::ucred, SocketError> {
         crate::net::af_unix::UNIX_SOCKET_TABLE.lock().getpeercred(handle).map_err(|_| SocketError::NotConnected)
     }
+
+    pub fn socketpair(
+        &self,
+        domain: SocketDomain,
+        sock_type: SocketType,
+        _protocol: SocketProtocol,
+    ) -> Result<(SocketHandle, SocketHandle), SocketError> {
+        if domain != SocketDomain::AfUnix {
+            return Err(SocketError::UnsupportedDomain);
+        }
+        let h1 = self.create_socket(domain, sock_type, _protocol)?;
+        let h2 = self.create_socket(domain, sock_type, _protocol)?;
+
+        {
+            let mut inner = self.inner.lock();
+            if let Some(s1) = inner.sockets.get_mut(&h1) {
+                s1.state = SocketState::Connected;
+                s1.peer_handle = Some(h2);
+            }
+            if let Some(s2) = inner.sockets.get_mut(&h2) {
+                s2.state = SocketState::Connected;
+                s2.peer_handle = Some(h1);
+            }
+        }
+
+        crate::net::af_unix::UNIX_SOCKET_TABLE.lock().socketpair(sock_type, h1, h2).map_err(|_| SocketError::InvalidHandle)?;
+        Ok((h1, h2))
+    }
 }
 
 /// Global system socket table singleton.
@@ -687,6 +763,14 @@ pub fn accept_unix(handle: SocketHandle) -> Result<(SocketHandle, Option<crate::
 
 pub fn getpeercred(handle: SocketHandle) -> Result<crate::net::af_unix::ucred, SocketError> {
     GLOBAL_SOCKET_TABLE.getpeercred(handle)
+}
+
+pub fn socketpair(
+    domain: SocketDomain,
+    sock_type: SocketType,
+    protocol: SocketProtocol,
+) -> Result<(SocketHandle, SocketHandle), SocketError> {
+    GLOBAL_SOCKET_TABLE.socketpair(domain, sock_type, protocol)
 }
 
 /// Self-test verifying socket descriptor allocation, nonblocking flag, and lifecycle.
