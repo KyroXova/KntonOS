@@ -73,7 +73,13 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-046 | NVMe (Non-Volatile Memory Express) Storage Controller Driver & Submission/Completion Queue Engine | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-046-nvme.md) |
 | TASK-KNT-047 | High-Precision Event Timer (HPET) & Real-Time Monotonic Nanosecond Clock Subsystem | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-047-hpet.md) |
 | TASK-KNT-048 | Virtual Terminal ANSI 24-bit TrueColor Emulator & PTY Master/Slave Multiplexer | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-048-pty-truecolor.md) |
+| TASK-KNT-049 | Dynamic Power Governor & Thermal Energy Meter (AMD SMU / Intel RAPL MSRs & Closed-Loop PID Frequency Governor) | Claimed | TASK-KNT-035 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-049-power-governor.md) |
+| TASK-KNT-050 | Direct-to-Display Hardware Scanout Engine & Atomic DRM/KMS Modesetting Presentation Layer | Claimed | TASK-KNT-037 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-050-drm-modeset.md) |
+| TASK-KNT-051 | 6-Axis IMU Sensor Fusion & 1000Hz High-Performance Gamepad Input Pipeline | Claimed | TASK-KNT-023 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-051-imu-gamepad.md) |
 
 ## Active reservations
 
 - `kernel/src/pkg/`: reserved by ArdenKestrel for TASK-KNT-045.
+- `kernel/src/power/governor.rs`, `kernel/src/power/rapl.rs`: reserved by Ada Chen for TASK-KNT-049.
+- `kernel/src/drivers/gpu/drm.rs`, `kernel/src/drivers/gpu/modeset.rs`: reserved by Jules Martin for TASK-KNT-050.
+- `kernel/src/drivers/input/imu.rs`, `kernel/src/drivers/input/gamepad.rs`: reserved by Priya Nair for TASK-KNT-051.
