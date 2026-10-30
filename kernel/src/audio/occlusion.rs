@@ -526,3 +526,257 @@ impl ReflectionDelayLine {
         output
     }
 }
+
+
+// -----------------------------------------------------------------------------
+// 3D Positional Acoustic Occlusion Tracer & Diffraction Path Finder
+// -----------------------------------------------------------------------------
+
+/// Detailed result of acoustic line-of-sight ray tracing between emitter and listener.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OcclusionResult {
+    /// True if direct line of sight is obstructed by one or more physical obstacles.
+    pub is_occluded: bool,
+    /// Number of distinct obstacle surfaces intersected along the direct sound ray.
+    pub direct_hit_count: usize,
+    /// Total cumulative sound transmission loss through obstacles in decibels (dB).
+    pub transmission_loss_db: f32,
+    /// Direct sound path linear amplitude gain (attenuation through obstacles).
+    pub direct_gain: f32,
+    /// Occlusion factor in range [0.0 = completely unobstructed, 1.0 = fully blocked].
+    pub occlusion_factor: f32,
+    /// Low-pass filter (LPF) cutoff frequency in Hz applied to the direct path.
+    pub lpf_cutoff_hz: f32,
+    /// True if an acoustic diffraction path around obstacle edges was detected.
+    pub has_diffraction: bool,
+    /// Bending angle in radians of the primary acoustic diffraction path.
+    pub diffraction_angle_rad: f32,
+    /// Total propagation distance of the diffracted path in meters.
+    pub diffraction_path_distance_m: f32,
+    /// Linear amplitude gain of diffracted acoustic wave bending around the obstacle.
+    pub diffraction_gain: f32,
+}
+
+impl OcclusionResult {
+    pub const fn unobstructed() -> Self {
+        Self {
+            is_occluded: false,
+            direct_hit_count: 0,
+            transmission_loss_db: 0.0,
+            direct_gain: 1.0,
+            occlusion_factor: 0.0,
+            lpf_cutoff_hz: 20000.0,
+            has_diffraction: false,
+            diffraction_angle_rad: 0.0,
+            diffraction_path_distance_m: 0.0,
+            diffraction_gain: 0.0,
+        }
+    }
+}
+
+/// 3D acoustic world representation holding occluding geometry obstacles and walls.
+pub struct AcousticWorld {
+    /// Collection of 3D AABB obstacle geometries in the acoustic scene.
+    pub obstacles: Vec<AcousticAabb>,
+}
+
+impl AcousticWorld {
+    /// Allocate an empty acoustic world.
+    pub fn new() -> Self {
+        Self {
+            obstacles: Vec::new(),
+        }
+    }
+
+    /// Register a 3D AABB obstacle into the acoustic world.
+    pub fn add_obstacle(&mut self, obstacle: AcousticAabb) {
+        self.obstacles.push(obstacle);
+    }
+
+    /// Clear all registered obstacles.
+    pub fn clear(&mut self) {
+        self.obstacles.clear();
+    }
+
+    /// Calculate low-pass filter cutoff frequency based on penetrated materials and diffraction angle.
+    pub fn calculate_lpf_cutoff(
+        &self,
+        materials: &[AcousticMaterial],
+        diffraction_angle_rad: f32,
+        has_diffraction: bool,
+    ) -> f32 {
+        if materials.is_empty() {
+            return 20000.0;
+        }
+
+        // 1. Minimum material transmission cutoff
+        let mut min_cutoff = 20000.0f32;
+        for &mat in materials {
+            let props = MaterialAcousticProperties::of(mat);
+            if props.occluded_lpf_cutoff_hz < min_cutoff {
+                min_cutoff = props.occluded_lpf_cutoff_hz;
+            }
+        }
+
+        // 2. If sound diffracts around the obstacle boundary, diffraction adds high-frequency energy
+        if has_diffraction {
+            // Diffraction cutoff decreases with larger bending angles
+            let diff_cutoff = 2500.0 / (1.0 + diffraction_angle_rad * 1.5);
+            min_cutoff.max(diff_cutoff).min(20000.0)
+        } else {
+            min_cutoff.clamp(20.0, 20000.0)
+        }
+    }
+
+    /// Find optimal acoustic diffraction path around an occluding AABB obstacle.
+    /// Evaluates edge detour distance and Huygens-Fresnel bending angle.
+    pub fn find_diffraction_path(
+        &self,
+        emitter: AcousticVec3,
+        listener: AcousticVec3,
+        occluder: &AcousticAabb,
+    ) -> Option<(AcousticVec3, f32, f32, f32)> {
+        let direct_dist = emitter.distance_to(listener);
+        if direct_dist <= 1e-4 {
+            return None;
+        }
+
+        // Generate candidate diffraction edge points along the 4 silhouette boundaries of the occluder
+        let center = (occluder.min + occluder.max) * 0.5;
+        let margin = 0.15f32; // Slight offset past the obstacle edge
+
+        let candidate_points = [
+            // Top edge
+            AcousticVec3::new(center.x, occluder.max.y + margin, center.z),
+            // Bottom edge
+            AcousticVec3::new(center.x, occluder.min.y - margin, center.z),
+            // Left edge
+            AcousticVec3::new(occluder.min.x - margin, center.y, center.z),
+            // Right edge
+            AcousticVec3::new(occluder.max.x + margin, center.y, center.z),
+        ];
+
+        let mut best_point = AcousticVec3::zero();
+        let mut min_detour = f32::MAX;
+        let mut best_path_dist = 0.0f32;
+        let mut best_angle = 0.0f32;
+        let mut best_gain = 0.0f32;
+        let mut found_valid = false;
+
+        for &pt in &candidate_points {
+            let d1 = emitter.distance_to(pt);
+            let d2 = pt.distance_to(listener);
+            let total_dist = d1 + d2;
+            let detour = total_dist - direct_dist;
+
+            if detour < min_detour {
+                // Calculate bending angle between ray from emitter to edge and ray from edge to listener
+                let v1 = (pt - emitter).normalized();
+                let v2 = (listener - pt).normalized();
+                let cos_theta = v1.dot(v2).clamp(-1.0, 1.0);
+                // Acoustic bending angle in radians: theta = 0 when straight line, PI when folded back
+                let angle = crate::audio::spatializer::atan2_f32(
+                    crate::graphics::types::sqrt_f32((1.0 - cos_theta * cos_theta).max(0.0)),
+                    cos_theta,
+                );
+
+                // Pierce / Maekawa acoustic diffraction loss approximation:
+                // Base loss 8 dB + 12 dB * angle (radians)
+                let diff_loss_db = (8.0 + 12.0 * angle).clamp(6.0, 40.0);
+                let gain = crate::audio::drc::db_to_linear(-diff_loss_db);
+
+                min_detour = detour;
+                best_point = pt;
+                best_path_dist = total_dist;
+                best_angle = angle;
+                best_gain = gain;
+                found_valid = true;
+            }
+        }
+
+        if found_valid {
+            Some((best_point, best_angle, best_path_dist, best_gain))
+        } else {
+            None
+        }
+    }
+
+    /// Trace direct line-of-sight sound ray between emitter and listener and compute
+    /// physical occlusion, material transmission loss, and acoustic diffraction.
+    pub fn trace_occlusion(
+        &self,
+        emitter: AcousticVec3,
+        listener: AcousticVec3,
+    ) -> OcclusionResult {
+        let direct_distance = emitter.distance_to(listener);
+        if direct_distance <= 1e-4 {
+            return OcclusionResult::unobstructed();
+        }
+
+        let dir = (listener - emitter).normalized();
+        let ray = AcousticRay::new(emitter, dir, direct_distance);
+
+        let mut hit_count = 0usize;
+        let mut total_tl_db = 0.0f32;
+        let mut hit_materials = Vec::new();
+        let mut primary_occluder: Option<&AcousticAabb> = None;
+
+        for obstacle in &self.obstacles {
+            if let Some(hit) = obstacle.intersect_ray(&ray) {
+                // Ensure hit is strictly between emitter and listener
+                if hit.distance >= 0.05 && hit.distance <= (direct_distance - 0.05) {
+                    hit_count += 1;
+                    hit_materials.push(hit.material);
+
+                    let props = MaterialAcousticProperties::of(hit.material);
+                    // Scale transmission loss by obstacle thickness relative to nominal 15cm wall
+                    let thickness_factor = (hit.thickness_m / 0.15).clamp(0.5, 4.0);
+                    total_tl_db += props.transmission_loss_db * thickness_factor;
+
+                    if primary_occluder.is_none() {
+                        primary_occluder = Some(obstacle);
+                    }
+                }
+            }
+        }
+
+        if hit_count == 0 {
+            return OcclusionResult::unobstructed();
+        }
+
+        // Occlusion present
+        let direct_gain = crate::audio::drc::db_to_linear(-total_tl_db);
+        let occlusion_factor = (1.0 - direct_gain).clamp(0.0, 1.0);
+
+        // Check for acoustic diffraction around primary occluder
+        let (has_diffraction, diff_angle, diff_dist, diff_gain) = if let Some(occluder) = primary_occluder {
+            if let Some((_, angle, dist, gain)) = self.find_diffraction_path(emitter, listener, occluder) {
+                (true, angle, dist, gain)
+            } else {
+                (false, 0.0, 0.0, 0.0)
+            }
+        } else {
+            (false, 0.0, 0.0, 0.0)
+        };
+
+        // Calculate frequency-dependent LPF cutoff
+        let lpf_cutoff_hz = self.calculate_lpf_cutoff(
+            &hit_materials,
+            diff_angle,
+            has_diffraction,
+        );
+
+        OcclusionResult {
+            is_occluded: true,
+            direct_hit_count: hit_count,
+            transmission_loss_db: total_tl_db,
+            direct_gain,
+            occlusion_factor,
+            lpf_cutoff_hz,
+            has_diffraction,
+            diffraction_angle_rad: diff_angle,
+            diffraction_path_distance_m: diff_dist,
+            diffraction_gain: diff_gain,
+        }
+    }
+}
