@@ -599,3 +599,121 @@ pub fn verify_gyro_angular_structures_and_curves() -> bool {
 
     true
 }
+/// Stationary threshold in °/s below which the handheld device is considered at rest.
+pub const STATIONARY_THRESHOLD_DPS: f32 = 0.85;
+/// Minimum stationary resting duration in seconds before background bias adaptation begins.
+pub const STATIONARY_MIN_REST_SEC: f32 = 0.30;
+
+/// Background stationary zero-drift auto-calibrator and dynamic bias compensator.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StationaryDriftCompensator {
+    /// Internal hardware bias registers.
+    pub registers: GyroBiasRegisters,
+    /// Velocity magnitude threshold in °/s to qualify as stationary rest.
+    pub threshold_dps: f32,
+    /// Accumulated duration of continuous stationary rest in seconds.
+    pub rest_duration_sec: f32,
+    /// Total consecutive stationary samples processed.
+    pub stationary_samples: u32,
+}
+
+impl StationaryDriftCompensator {
+    /// Creates a new auto-calibrator with default resting thresholds.
+    pub const fn new() -> Self {
+        Self {
+            registers: GyroBiasRegisters::new(),
+            threshold_dps: STATIONARY_THRESHOLD_DPS,
+            rest_duration_sec: 0.0,
+            stationary_samples: 0,
+        }
+    }
+
+    /// Evaluates incoming gyro sample for resting condition and updates background bias estimates.
+    pub fn update(&mut self, sample: &GyroAngularVelocity, dt_sec: f32) {
+        let mag = sample.magnitude_dps();
+
+        if mag <= self.threshold_dps {
+            self.rest_duration_sec += dt_sec;
+            self.stationary_samples = self.stationary_samples.saturating_add(1);
+
+            // Once the device has been stably resting for at least 300ms, adapt bias
+            if self.rest_duration_sec >= STATIONARY_MIN_REST_SEC {
+                let alpha = (1.8 * dt_sec).min(0.08); // Exponential smoothing rate
+
+                self.registers.bias_roll_dps =
+                    self.registers.bias_roll_dps * (1.0 - alpha) + sample.roll_dps * alpha;
+                self.registers.bias_pitch_dps =
+                    self.registers.bias_pitch_dps * (1.0 - alpha) + sample.pitch_dps * alpha;
+                self.registers.bias_yaw_dps =
+                    self.registers.bias_yaw_dps * (1.0 - alpha) + sample.yaw_dps * alpha;
+
+                self.registers.sample_count = self.registers.sample_count.saturating_add(1);
+                if self.registers.sample_count >= 15 {
+                    self.registers.is_calibrated = true;
+                }
+            }
+        } else {
+            // Active motion detected: freeze bias learning and reset rest timer
+            self.rest_duration_sec = 0.0;
+            self.stationary_samples = 0;
+        }
+    }
+
+    /// Subtracts the learned zero-drift bias from raw angular velocity.
+    pub fn compensate(&self, raw: &GyroAngularVelocity) -> GyroAngularVelocity {
+        GyroAngularVelocity {
+            roll_dps: raw.roll_dps - self.registers.bias_roll_dps,
+            pitch_dps: raw.pitch_dps - self.registers.bias_pitch_dps,
+            yaw_dps: raw.yaw_dps - self.registers.bias_yaw_dps,
+            timestamp_us: raw.timestamp_us,
+        }
+    }
+}
+
+/// Verification helper for Commit 2 stationary zero-drift calibration.
+pub fn verify_stationary_drift_calibration() -> bool {
+    let mut compensator = StationaryDriftCompensator::new();
+
+    // 1. Initial State: Uncalibrated
+    if compensator.registers.is_calibrated || compensator.rest_duration_sec != 0.0 {
+        return false;
+    }
+
+    // 2. Feed 100 resting samples with intentional slow temperature drift (+0.40 °/s yaw, -0.30 °/s pitch)
+    // 100 steps * 10ms (0.01s) = 1.0 second total rest
+    for i in 0..100 {
+        let sample = GyroAngularVelocity::new(0.0, -0.30, 0.40, (i as u64) * 10_000);
+        compensator.update(&sample, 0.01);
+    }
+
+    // Bias should have converged close to the intentional drift offsets
+    if !compensator.registers.is_calibrated {
+        return false;
+    }
+    if (compensator.registers.bias_yaw_dps - 0.40).abs() > 0.06 {
+        return false;
+    }
+    if (compensator.registers.bias_pitch_dps - (-0.30)).abs() > 0.06 {
+        return false;
+    }
+
+    // 3. Compensate drifting raw reading: should output near-zero
+    let drifting_sample = GyroAngularVelocity::new(0.0, -0.30, 0.40, 1_000_000);
+    let corrected = compensator.compensate(&drifting_sample);
+    if corrected.yaw_dps.abs() > 0.06 || corrected.pitch_dps.abs() > 0.06 {
+        return false;
+    }
+
+    // 4. Feed active high-velocity motion (e.g. 45 °/s flick turn)
+    let flick_sample = GyroAngularVelocity::new(0.0, 10.0, 45.0, 1_010_000);
+    compensator.update(&flick_sample, 0.01);
+    // Resting timer must have reset to 0, while learned bias remains frozen
+    if compensator.rest_duration_sec != 0.0 {
+        return false;
+    }
+    if (compensator.registers.bias_yaw_dps - 0.40).abs() > 0.06 {
+        return false;
+    }
+
+    true
+}
