@@ -314,6 +314,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Asynchronous compute and GPU timeline fence self-test failed!\r\n");
     }
 
+    // Initialize and verify Direct3D 12 Dynamic Constant Buffer Pool & Ring Allocator Engine
+    if !gfx::test_constant_buffer_pool_subsystem() {
+        serial_write_str("[KNT-PANIC] Constant buffer pool and ring allocator self-test failed!\r\n");
+    }
+
     // Initialize and verify AHCI SATA Persistent Storage Subsystem
     if !drivers::storage::test_ahci_sata_subsystem() {
         serial_write_str("[KNT-PANIC] AHCI SATA storage subsystem self-test failed!\r\n");
