@@ -382,6 +382,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Direct3D 12 cluster cull & LOD streamer self-test failed!\r\n");
     }
 
+    // Initialize and verify Direct3D 12 Hardware Optical Flow Vector Accelerator & Frame Interpolation Motion Engine
+    if !gfx::test_optical_flow_subsystem() {
+        serial_write_str("[KNT-PANIC] Direct3D 12 optical flow & frame interpolation self-test failed!\r\n");
+    }
+
     // Initialize and verify AHCI SATA Persistent Storage Subsystem
     if !drivers::storage::test_ahci_sata_subsystem() {
         serial_write_str("[KNT-PANIC] AHCI SATA storage subsystem self-test failed!\r\n");

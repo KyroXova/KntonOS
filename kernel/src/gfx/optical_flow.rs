@@ -91,8 +91,16 @@ impl MotionVector {
 
     /// Converts the vector to quarter-pel integer units.
     pub const fn to_quarter_pel(&self) -> (i16, i16) {
-        let qx = (self.x + (QUARTER_PEL_FIXED / 2)) / QUARTER_PEL_FIXED;
-        let qy = (self.y + (QUARTER_PEL_FIXED / 2)) / QUARTER_PEL_FIXED;
+        let qx = if self.x >= 0 {
+            (self.x + (QUARTER_PEL_FIXED / 2)) / QUARTER_PEL_FIXED
+        } else {
+            (self.x - (QUARTER_PEL_FIXED / 2)) / QUARTER_PEL_FIXED
+        };
+        let qy = if self.y >= 0 {
+            (self.y + (QUARTER_PEL_FIXED / 2)) / QUARTER_PEL_FIXED
+        } else {
+            (self.y - (QUARTER_PEL_FIXED / 2)) / QUARTER_PEL_FIXED
+        };
         (qx as i16, qy as i16)
     }
 
@@ -196,52 +204,15 @@ impl OpticalFlowVectorField {
         }
     }
 
-    /// Samples a motion vector at an arbitrary pixel coordinate (px, py) with bilinear interpolation.
+    /// Samples a motion vector at an arbitrary pixel coordinate (px, py).
     pub fn sample_at_pixel(&self, px: f32, py: f32) -> MotionVector {
         if self.grid_width == 0 || self.grid_height == 0 || self.block_size == 0 {
             return MotionVector::zero();
         }
 
-        let b = self.block_size as f32;
-        let gx = (px / b).max(0.0);
-        let gy = (py / b).max(0.0);
-
-        let gx0 = (gx as u32).min(self.grid_width.saturating_sub(1));
-        let gy0 = (gy as u32).min(self.grid_height.saturating_sub(1));
-        let gx1 = (gx0 + 1).min(self.grid_width.saturating_sub(1));
-        let gy1 = (gy0 + 1).min(self.grid_height.saturating_sub(1));
-
-        let fx = gx - (gx0 as f32);
-        let fy = gy - (gy0 as f32);
-
-        let v00 = self.get_vector(gx0, gy0);
-        let v10 = self.get_vector(gx1, gy0);
-        let v01 = self.get_vector(gx0, gy1);
-        let v11 = self.get_vector(gx1, gy1);
-
-        let fx_fixed = (fx * (FIXED_POINT_ONE as f32)) as i32;
-        let fy_fixed = (fy * (FIXED_POINT_ONE as f32)) as i32;
-
-        let inv_fx = FIXED_POINT_ONE - fx_fixed;
-        let inv_fy = FIXED_POINT_ONE - fy_fixed;
-
-        let w00 = ((inv_fx as i64 * inv_fy as i64) >> 16) as i32;
-        let w10 = ((fx_fixed as i64 * inv_fy as i64) >> 16) as i32;
-        let w01 = ((inv_fx as i64 * fy_fixed as i64) >> 16) as i32;
-        let w11 = ((fx_fixed as i64 * fy_fixed as i64) >> 16) as i32;
-
-        let interp_x = ((v00.x as i64 * w00 as i64)
-            + (v10.x as i64 * w10 as i64)
-            + (v01.x as i64 * w01 as i64)
-            + (v11.x as i64 * w11 as i64))
-            >> 16;
-        let interp_y = ((v00.y as i64 * w00 as i64)
-            + (v10.y as i64 * w10 as i64)
-            + (v01.y as i64 * w01 as i64)
-            + (v11.y as i64 * w11 as i64))
-            >> 16;
-
-        MotionVector::new(interp_x as i32, interp_y as i32)
+        let gx = ((px.max(0.0) as u32) / self.block_size).min(self.grid_width.saturating_sub(1));
+        let gy = ((py.max(0.0) as u32) / self.block_size).min(self.grid_height.saturating_sub(1));
+        self.get_vector(gx, gy)
     }
 }
 
@@ -920,9 +891,9 @@ impl MotionWarpEngine {
                 let s0y_q = (s0y * 4.0) as i32;
                 let p0 = frame_0.sample_subpixel_quarter_pel(s0x_q, s0y_q) as i32;
 
-                // Backward warp coordinate from Frame 1: x + (1 - t) * V_B
-                let s1x = fx + (1.0 - clamped_t) * vbx;
-                let s1y = fy + (1.0 - clamped_t) * vby;
+                // Backward warp coordinate from Frame 1: x - (1 - t) * V_B
+                let s1x = fx - (1.0 - clamped_t) * vbx;
+                let s1y = fy - (1.0 - clamped_t) * vby;
                 let s1x_q = (s1x * 4.0) as i32;
                 let s1y_q = (s1y * 4.0) as i32;
                 let p1 = frame_1.sample_subpixel_quarter_pel(s1x_q, s1y_q) as i32;
@@ -1002,4 +973,148 @@ impl FrameInterpolator {
         self.total_interpolated_frames += 1;
         Ok(interpolated)
     }
+}
+
+
+// -----------------------------------------------------------------------------
+// Verification Self-Test Suite
+// -----------------------------------------------------------------------------
+
+/// Comprehensive verification self-test for Direct3D 12 Hardware Optical Flow
+/// Vector Accelerator and Frame Interpolation Motion Engine.
+///
+/// Emits sentinel [KNT-GPU-OPTICAL-FLOW-PASS] upon successful verification.
+pub fn test_optical_flow_subsystem() -> bool {
+    // 1. Verify MotionVector 16.16 fixed-point arithmetic and quarter-pel conversion
+    let mv = MotionVector::from_quarter_pel(4, -8);
+    if mv.to_quarter_pel() != (4, -8) {
+        return false;
+    }
+    if mv.to_integer_pel() != (1, -2) {
+        return false;
+    }
+    let (fx, fy) = mv.to_f32();
+    if (fx - 1.0).abs() > 0.01 || (fy - (-2.0)).abs() > 0.01 {
+        return false;
+    }
+    let half_scale = mv.scale_fixed(FIXED_POINT_ONE / 2);
+    let (hfx, hfy) = half_scale.to_f32();
+    if (hfx - 0.5).abs() > 0.01 || (hfy - (-1.0)).abs() > 0.01 {
+        return false;
+    }
+
+    // 2. Verify CostSurfaceGrid matching cost tracking and minimum extraction
+    let mut cs = CostSurfaceGrid::new(4, 4, 2);
+    cs.set_cost(1, 1, -1, 2, 42);
+    let (min_dx, min_dy, min_cost) = cs.find_min_cost(1, 1);
+    if min_dx != -1 || min_dy != 2 || min_cost != 42 {
+        return false;
+    }
+
+    // 3. Verify FrameBuffer and ImagePyramid downsampling
+    let mut base = FrameBuffer::zero(16, 16);
+    for y in 0..8 {
+        for x in 0..8 {
+            base.set_pixel(x, y, 100);
+        }
+    }
+    let pyr = ImagePyramid::build(base, 3);
+    if pyr.num_levels() != 3 {
+        return false;
+    }
+    if pyr.levels[0].width != 16 || pyr.levels[1].width != 8 || pyr.levels[2].width != 4 {
+        return false;
+    }
+
+    // 4. Verify Hierarchical Block Matching (HBM) with Quarter-Pel Precision
+    let desc = OpticalFlowDescriptor {
+        frame_width: 32,
+        frame_height: 32,
+        block_size: 8,
+        precision: OpticalFlowPrecision::QuarterPel,
+        search_radius: 8,
+        enable_cost_surface: true,
+        enable_hint_vectors: false,
+    };
+    let mut interpolator = match FrameInterpolator::new(desc) {
+        Ok(interp) => interp,
+        Err(_) => return false,
+    };
+
+    let mut f0 = FrameBuffer::zero(32, 32);
+    let mut f1 = FrameBuffer::zero(32, 32);
+
+    for i in 0..1024 {
+        f0.data[i] = 10;
+        f1.data[i] = 10;
+    }
+
+    // High-contrast 8x8 block in f0 at (8, 8)
+    for y in 8..16 {
+        for x in 8..16 {
+            f0.set_pixel(x, y, 200);
+        }
+    }
+
+    // Shifted block in f1 by (+2, +2) -> (10, 10)
+    for y in 10..18 {
+        for x in 10..18 {
+            f1.set_pixel(x, y, 200);
+        }
+    }
+
+    let (forward, backward) = match interpolator.accelerator.estimate_bidirectional(&f0, &f1) {
+        Ok(res) => res,
+        Err(_) => return false,
+    };
+
+    // Forward vector at block (1, 1) should match displacement (+2, +2)
+    let mv_f = forward.get_vector(1, 1);
+    let (mv_fx, mv_fy) = mv_f.to_integer_pel();
+    if mv_fx != 2 || mv_fy != 2 {
+        return false;
+    }
+
+    // Backward vector at block (1, 1) should be (-2, -2)
+    let mv_b = backward.get_vector(1, 1);
+    let sum_x = mv_fx + mv_b.to_integer_pel().0;
+    let sum_y = mv_fy + mv_b.to_integer_pel().1;
+    if sum_x.abs() > 1 || sum_y.abs() > 1 {
+        return false;
+    }
+
+    // 5. Verify Disocclusion Mask Detection
+    let mask = DisocclusionMask::detect(&forward, &backward, 1.5);
+    if mask.width != 32 || mask.height != 32 {
+        return false;
+    }
+
+    // 6. Verify Bidirectional Temporal Motion Warping at t = 0.5
+    let interpolated = match interpolator.warp_engine.warp_bidirectional(
+        &f0,
+        &f1,
+        &forward,
+        &backward,
+        &mask,
+        0.5,
+    ) {
+        Ok(frame) => frame,
+        Err(_) => return false,
+    };
+
+    // Center of interpolated block at (12, 12) must contain synthesized high intensity
+    let center_val = interpolated.get_pixel(12, 12);
+    if center_val < 150 {
+        return false;
+    }
+    // Background corner at (2, 2) must remain low intensity background
+    let bg_val = interpolated.get_pixel(2, 2);
+    if bg_val > 50 {
+        return false;
+    }
+
+    // 7. Emit deterministic boot sentinel
+    crate::serial_write_str("[KNT-GPU-OPTICAL-FLOW-PASS] Direct3D 12 hardware optical flow vector accelerator & frame interpolation motion engine verified\r\n");
+
+    true
 }
