@@ -5,6 +5,9 @@
 
 pub mod hda;
 pub mod mixer;
+pub mod streamer;
+
+pub use streamer::{verify_streamer_ring_buffer, AudioDmaDescriptor, AudioRingBuffer, AudioStreamerError, MAX_RING_PERIODS};
 
 pub use hda::{
     verify_hda_codec_and_stream, verify_hda_structures, CorbBuffer, HdaBufferDescriptorEntry,
