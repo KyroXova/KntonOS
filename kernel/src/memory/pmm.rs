@@ -62,7 +62,6 @@ pub const MAX_FRAMES: usize = BITMAP_WORDS * 64;
 
 /// Bitmap-based frame allocator tracking 4 KiB physical frames.
 /// Bit = 0: Frame is FREE.
-/// Bit = 1: Frame is ALLOCATED or RESERVED.
 pub struct BitmapFrameAllocator {
     bitmap: [u64; BITMAP_WORDS],
     total_frames: usize,
