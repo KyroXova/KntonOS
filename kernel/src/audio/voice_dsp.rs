@@ -4,8 +4,8 @@
 //! - Circular microphone capture ring buffer (48 kHz 16-bit PCM).
 //! - 10ms low-latency voice frames (480 samples).
 //! - 16-band Bark-scale bandpass analysis filterbank for spectral decomposition.
-//! - Voice Activity Detection (VAD) with energy thresholds and zero-crossing rates.
-//! - Spectral noise estimation, continuous background noise tracking, and Wiener-style subtraction.
+//! - Voice Activity Detection (VAD) with energy thresholds, zero-crossing rates, and speech probability scoring.
+//! - Spectral noise estimation and continuous background noise tracking with speech hangover hysteresis.
 //! - Real-time Automatic Gain Control (AGC) with smooth envelope follower and soft-saturation limiter.
 
 #![allow(dead_code)]
@@ -364,7 +364,217 @@ impl VoiceFilterbank {
 }
 
 // -----------------------------------------------------------------------------
-// Unit Self-Tests for Commit 1
+// Voice Activity Detection (VAD) & Zero-Crossing Rate
+// -----------------------------------------------------------------------------
+
+/// Computes normalized Zero-Crossing Rate (ZCR) of an audio frame in [0.0, 1.0].
+pub fn compute_zero_crossing_rate(samples: &[f32; VOICE_FRAME_SAMPLES]) -> f32 {
+    let mut zero_crossings = 0usize;
+    for i in 1..VOICE_FRAME_SAMPLES {
+        let prev = samples[i - 1];
+        let curr = samples[i];
+        if (prev >= 0.0 && curr < 0.0) || (prev < 0.0 && curr >= 0.0) {
+            zero_crossings += 1;
+        }
+    }
+    (zero_crossings as f32) / ((VOICE_FRAME_SAMPLES - 1) as f32)
+}
+
+/// Voice Activity Detection state machine status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VadState {
+    Silence,
+    Speech,
+    Hangover { remaining_frames: usize },
+}
+
+/// Result of a single VAD evaluation cycle.
+#[derive(Debug, Clone, Copy)]
+pub struct VadDecision {
+    pub is_speech: bool,
+    pub speech_probability: f32,
+    pub frame_energy_db: f32,
+    pub snr_db: f32,
+    pub zero_crossing_rate: f32,
+    pub state: VadState,
+}
+
+/// Voice Activity Detector evaluating energy, spectral distribution, and zero-crossing rates.
+pub struct VoiceActivityDetector {
+    state: VadState,
+    noise_energy_floor: f32,
+    energy_threshold_db: f32,
+    hangover_duration_frames: usize,
+    speech_probability_threshold: f32,
+}
+
+impl VoiceActivityDetector {
+    pub fn new() -> Self {
+        Self {
+            state: VadState::Silence,
+            noise_energy_floor: 1e-5, // Initial floor ~ -50 dBFS
+            energy_threshold_db: 12.0, // Signal must exceed noise floor by >= 12 dB
+            hangover_duration_frames: 6, // 6 frames = 60ms speech hangover
+            speech_probability_threshold: 0.50,
+        }
+    }
+
+    /// Analyze a frame and its spectral band energies, returning the VAD classification.
+    pub fn analyze(
+        &mut self,
+        samples: &[f32; VOICE_FRAME_SAMPLES],
+        band_energies: &[f32; NUM_SPECTRAL_BANDS],
+    ) -> VadDecision {
+        // 1. Frame total energy calculation
+        let mut total_energy = 0.0f32;
+        for &s in samples {
+            total_energy += s * s;
+        }
+        let mean_energy = total_energy / (VOICE_FRAME_SAMPLES as f32);
+        let safe_energy = mean_energy.max(1e-10);
+        let frame_energy_db = 10.0 * log10_f32(safe_energy);
+
+        // 2. SNR relative to tracked noise floor
+        let snr = safe_energy / self.noise_energy_floor.max(1e-10);
+        let snr_db = 10.0 * log10_f32(snr);
+
+        // 3. Zero-crossing rate
+        let zcr = compute_zero_crossing_rate(samples);
+
+        // 4. Voice-band energy ratio (Bands 1 to 9: 250 Hz to 4 kHz contain vocal formants)
+        let mut voice_band_sum = 0.0f32;
+        let mut total_band_sum = 0.0f32;
+        for (i, &e) in band_energies.iter().enumerate() {
+            total_band_sum += e;
+            if i >= 1 && i <= 9 {
+                voice_band_sum += e;
+            }
+        }
+        let voice_band_ratio = if total_band_sum > 1e-12 {
+            voice_band_sum / total_band_sum
+        } else {
+            0.0
+        };
+
+        // 5. Speech Probability Score (heuristic combination of SNR, voice ratio, and ZCR)
+        let mut prob = 0.0f32;
+        if snr_db > 0.0 {
+            prob += (snr_db / 30.0).clamp(0.0, 0.5); // Up to 0.5 from SNR
+        }
+        prob += (voice_band_ratio * 0.4).clamp(0.0, 0.4); // Up to 0.4 from voice formant concentration
+        if zcr > 0.02 && zcr < 0.40 {
+            prob += 0.1; // Typical voiced speech zero-crossing profile
+        }
+        let speech_probability = prob.clamp(0.0, 1.0);
+
+        // 6. State Machine with Hangover Hysteresis
+        let raw_speech = speech_probability >= self.speech_probability_threshold && snr_db >= self.energy_threshold_db;
+
+        match self.state {
+            VadState::Silence => {
+                if raw_speech {
+                    self.state = VadState::Speech;
+                } else {
+                    // Update noise floor during confirmed silence
+                    self.noise_energy_floor = 0.95 * self.noise_energy_floor + 0.05 * safe_energy;
+                }
+            }
+            VadState::Speech => {
+                if !raw_speech {
+                    self.state = VadState::Hangover {
+                        remaining_frames: self.hangover_duration_frames,
+                    };
+                }
+            }
+            VadState::Hangover { remaining_frames } => {
+                if raw_speech {
+                    self.state = VadState::Speech;
+                } else if remaining_frames > 1 {
+                    self.state = VadState::Hangover {
+                        remaining_frames: remaining_frames - 1,
+                    };
+                } else {
+                    self.state = VadState::Silence;
+                }
+            }
+        }
+
+        let is_speech = match self.state {
+            VadState::Speech | VadState::Hangover { .. } => true,
+            VadState::Silence => false,
+        };
+
+        VadDecision {
+            is_speech,
+            speech_probability,
+            frame_energy_db,
+            snr_db,
+            zero_crossing_rate: zcr,
+            state: self.state,
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Spectral Background Noise Estimator
+// -----------------------------------------------------------------------------
+
+/// Continuous spectral noise estimator tracking acoustic noise floor per Bark band.
+pub struct SpectralNoiseEstimator {
+    pub noise_energies: [f32; NUM_SPECTRAL_BANDS],
+    calibration_frames: usize,
+    total_frames_processed: u64,
+}
+
+impl SpectralNoiseEstimator {
+    pub fn new() -> Self {
+        Self {
+            noise_energies: [1e-5f32; NUM_SPECTRAL_BANDS],
+            calibration_frames: 20, // First 20 frames (200ms) calibrate background noise
+            total_frames_processed: 0,
+        }
+    }
+
+    /// Update noise profile based on current frame band energies and VAD decision.
+    pub fn update(&mut self, band_energies: &[f32; NUM_SPECTRAL_BANDS], vad: &VadDecision) {
+        self.total_frames_processed += 1;
+
+        if self.total_frames_processed <= (self.calibration_frames as u64) {
+            // Rapid calibration phase: exponential moving average with alpha = 0.2
+            for i in 0..NUM_SPECTRAL_BANDS {
+                self.noise_energies[i] = 0.8 * self.noise_energies[i] + 0.2 * band_energies[i];
+            }
+        } else if !vad.is_speech {
+            // Non-speech frames: adapt background noise with alpha = 0.05
+            for i in 0..NUM_SPECTRAL_BANDS {
+                self.noise_energies[i] = 0.95 * self.noise_energies[i] + 0.05 * band_energies[i];
+            }
+        } else {
+            // Speech active: very slow background adaptation (alpha = 0.001) or minimum statistics
+            for i in 0..NUM_SPECTRAL_BANDS {
+                if band_energies[i] < self.noise_energies[i] {
+                    // If current energy dropped below noise estimate, track downwards
+                    self.noise_energies[i] = 0.95 * self.noise_energies[i] + 0.05 * band_energies[i];
+                } else {
+                    self.noise_energies[i] = 0.999 * self.noise_energies[i] + 0.001 * band_energies[i];
+                }
+            }
+        }
+    }
+
+    /// Retrieve estimated noise energy for a specific Bark band.
+    #[inline]
+    pub fn band_noise_energy(&self, band: usize) -> f32 {
+        if band < NUM_SPECTRAL_BANDS {
+            self.noise_energies[band]
+        } else {
+            1e-5
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Unit Self-Tests for Commits 1 & 2
 // -----------------------------------------------------------------------------
 
 /// Verify VoicePcmFrame conversions, capture ring buffer operations, and filterbank energy decomposition.
@@ -449,6 +659,103 @@ pub fn test_voice_capture_ring_and_filterbank() -> bool {
         return false;
     }
     if band_mid_energy <= band_high_energy * 10.0 {
+        return false;
+    }
+
+    true
+}
+
+/// Verify Zero-Crossing Rate, Voice Activity Detection (VAD) speech discrimination,
+/// hangover hysteresis, and spectral noise estimation.
+pub fn test_vad_and_noise_estimator() -> bool {
+    let mut vad = VoiceActivityDetector::new();
+    let mut noise_estimator = SpectralNoiseEstimator::new();
+    let mut filterbank = VoiceFilterbank::new();
+
+    // 1. Verify Zero-Crossing Rate
+    // DC signal (constant 0.5) has ZCR = 0.0
+    let dc_frame = [0.5f32; VOICE_FRAME_SAMPLES];
+    if compute_zero_crossing_rate(&dc_frame) != 0.0 {
+        return false;
+    }
+
+    // High-frequency alternating signal has ZCR = 1.0
+    let mut alt_frame = [0.0f32; VOICE_FRAME_SAMPLES];
+    for i in 0..VOICE_FRAME_SAMPLES {
+        alt_frame[i] = if i % 2 == 0 { 0.5 } else { -0.5 };
+    }
+    if compute_zero_crossing_rate(&alt_frame) != 1.0 {
+        return false;
+    }
+
+    // 2. Test Silence Discrimination
+    // Generate low-amplitude background white noise ~ -60 dBFS (amplitude 0.001)
+    let mut silence_frame = [0.0f32; VOICE_FRAME_SAMPLES];
+    for i in 0..VOICE_FRAME_SAMPLES {
+        silence_frame[i] = if i % 2 == 0 { 0.001 } else { -0.001 };
+    }
+    let mut silence_energies = [0.0f32; NUM_SPECTRAL_BANDS];
+    filterbank.analyze_frame(&silence_frame, &mut silence_energies);
+
+    // Initial frames in silence: VAD should report is_speech = false
+    let decision = vad.analyze(&silence_frame, &silence_energies);
+    noise_estimator.update(&silence_energies, &decision);
+
+    if decision.is_speech || decision.speech_probability > 0.3 {
+        return false;
+    }
+
+    // 3. Test Speech Discrimination on synthetic voice-like signal (400 Hz vowel + 850 Hz formant, amp = 0.4)
+    let mut voice_frame = [0.0f32; VOICE_FRAME_SAMPLES];
+    for i in 0..VOICE_FRAME_SAMPLES {
+        let t = (i as f32) / (VOICE_SAMPLE_RATE as f32);
+        let f1 = sin_f32(TWO_PI * 400.0 * t);
+        let f2 = 0.5 * sin_f32(TWO_PI * 850.0 * t);
+        voice_frame[i] = 0.3 * (f1 + f2);
+    }
+    let mut voice_energies = [0.0f32; NUM_SPECTRAL_BANDS];
+    filterbank.analyze_frame(&voice_frame, &mut voice_energies);
+
+    let voice_decision = vad.analyze(&voice_frame, &voice_energies);
+    noise_estimator.update(&voice_energies, &voice_decision);
+
+    if !voice_decision.is_speech || voice_decision.speech_probability < 0.5 {
+        return false;
+    }
+    if voice_decision.state != VadState::Speech {
+        return false;
+    }
+
+    // 4. Test Hangover Hysteresis
+    // Feed silence frame immediately after speech frame: should enter Hangover state
+    let hangover_decision = vad.analyze(&silence_frame, &silence_energies);
+    if !hangover_decision.is_speech {
+        return false; // Must remain speech during hangover
+    }
+    match hangover_decision.state {
+        VadState::Hangover { remaining_frames } => {
+            if remaining_frames != 5 {
+                return false;
+            }
+        }
+        _ => return false,
+    }
+
+    // Exhaust remaining 5 hangover frames
+    for _ in 0..5 {
+        let d = vad.analyze(&silence_frame, &silence_energies);
+        noise_estimator.update(&silence_energies, &d);
+    }
+
+    // After 6 total silent frames, state must return to Silence
+    let silent_final = vad.analyze(&silence_frame, &silence_energies);
+    if silent_final.is_speech || silent_final.state != VadState::Silence {
+        return false;
+    }
+
+    // 5. Test Spectral Noise Estimator tracking
+    // Verify noise energies in bands 2 and 4 did not get blown out by the voice frame
+    if noise_estimator.band_noise_energy(2) > 0.01 {
         return false;
     }
 
