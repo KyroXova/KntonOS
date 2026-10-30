@@ -14,9 +14,11 @@ pub mod fan;
 pub mod thermal;
 pub mod hibernate;
 pub mod lz4_restore;
+pub mod battery;
 
 pub use hibernate::*;
 pub use lz4_restore::*;
+pub use battery::*;
 
 pub use s3_resume::*;
 pub use fan::*;
