@@ -1,19 +1,5 @@
 //! Unified Handheld PC Wi-Fi 6E/7 Latency-Optimized Packet Scheduler & Roaming Daemon.
-//!
 //! Provides ultra-low-latency 802.11ax/be (Wi-Fi 6E / Wi-Fi 7) packet scheduling and
-//! fast-roaming infrastructure optimized for handheld PC gaming.
-//!
-//! In handheld gaming PCs (e.g. Steam Deck OLED, ROG Ally X, Legion Go 2), Wi-Fi performance
-//! is often degraded by bufferbloat from background game downloads, inter-band channel
-//! interference, and roaming stalls between mesh APs.
-//!
-//! This module implements:
-//! - 802.11ax/be High Efficiency (HE) and Extremely High Throughput (EHT) QoS frame structures.
-//! - WMM (Wireless Multimedia) 4-class EDCA QoS queuing prioritizing real-time game state packets.
-//! - Target Wake Time (TWT) micro-sleep service period scheduling for battery savings.
-//! - Active Queue Management (CoDel-style AQM) bufferbloat mitigation with sojourn time tracking.
-//! - Multi-Link Operation (MLO) simultaneous multi-band (2.4/5/6 GHz) packet replication.
-//! - Sub-10ms 802.11r Fast BSS Transition (FT) roaming daemon.
 
 /// WMM (Wi-Fi Multimedia) QoS Access Categories conforming to 802.11e/ax/be.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -332,9 +318,7 @@ pub fn verify_wifi_structures_and_wmm_mappings() -> bool {
     true
 }
 
-// -----------------------------------------------------------------------------
 // Commit 2: Latency-Sensitive Gaming Packet Scheduler & CoDel AQM
-// -----------------------------------------------------------------------------
 
 /// CoDel (Controlled Delay) Active Queue Management state machine.
 /// Monitors packet sojourn time to defeat wireless bufferbloat.
@@ -632,9 +616,7 @@ pub fn verify_scheduler_and_bufferbloat_control() -> bool {
     true
 }
 
-// -----------------------------------------------------------------------------
 // Commit 3: Multi-Link Operation (MLO) & 802.11r Fast Roaming Daemon
-// -----------------------------------------------------------------------------
 
 /// Supported Wi-Fi frequency bands for 802.11ax/be.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
