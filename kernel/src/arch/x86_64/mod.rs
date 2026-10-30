@@ -8,6 +8,7 @@ pub mod timer;
 pub mod smp;
 pub mod power;
 pub mod hpet;
+pub mod debug_trap;
 
 pub use hpet::{
     calibrate_tsc, calibrate_tsc_with_samples, monotonic_sleep_ns, monotonic_time_ms,
@@ -23,6 +24,10 @@ pub use hpet::{
 };
 
 pub use smp::{test_smp_and_timer_subsystem, SMP};
+pub use debug_trap::{
+    test_hardware_watchpoint_registers, DebugControlRegister, DebugRegisterIndex,
+    DebugStatusRegister, HardwareWatchpointController, WatchpointCondition, WatchpointLength,
+};
 pub use power::{
     cpu_idle, cpu_relax, get_cpu_throttling, inw, outw, parse_dsdt_sleep_state,
     set_cpu_throttling, test_cpu_throttling, test_fadt_parser_and_power_structures,
