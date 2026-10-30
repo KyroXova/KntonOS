@@ -937,4 +937,206 @@ impl ContrastAdaptiveVrsGenerator {
     }
 }
 
+// -----------------------------------------------------------------------------
+// Foveated Peripheral Shading Rate Generator & Multi-Source Combiner Engine
+// -----------------------------------------------------------------------------
+
+/// Configuration for concentric radial foveated peripheral shading.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FoveatedVrsConfig {
+    /// Screen-space gaze / view-center X coordinate in pixels.
+    pub gaze_x: u32,
+    /// Screen-space gaze / view-center Y coordinate in pixels.
+    pub gaze_y: u32,
+    /// Inner foveal radius in pixels: full 1x1 shading rate inside this disc.
+    pub inner_radius: f32,
+    /// Middle parafoveal radius in pixels: 2x2 coarse shading rate between inner and middle.
+    pub middle_radius: f32,
+    /// Outer peripheral coarse rate beyond middle radius (e.g. Rate4x4).
+    pub peripheral_rate: ShadingRate,
+}
+
+impl FoveatedVrsConfig {
+    /// Constructs default centered foveated config for a given viewport.
+    pub fn default_for_viewport(width: u32, height: u32) -> Self {
+        let cx = width / 2;
+        let cy = height / 2;
+        let min_dim = if width < height { width as f32 } else { height as f32 };
+
+        Self {
+            gaze_x: cx,
+            gaze_y: cy,
+            inner_radius: min_dim * 0.25,
+            middle_radius: min_dim * 0.50,
+            peripheral_rate: ShadingRate::Rate4x4,
+        }
+    }
+}
+
+/// Foveated Peripheral VRS Generator using concentric radial distance rings.
+#[derive(Debug, Clone)]
+pub struct FoveatedVrsGenerator {
+    /// Active foveated configuration.
+    pub config: FoveatedVrsConfig,
+}
+
+impl FoveatedVrsGenerator {
+    /// Creates a new foveated generator with specified radial thresholds.
+    pub const fn new(config: FoveatedVrsConfig) -> Self {
+        Self { config }
+    }
+
+    /// Evaluates the foveated peripheral shading rate at pixel coordinate `(px, py)`.
+    pub fn evaluate_pixel(&self, px: f32, py: f32) -> (ShadingRate, f32) {
+        let dx = px - (self.config.gaze_x as f32);
+        let dy = py - (self.config.gaze_y as f32);
+        let dist_sq = dx * dx + dy * dy;
+
+        let inner_sq = self.config.inner_radius * self.config.inner_radius;
+        let middle_sq = self.config.middle_radius * self.config.middle_radius;
+
+        // Fast square root approximation
+        let dist = if dist_sq <= 0.0 {
+            0.0
+        } else {
+            let i = dist_sq.to_bits();
+            let i = 0x1fbd1df5 + (i >> 1);
+            let mut x = f32::from_bits(i);
+            x = 0.5 * (x + dist_sq / x);
+            x = 0.5 * (x + dist_sq / x);
+            x
+        };
+
+        let rate = if dist_sq <= inner_sq {
+            ShadingRate::Rate1x1
+        } else if dist_sq <= middle_sq {
+            ShadingRate::Rate2x2
+        } else {
+            self.config.peripheral_rate
+        };
+
+        (rate, dist)
+    }
+
+    /// Evaluates the foveated peripheral shading rate for an entire tile.
+    pub fn evaluate_tile(
+        &self,
+        tile_x: u32,
+        tile_y: u32,
+        granularity: TileGranularity,
+    ) -> (ShadingRate, f32) {
+        let tile_size = granularity.pixel_size() as f32;
+        let center_x = (tile_x as f32) * tile_size + (tile_size * 0.5);
+        let center_y = (tile_y as f32) * tile_size + (tile_size * 0.5);
+
+        self.evaluate_pixel(center_x, center_y)
+    }
+
+    /// Generates a purely foveated Shading Rate Image surface.
+    pub fn generate_sri(&self, desc: ShadingRateImageDescriptor) -> Result<ShadingRateImage, VrsError> {
+        let tile_size = desc.granularity.pixel_size();
+        let tiles_x = (desc.width_pixels + tile_size - 1) / tile_size;
+        let tiles_y = (desc.height_pixels + tile_size - 1) / tile_size;
+        let total_tiles = (tiles_x as usize) * (tiles_y as usize);
+
+        let mut rates = Vec::with_capacity(total_tiles);
+
+        for y in 0..tiles_y {
+            for x in 0..tiles_x {
+                let (rate, _) = self.evaluate_tile(x, y, desc.granularity);
+                let clamped_rate = combine_shading_rates(rate, desc.min_rate, ShadingRateCombiner::Max);
+                let clamped_rate = combine_shading_rates(clamped_rate, desc.max_rate, ShadingRateCombiner::Min);
+                rates.push(clamped_rate);
+            }
+        }
+
+        ShadingRateImage::from_rates(desc.width_pixels, desc.height_pixels, desc.granularity, rates)
+    }
+}
+
+/// Unified D3D12 VRS Tier 2 Engine combining contrast, motion, and foveated rate sources.
+#[derive(Debug, Clone)]
+pub struct UnifiedVrsEngine {
+    /// Contrast and motion generator.
+    pub contrast_motion_gen: ContrastAdaptiveVrsGenerator,
+    /// Foveated peripheral generator.
+    pub foveated_gen: FoveatedVrsGenerator,
+    /// Multi-source combiner rules.
+    pub combiners: MultiSourceCombinerDescriptor,
+}
+
+impl UnifiedVrsEngine {
+    /// Constructs a unified VRS engine.
+    pub const fn new(
+        contrast_motion_gen: ContrastAdaptiveVrsGenerator,
+        foveated_gen: FoveatedVrsGenerator,
+        combiners: MultiSourceCombinerDescriptor,
+    ) -> Self {
+        Self {
+            contrast_motion_gen,
+            foveated_gen,
+            combiners,
+        }
+    }
+
+    /// Generates a unified screen-space Shading Rate Image fusing contrast, motion, and foveation.
+    pub fn generate_unified_sri(
+        &self,
+        desc: ShadingRateImageDescriptor,
+        luma_grid: &[LumaTile],
+        motion_grid: &[MotionVector2D],
+    ) -> Result<(ShadingRateImage, Vec<SriTileDescriptor>), VrsError> {
+        let tile_size = desc.granularity.pixel_size();
+        let tiles_x = (desc.width_pixels + tile_size - 1) / tile_size;
+        let tiles_y = (desc.height_pixels + tile_size - 1) / tile_size;
+        let total_tiles = (tiles_x as usize) * (tiles_y as usize);
+
+        if luma_grid.len() != total_tiles || motion_grid.len() != total_tiles {
+            return Err(VrsError::TileBufferMismatch);
+        }
+
+        let mut descriptors = Vec::with_capacity(total_tiles);
+        let mut final_rates = Vec::with_capacity(total_tiles);
+
+        for y in 0..tiles_y {
+            for x in 0..tiles_x {
+                let idx = (y as usize) * (tiles_x as usize) + (x as usize);
+
+                // 1. Evaluate contrast & motion
+                let cm_desc = self.contrast_motion_gen.evaluate_tile(x, y, &luma_grid[idx], &motion_grid[idx]);
+
+                // 2. Evaluate foveated periphery
+                let (fov_rate, fov_dist) = self.foveated_gen.evaluate_tile(x, y, desc.granularity);
+
+                // 3. Fuse image rates:
+                // If the tile is an edge, protect it with Min combiner (so 1x1 wins unless peripheral is forced)
+                let fused_image_rate = if cm_desc.is_edge_protected {
+                    combine_shading_rates(cm_desc.rate, fov_rate, ShadingRateCombiner::Min)
+                } else {
+                    combine_shading_rates(cm_desc.rate, fov_rate, ShadingRateCombiner::Max)
+                };
+
+                // Clamp to descriptor bounds
+                let clamped_rate = combine_shading_rates(fused_image_rate, desc.min_rate, ShadingRateCombiner::Max);
+                let clamped_rate = combine_shading_rates(clamped_rate, desc.max_rate, ShadingRateCombiner::Min);
+
+                final_rates.push(clamped_rate);
+                descriptors.push(SriTileDescriptor {
+                    tile_x: x,
+                    tile_y: y,
+                    rate: clamped_rate,
+                    contrast_metric: cm_desc.contrast_metric,
+                    motion_magnitude: cm_desc.motion_magnitude,
+                    foveal_distance: fov_dist,
+                    is_edge_protected: cm_desc.is_edge_protected,
+                });
+            }
+        }
+
+        let sri = ShadingRateImage::from_rates(desc.width_pixels, desc.height_pixels, desc.granularity, final_rates)?;
+        Ok((sri, descriptors))
+    }
+}
+
+
 
