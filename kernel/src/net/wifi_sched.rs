@@ -331,3 +331,303 @@ pub fn verify_wifi_structures_and_wmm_mappings() -> bool {
 
     true
 }
+
+// -----------------------------------------------------------------------------
+// Commit 2: Latency-Sensitive Gaming Packet Scheduler & CoDel AQM
+// -----------------------------------------------------------------------------
+
+/// CoDel (Controlled Delay) Active Queue Management state machine.
+/// Monitors packet sojourn time to defeat wireless bufferbloat.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CodelState {
+    /// Target sojourn latency in microseconds (nominally 5,000 us = 5ms).
+    pub target_latency_us: u32,
+    /// Observation interval in microseconds (nominally 100,000 us = 100ms).
+    pub interval_us: u32,
+    /// Minimum observed sojourn time in current interval.
+    pub min_sojourn_us: u32,
+    /// Timestamp when sojourn time first exceeded target_latency_us.
+    pub first_above_time_us: u64,
+    /// Timestamp when the next packet should be dropped.
+    pub drop_next_time_us: u64,
+    /// Number of packets dropped in current dropping episode.
+    pub drop_count: u32,
+    /// Whether the queue is currently in dropping state.
+    pub is_dropping: bool,
+}
+
+impl CodelState {
+    /// Creates a new CoDel AQM state with 5ms target latency and 100ms interval.
+    pub const fn new(target_latency_us: u32, interval_us: u32) -> Self {
+        Self {
+            target_latency_us,
+            interval_us,
+            min_sojourn_us: u32::MAX,
+            first_above_time_us: 0,
+            drop_next_time_us: 0,
+            drop_count: 0,
+            is_dropping: false,
+        }
+    }
+
+    /// Evaluates dequeued packet sojourn time and decides whether to drop or transmit.
+    pub fn evaluate_sojourn(&mut self, sojourn_us: u32, current_time_us: u64) -> bool {
+        let is_above_target = sojourn_us > self.target_latency_us;
+
+        // Track minimum sojourn in current interval
+        if sojourn_us < self.min_sojourn_us {
+            self.min_sojourn_us = sojourn_us;
+        }
+
+        if is_above_target {
+            if self.first_above_time_us == 0 {
+                // First time going above target latency
+                self.first_above_time_us = current_time_us + (self.interval_us as u64);
+            } else if current_time_us >= self.first_above_time_us {
+                // Consistently above target latency for longer than interval_us
+                self.is_dropping = true;
+                if self.drop_next_time_us == 0 || current_time_us >= self.drop_next_time_us {
+                    self.drop_count += 1;
+                    // Compute next drop deadline (decreasing interval)
+                    let step = self.interval_us / (self.drop_count.min(16) * 2 + 1);
+                    self.drop_next_time_us = current_time_us + (step as u64);
+                    return true; // DROP PACKET
+                }
+            }
+        } else {
+            // Sojourn time dropped below target: exit dropping state
+            self.first_above_time_us = 0;
+            self.is_dropping = false;
+            self.drop_next_time_us = 0;
+            self.min_sojourn_us = u32::MAX;
+        }
+
+        false // DO NOT DROP
+    }
+}
+
+/// Ring queue for a specific WMM Access Category.
+pub struct WmmQueue<const CAP: usize> {
+    pub category: WmmAccessCategory,
+    pub ring: [WifiPacketDescriptor; CAP],
+    pub head: usize,
+    pub tail: usize,
+    pub count: usize,
+    pub codel: CodelState,
+    pub total_enqueued: u64,
+    pub total_dequeued: u64,
+    pub total_dropped: u64,
+}
+
+impl<const CAP: usize> WmmQueue<CAP> {
+    pub const fn new(category: WmmAccessCategory) -> Self {
+        let dummy = WifiPacketDescriptor {
+            packet_id: 0,
+            category,
+            tid: 0,
+            len: 0,
+            timestamp_enqueued_us: 0,
+            is_game_critical: false,
+            replicate_mlo: false,
+        };
+        Self {
+            category,
+            ring: [dummy; CAP],
+            head: 0,
+            tail: 0,
+            count: 0,
+            codel: CodelState::new(5_000, 100_000), // 5ms target, 100ms interval
+            total_enqueued: 0,
+            total_dequeued: 0,
+            total_dropped: 0,
+        }
+    }
+
+    /// Enqueues a packet descriptor.
+    pub fn enqueue(&mut self, pkt: WifiPacketDescriptor) -> bool {
+        if self.count >= CAP {
+            self.total_dropped += 1;
+            return false;
+        }
+        self.ring[self.tail] = pkt;
+        self.tail = (self.tail + 1) % CAP;
+        self.count += 1;
+        self.total_enqueued += 1;
+        true
+    }
+
+    /// Dequeues the next packet descriptor, applying CoDel AQM evaluation.
+    pub fn dequeue(&mut self, current_time_us: u64) -> Option<WifiPacketDescriptor> {
+        while self.count > 0 {
+            let pkt = self.ring[self.head];
+            self.head = (self.head + 1) % CAP;
+            self.count -= 1;
+            self.total_dequeued += 1;
+
+            let sojourn_us = (current_time_us.saturating_sub(pkt.timestamp_enqueued_us)) as u32;
+
+            // Never drop game-critical packets; only evaluate CoDel on background/best-effort
+            if !pkt.is_game_critical {
+                let should_drop = self.codel.evaluate_sojourn(sojourn_us, current_time_us);
+                if should_drop {
+                    self.total_dropped += 1;
+                    continue; // Drop packet and try next
+                }
+            }
+
+            return Some(pkt);
+        }
+        None
+    }
+
+    /// Returns true if queue is empty.
+    #[inline(always)]
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+}
+
+/// Latency-optimized 802.11ax/be packet scheduler coordinating 4 WMM QoS access queues.
+pub struct WifiPacketScheduler {
+    /// Voice queue (AC_VO): strict preemption for real-time game ticks.
+    pub queue_vo: WmmQueue<64>,
+    /// Video queue (AC_VI): game streaming and high-bandwidth low-latency frames.
+    pub queue_vi: WmmQueue<128>,
+    /// Best Effort queue (AC_BE): general matchmaking and web requests.
+    pub queue_be: WmmQueue<128>,
+    /// Background queue (AC_BK): bulk game downloads and background tasks.
+    pub queue_bk: WmmQueue<256>,
+    /// Airtime quantum deficit counter for non-preemptive queues.
+    pub deficit_counter: u32,
+    /// Total game packets scheduled with zero-latency preemption.
+    pub game_packets_prioritized: u64,
+}
+
+impl WifiPacketScheduler {
+    /// Creates a new packet scheduler.
+    pub const fn new() -> Self {
+        Self {
+            queue_vo: WmmQueue::new(WmmAccessCategory::Voice),
+            queue_vi: WmmQueue::new(WmmAccessCategory::Video),
+            queue_be: WmmQueue::new(WmmAccessCategory::BestEffort),
+            queue_bk: WmmQueue::new(WmmAccessCategory::Background),
+            deficit_counter: 0,
+            game_packets_prioritized: 0,
+        }
+    }
+
+    /// Enqueues a packet into its respective WMM queue based on category.
+    pub fn enqueue(&mut self, pkt: WifiPacketDescriptor) -> bool {
+        match pkt.category {
+            WmmAccessCategory::Voice => self.queue_vo.enqueue(pkt),
+            WmmAccessCategory::Video => self.queue_vi.enqueue(pkt),
+            WmmAccessCategory::BestEffort => self.queue_be.enqueue(pkt),
+            WmmAccessCategory::Background => self.queue_bk.enqueue(pkt),
+        }
+    }
+
+    /// Dequeues the next packet to transmit over the air interface.
+    /// Strict Priority: AC_VO is always drained first before any other queue.
+    pub fn dequeue_next(&mut self, current_time_us: u64) -> Option<WifiPacketDescriptor> {
+        // 1. Strict preemption for Voice (AC_VO) - Gaming packets
+        if let Some(pkt) = self.queue_vo.dequeue(current_time_us) {
+            self.game_packets_prioritized += 1;
+            return Some(pkt);
+        }
+
+        // 2. Video queue (AC_VI)
+        if let Some(pkt) = self.queue_vi.dequeue(current_time_us) {
+            return Some(pkt);
+        }
+
+        // 3. Best Effort queue (AC_BE)
+        if let Some(pkt) = self.queue_be.dequeue(current_time_us) {
+            return Some(pkt);
+        }
+
+        // 4. Background queue (AC_BK) - subjected to aggressive CoDel bufferbloat control
+        if let Some(pkt) = self.queue_bk.dequeue(current_time_us) {
+            return Some(pkt);
+        }
+
+        None
+    }
+
+    /// Drains a batch of packets ready for hardware TX DMA transmission.
+    pub fn drain_batch(&mut self, current_time_us: u64, out_batch: &mut [WifiPacketDescriptor]) -> usize {
+        let mut count = 0;
+        while count < out_batch.len() {
+            if let Some(pkt) = self.dequeue_next(current_time_us) {
+                out_batch[count] = pkt;
+                count += 1;
+            } else {
+                break;
+            }
+        }
+        count
+    }
+}
+
+/// Verification helper for Commit 2 scheduler and CoDel bufferbloat algorithms.
+pub fn verify_scheduler_and_bufferbloat_control() -> bool {
+    let mut sched = WifiPacketScheduler::new();
+
+    // 1. Enqueue 5 bulk background packets at t = 1000 us
+    for i in 0..5 {
+        let p_bulk = WifiPacketDescriptor::new_bulk_packet(100 + i, 1460, 1000);
+        if !sched.enqueue(p_bulk) {
+            return false;
+        }
+    }
+
+    // 2. Enqueue 1 mission-critical game tick packet (AC_VO) at t = 1050 us
+    let p_game = WifiPacketDescriptor::new_game_packet(999, 64, 1050, true);
+    if !sched.enqueue(p_game) {
+        return false;
+    }
+
+    // 3. Verify strict preemption: the game packet MUST be dequeued FIRST!
+    let first = sched.dequeue_next(1100).expect("first dequeue failed");
+    if first.packet_id != 999 || first.category != WmmAccessCategory::Voice || !first.is_game_critical {
+        return false;
+    }
+    if sched.game_packets_prioritized != 1 {
+        return false;
+    }
+
+    // 4. Subsequent dequeues should be the bulk packets
+    let second = sched.dequeue_next(1110).expect("second dequeue failed");
+    if second.packet_id != 100 || second.category != WmmAccessCategory::Background {
+        return false;
+    }
+
+    // 5. Verify CoDel AQM bufferbloat mitigation
+    let mut codel = CodelState::new(5_000, 100_000); // 5ms target, 100ms window
+
+    // Under 5ms: never drops
+    if codel.evaluate_sojourn(3_000, 10_000) {
+        return false;
+    }
+
+    // First time exceeding 5ms (e.g. 15ms sojourn): enters observation window, does not immediately drop
+    if codel.evaluate_sojourn(15_000, 20_000) {
+        return false;
+    }
+    if codel.first_above_time_us != 120_000 {
+        return false;
+    }
+
+    // Still above 5ms past the 100ms observation window (t = 125,000 us): MUST trigger drop!
+    let should_drop = codel.evaluate_sojourn(18_000, 125_000);
+    if !should_drop || !codel.is_dropping || codel.drop_count != 1 {
+        return false;
+    }
+
+    // When latency falls back to 2ms: exits dropping state immediately
+    let drop_cleared = codel.evaluate_sojourn(2_000, 130_000);
+    if drop_cleared || codel.is_dropping {
+        return false;
+    }
+
+    true
+}
