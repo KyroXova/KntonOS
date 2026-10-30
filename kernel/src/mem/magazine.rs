@@ -1,16 +1,5 @@
 //! Bonwick-Style Magazine Layer & Per-CPU Local Object Caches.
-//!
 //! Implements the classic Bonwick & Adams magazine caching architecture to eliminate
-//! global lock contention and cross-CPU cache-line bouncing during object allocation and
-//! deallocation.
-//!
-//! Each CPU core maintains:
-//! - An `active` magazine (primary LIFO object pointer stack).
-//! - A `prev` magazine (backup LIFO object pointer stack).
-//!
-//! Fast-path allocations and frees execute entirely within CPU-local magazines with zero
-//! locks. Only when both local magazines are exhausted or full does the CPU interact with
-//! the shared `MagazineDepot`.
 
 use super::slab::{SlabCache, SlabError};
 use alloc::vec::Vec;
@@ -167,7 +156,6 @@ impl MagazineDepot {
 
     /// Exchanges a full magazine for an empty magazine.
     /// Stores the full magazine in the depot. If depot exceeds upper threshold, reaps
-    /// excess magazines back to the `slab_cache`.
     pub fn exchange_full_for_empty(
         &mut self,
         full_mag: Magazine,
@@ -251,8 +239,6 @@ impl PerCpuMagazineCache {
 
     /// Allocates an object pointer using Bonwick's magazine protocol:
     /// 1. Pop from `active` magazine (fast path).
-    /// 2. If `active` is empty, check `prev`. If `prev` has objects, swap `active` and `prev` and pop.
-    /// 3. If both are empty, exchange with `depot` for a full magazine, populate `active`, and pop.
     pub fn alloc(
         &mut self,
         depot: &mut MagazineDepot,
@@ -284,8 +270,6 @@ impl PerCpuMagazineCache {
 
     /// Deallocates an object pointer using Bonwick's magazine protocol:
     /// 1. Push to `active` magazine (fast path).
-    /// 2. If `active` is full, check `prev`. If `prev` has room, swap `active` and `prev` and push.
-    /// 3. If both are full, exchange `prev` with `depot` for an empty magazine and push.
     pub fn free(
         &mut self,
         ptr: *mut u8,

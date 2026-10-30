@@ -1,8 +1,5 @@
 //! Micro-Kernel Fixed-Size Object Slab Cache & Bitmap Free-Slot Indexer.
-//!
 //! Provides deterministic O(1) object allocation and deallocation for small-to-medium
-//! kernel objects, eliminating heap fragmentation through power-of-two size classes
-//! and 64-bit word bitmap free-slot indexers.
 
 use alloc::alloc::{alloc, dealloc};
 use alloc::vec::Vec;
@@ -51,9 +48,7 @@ pub enum SlabState {
 }
 
 /// A single slab backed by a page-aligned physical/virtual memory frame.
-///
 /// Uses an embedded bitmap (`[u64; BITMAP_WORDS_PER_SLAB]`) where bit 0 indicates
-/// a free slot and bit 1 indicates an allocated slot.
 pub struct Slab {
     /// Unique identifier for this slab frame.
     id: usize,
@@ -281,7 +276,6 @@ impl SlabCache {
 
     /// Allocates an object from this slab cache.
     /// First attempts to allocate from an existing partial slab, then an empty slab,
-    /// and finally creates a new slab if all current slabs are full.
     pub fn alloc(&mut self) -> Option<*mut u8> {
         // Step 1: Search for a partial slab
         for slab in &mut self.slabs {
