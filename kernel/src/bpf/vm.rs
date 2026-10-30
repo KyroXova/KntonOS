@@ -84,21 +84,25 @@ impl BpfVirtualMachine {
                 }
             }
             BPF_FUNC_PACKET_LOAD_U16 => {
-                // R1 = offset
+                // R1 = offset (load network byte order u16)
                 let offset = self.regs[1] as usize;
                 if offset + 2 <= ctx.data_len {
-                    let val = unsafe { *((ctx.data_ptr + offset) as *const u16) };
-                    Ok(u16::from_be(val) as u64)
+                    let b0 = unsafe { *((ctx.data_ptr + offset) as *const u8) } as u16;
+                    let b1 = unsafe { *((ctx.data_ptr + offset + 1) as *const u8) } as u16;
+                    Ok(((b0 << 8) | b1) as u64)
                 } else {
                     Err(VmExitStatus::MemoryFault)
                 }
             }
             BPF_FUNC_PACKET_LOAD_U32 => {
-                // R1 = offset
+                // R1 = offset (load network byte order u32)
                 let offset = self.regs[1] as usize;
                 if offset + 4 <= ctx.data_len {
-                    let val = unsafe { *((ctx.data_ptr + offset) as *const u32) };
-                    Ok(u32::from_be(val) as u64)
+                    let b0 = unsafe { *((ctx.data_ptr + offset) as *const u8) } as u32;
+                    let b1 = unsafe { *((ctx.data_ptr + offset + 1) as *const u8) } as u32;
+                    let b2 = unsafe { *((ctx.data_ptr + offset + 2) as *const u8) } as u32;
+                    let b3 = unsafe { *((ctx.data_ptr + offset + 3) as *const u8) } as u32;
+                    Ok(((b0 << 24) | (b1 << 16) | (b2 << 8) | b3) as u64)
                 } else {
                     Err(VmExitStatus::MemoryFault)
                 }
@@ -287,8 +291,8 @@ impl BpfVirtualMachine {
 /// Unit test verifying VM execution, ALU calculations, stack reads/writes, and helper dispatches.
 pub fn test_bpf_vm_execution() -> bool {
     let mut vm = BpfVirtualMachine::new();
-    let pkt_data = [0x08, 0x00, 0x45, 0x00, 0x00, 0x3C]; // EtherType 0x0800 (IPv4)
-    let ctx = BpfContext::new(pkt_data.as_ptr() as usize, pkt_data.len(), 0x0800);
+    static PKT_DATA: [u8; 6] = [0x08, 0x00, 0x45, 0x00, 0x00, 0x3C]; // EtherType 0x0800 (IPv4)
+    let ctx = BpfContext::new(PKT_DATA.as_ptr() as usize, PKT_DATA.len(), 0x0800);
 
     // 1. Simple ALU test: R0 = (10 + 5) * 2 = 30
     let prog_alu = [

@@ -276,6 +276,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Network stack self-test failed!\r\n");
     }
 
+    // Initialize and verify in-kernel eBPF Packet & Event Filter Subsystem
+    if !bpf::test_bpf_filter_subsystem() {
+        serial_write_str("[KNT-PANIC] eBPF packet and event filter self-test failed!\r\n");
+    }
+
     // Verify Unix Domain Sockets (AF_UNIX) & Local IPC Engine
     if !net::test_unix_domain_sockets() {
         serial_write_str("[KNT-PANIC] Unix domain sockets self-test failed!\r\n");
