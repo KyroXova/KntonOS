@@ -1,8 +1,5 @@
 //! Hypertext Transfer Protocol (HTTP/1.1, RFC 2616 / RFC 7230) Micro-Client.
-//!
 //! Provides minimal, zero-copy HTTP/1.1 request serialization and response parsing:
-//! - HttpRequest builder (GET, POST, URI path, standard headers `Host`, `User-Agent`, `Connection: close`)
-//! - HttpResponse streaming parser (Status code, header dictionary, Content-Length and Transfer-Encoding chunked extraction)
 
 use alloc::format;
 use alloc::string::{String, ToString};
