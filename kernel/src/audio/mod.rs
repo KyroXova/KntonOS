@@ -5,4 +5,7 @@
 //! 3D emitter distance attenuation, Doppler pitch shifting, and binaural stereo synthesis.
 
 pub mod hrtf;
+pub mod spatializer;
+
 pub use hrtf::*;
+pub use spatializer::*;
