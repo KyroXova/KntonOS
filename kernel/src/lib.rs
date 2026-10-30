@@ -162,6 +162,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Core parking and C-state governor self-test failed!\r\n");
     }
 
+    // Initialize and verify High-Performance S0i3 / S3 Instant-Resume Freeze & Wakeup Controller
+    if !power::test_s0i3_s3_suspend_resume_subsystem() {
+        serial_write_str("[KNT-PANIC] S0i3/S3 suspend-resume subsystem self-test failed!\r\n");
+    }
+
     // Initialize Virtual File System & mount demo initramfs
     fs::init();
     if !fs::test_vfs_subsystem() {

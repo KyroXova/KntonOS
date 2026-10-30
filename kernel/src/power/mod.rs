@@ -8,6 +8,12 @@ pub mod rapl;
 pub mod parking;
 pub mod cstate;
 pub mod epb;
+pub mod freeze;
+pub mod s3_resume;
+
+pub use s3_resume::*;
+
+pub use freeze::*;
 
 pub use governor::{
     verify_pid_power_governor, verify_thermal_monitoring, CoreThermalStatus, GovernorAction,
@@ -115,6 +121,32 @@ pub fn test_core_parking_and_cstate_subsystem() -> bool {
 
     // 4. Emit deterministic boot sentinel
     crate::serial_write_str("[KNT-POWER-PARK-PASS] Dynamic core parking, C-state governor, and EPB/EPP profiles verified\r\n");
+
+    true
+}
+
+/// Comprehensive verification self-test suite for High-Performance S0i3 / S3
+/// Instant-Resume Freeze and Wakeup Controller.
+///
+/// Emits sentinel [KNT-SUSPEND-RESUME-PASS] upon successful validation.
+pub fn test_s0i3_s3_suspend_resume_subsystem() -> bool {
+    // 1. Verify S0i3/S3 state machine, device quiescence phases, and suspend hooks
+    if !verify_quiescence_state_machine() {
+        return false;
+    }
+
+    // 2. Verify CPU core freeze, context checksum, DRAM self-refresh, and ACPI sleep registers
+    if !verify_cpu_freeze_and_dram_self_refresh() {
+        return false;
+    }
+
+    // 3. Verify sub-450ms atomic wakeup resumption and device context restoration pipeline
+    if !verify_atomic_wakeup_pipeline() {
+        return false;
+    }
+
+    // 4. Emit deterministic boot sentinel
+    crate::serial_write_str("[KNT-SUSPEND-RESUME-PASS] S0i3/S3 instant-resume freeze and wakeup controller verified\r\n");
 
     true
 }
