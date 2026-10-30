@@ -17,6 +17,7 @@ pub mod occlusion;
 pub mod vad;
 
 pub use occlusion::test_audio_occlusion_subsystem;
+pub use vad::test_audio_vad_subsystem;
 
 pub use hrtf::*;
 pub use drc::*;
