@@ -18,6 +18,7 @@ pub mod mesh_shader;
 pub mod work_graphs;
 pub mod sampler_feedback;
 pub mod barriers;
+pub mod ser;
 
 pub use cmdbuf::*;
 pub use compute::*;
@@ -34,6 +35,7 @@ pub use mesh_shader::*;
 pub use work_graphs::*;
 pub use sampler_feedback::*;
 pub use barriers::*;
+pub use ser::*;
 
 /// Comprehensive verification self-test suite for Direct3D / Vulkan-Style Command Buffer
 /// Recording and Hardware Queue Submission Engine.
