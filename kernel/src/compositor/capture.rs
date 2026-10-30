@@ -622,7 +622,9 @@ pub fn test_dirty_rect_and_backpressure() -> bool {
     let mut tracker = BackpressureDropTracker::new();
 
     let f1 = grabber.grab_from_backbuffer(&colors, 3, 3, 100).expect("f1 failed");
+    let f1_seq = f1.seq;
     let f2 = grabber.grab_from_backbuffer(&colors, 3, 3, 200).expect("f2 failed");
+    let f2_seq = f2.seq;
     let f3 = grabber.grab_from_backbuffer(&colors, 3, 3, 300).expect("f3 failed");
 
     // Push 2 frames: ring becomes full
@@ -653,8 +655,8 @@ pub fn test_dirty_rect_and_backpressure() -> bool {
     let f4 = grabber.grab_from_backbuffer(&colors, 3, 3, 400).expect("f4 failed");
     let drop_old = ring.push_with_policy(f4.clone(), DropPolicy::DropOldest, &mut tracker);
     if let Err(info) = drop_old {
-        // Evicted oldest is seq 1
-        if info.dropped_seq != 1 {
+        // Evicted oldest is f1
+        if info.dropped_seq != f1_seq {
             return false;
         }
     } else {
@@ -665,7 +667,7 @@ pub fn test_dirty_rect_and_backpressure() -> bool {
     }
     // Oldest in ring now is f2
     let popped = ring.pop().expect("pop failed");
-    if popped.seq != 2 {
+    if popped.seq != f2_seq {
         return false;
     }
 
