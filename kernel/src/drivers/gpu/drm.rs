@@ -61,6 +61,35 @@ pub const DRM_MODE_ROTATE_MASK: u32 = DRM_MODE_ROTATE_0 | DRM_MODE_ROTATE_90 | D
 pub const DRM_MODE_REFLECT_MASK: u32 = DRM_MODE_REFLECT_X | DRM_MODE_REFLECT_Y;
 
 // -----------------------------------------------------------------------------
+// DRM Atomic Properties & Flags
+// -----------------------------------------------------------------------------
+
+pub const DRM_MODE_ATOMIC_TEST_ONLY: u32 = 0x0100;
+pub const DRM_MODE_ATOMIC_NONBLOCK: u32 = 0x0200;
+pub const DRM_MODE_ATOMIC_ALLOW_MODESET: u32 = 0x0400;
+
+pub const DRM_PROP_FB_ID: u32 = 1;
+pub const DRM_PROP_CRTC_ID: u32 = 2;
+pub const DRM_PROP_CRTC_X: u32 = 3;
+pub const DRM_PROP_CRTC_Y: u32 = 4;
+pub const DRM_PROP_CRTC_W: u32 = 5;
+pub const DRM_PROP_CRTC_H: u32 = 6;
+pub const DRM_PROP_SRC_X: u32 = 7;
+pub const DRM_PROP_SRC_Y: u32 = 8;
+pub const DRM_PROP_SRC_W: u32 = 9;
+pub const DRM_PROP_SRC_H: u32 = 10;
+pub const DRM_PROP_ROTATION: u32 = 11;
+pub const DRM_PROP_SCALING_FILTER: u32 = 12;
+pub const DRM_PROP_ACTIVE: u32 = 13;
+pub const DRM_PROP_MODE_ID: u32 = 14;
+pub const DRM_PROP_ALPHA: u32 = 15;
+pub const DRM_PROP_ZPOS: u32 = 16;
+
+pub const DRM_SCALING_FILTER_DEFAULT: u32 = 0;
+pub const DRM_SCALING_FILTER_NEAREST: u32 = 1;
+pub const DRM_SCALING_FILTER_LINEAR: u32 = 2;
+
+// -----------------------------------------------------------------------------
 // Encoder Types
 // -----------------------------------------------------------------------------
 
@@ -469,6 +498,7 @@ pub struct DrmPlane {
     pub zpos: u32,
     pub alpha: u16, // 0xFFFF = fully opaque, 0 = transparent
     pub rotation: u32,
+    pub scaling_filter: u32,
 }
 
 impl DrmPlane {
@@ -499,6 +529,7 @@ impl DrmPlane {
             zpos,
             alpha,
             rotation: DRM_MODE_ROTATE_0,
+            scaling_filter: DRM_SCALING_FILTER_DEFAULT,
         }
     }
 
@@ -768,6 +799,17 @@ impl DrmDevice {
             if let Some(ref mut crtc) = slot {
                 if crtc.id == id {
                     return Some(crtc);
+                }
+            }
+        }
+        None
+    }
+
+    pub fn find_plane(&self, id: u32) -> Option<&DrmPlane> {
+        for slot in self.planes.iter() {
+            if let Some(ref plane) = slot {
+                if plane.id == id {
+                    return Some(plane);
                 }
             }
         }
