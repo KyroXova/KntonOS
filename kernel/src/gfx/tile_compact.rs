@@ -340,14 +340,14 @@ pub struct SparseVirtualTextureDescriptor {
 
 impl SparseVirtualTextureDescriptor {
     /// Computes dimensions in pixels of a specific mip level.
-    pub const fn mip_dimensions(&self, mip: u32) -> (u32, u32) {
+    pub fn mip_dimensions(&self, mip: u32) -> (u32, u32) {
         let w = (self.width >> mip).max(1);
         let h = (self.height >> mip).max(1);
         (w, h)
     }
 
     /// Computes tile grid dimensions `(tiles_x, tiles_y)` for a specific mip level.
-    pub const fn mip_tile_dimensions(&self, mip: u32) -> (u32, u32) {
+    pub fn mip_tile_dimensions(&self, mip: u32) -> (u32, u32) {
         let (w, h) = self.mip_dimensions(mip);
         let tx = (w + self.tile_width_texels - 1) / self.tile_width_texels;
         let ty = (h + self.tile_height_texels - 1) / self.tile_height_texels;
@@ -1021,5 +1021,277 @@ impl SparseVirtualTextureEvictionGovernor {
         Some(self.evict_target_tiles(pool, textures, deficit))
     }
 }
+
+// -----------------------------------------------------------------------------
+// Verification Self-Test Suite
+// -----------------------------------------------------------------------------
+
+/// Comprehensive verification self-test for Direct3D 12 Dynamic Tile Pool
+/// Memory Compactor & Sparse Virtual Texture Eviction Engine.
+///
+/// Emits sentinel [KNT-GPU-TILE-COMPACT-PASS] upon successful validation.
+pub fn test_tile_pool_compactor_and_eviction_subsystem() -> bool {
+    // 1. Verify standard 64KB physical tile pool allocations and sparse virtual texture address spaces
+    let mut pool = PhysicalTilePool::new(16);
+    if pool.total_bytes() != 16 * D3D12_TILED_RESOURCE_TILE_SIZE_IN_BYTES {
+        crate::serial_write_str("[KNT-FAIL-TC-1] Incorrect pool capacity in bytes\r\n");
+        return false;
+    }
+    if pool.free_tile_count() != 16 || pool.allocated_count != 0 {
+        crate::serial_write_str("[KNT-FAIL-TC-2] Initial free/allocated tile count mismatch\r\n");
+        return false;
+    }
+    if pool.utilization_ratio() != 0.0 {
+        crate::serial_write_str("[KNT-FAIL-TC-3] Initial utilization must be 0.0\r\n");
+        return false;
+    }
+
+    let desc = SparseVirtualTextureDescriptor {
+        texture_id: 1,
+        width: 256,
+        height: 256,
+        depth: 1,
+        mip_levels: 3,
+        bytes_per_pixel: 4,
+        tier: TiledResourceTier::Tier2,
+        tile_width_texels: 64,
+        tile_height_texels: 64,
+    };
+    let mut tex = SparseVirtualTexture::new(desc);
+
+    // Mip 0: 4x4 = 16 tiles, Mip 1: 2x2 = 4 tiles, Mip 2: 1x1 = 1 tile -> Total 21 virtual tiles
+    if tex.total_virtual_tiles() != 21 {
+        crate::serial_write_str("[KNT-FAIL-TC-4] Total virtual tiles mismatch\r\n");
+        return false;
+    }
+
+    // Verify zero-overhead NULL tile unmapping (default residency is Unmapped)
+    let c0 = TileCoordinate::new(0, 0, 0, 0);
+    if tex.get_residency(&c0) != TileResidencyState::Unmapped {
+        crate::serial_write_str("[KNT-FAIL-TC-5] Default residency must be Unmapped\r\n");
+        return false;
+    }
+
+    // Allocate physical tile and map to virtual coordinate c0
+    let p0 = match pool.allocate_tile(1, c0, TileEvictionPriority::Normal) {
+        Ok(id) => id,
+        Err(_) => {
+            crate::serial_write_str("[KNT-FAIL-TC-6] Failed to allocate tile\r\n");
+            return false;
+        }
+    };
+    if let Err(_) = tex.map_resident_tile(&c0, p0) {
+        crate::serial_write_str("[KNT-FAIL-TC-7] Failed to map resident tile\r\n");
+        return false;
+    }
+    if tex.get_residency(&c0) != (TileResidencyState::Resident { physical_tile_id: p0 }) {
+        crate::serial_write_str("[KNT-FAIL-TC-8] Mapped residency state mismatch\r\n");
+        return false;
+    }
+    if tex.resident_tile_count() != 1 {
+        crate::serial_write_str("[KNT-FAIL-TC-9] Resident tile count mismatch\r\n");
+        return false;
+    }
+
+    // 2. Verify Aliasing & Multiple Sub-Resource Mapping
+    let c1 = TileCoordinate::new(1, 0, 0, 0);
+    if let Err(_) = pool.alias_tile(p0) {
+        crate::serial_write_str("[KNT-FAIL-TC-10] Failed to alias physical tile\r\n");
+        return false;
+    }
+    if let Err(_) = tex.map_aliased_tile(&c1, p0) {
+        crate::serial_write_str("[KNT-FAIL-TC-11] Failed to map aliased virtual tile\r\n");
+        return false;
+    }
+    if pool.tiles[p0 as usize].reference_count != 2 {
+        crate::serial_write_str("[KNT-FAIL-TC-12] Reference count must be 2 after aliasing\r\n");
+        return false;
+    }
+    if tex.get_residency(&c1) != (TileResidencyState::Aliased { physical_tile_id: p0 }) {
+        crate::serial_write_str("[KNT-FAIL-TC-13] Aliased residency state mismatch\r\n");
+        return false;
+    }
+
+    // Unmap aliased coordinate c1; physical tile must remain resident due to c0 reference
+    if let Err(_) = tex.unmap_tile(&c1) {
+        crate::serial_write_str("[KNT-FAIL-TC-14] Failed to unmap aliased tile\r\n");
+        return false;
+    }
+    let freed = match pool.free_or_unalias(p0) {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+    if freed {
+        crate::serial_write_str("[KNT-FAIL-TC-15] Physical tile freed prematurely while still referenced\r\n");
+        return false;
+    }
+    if pool.tiles[p0 as usize].reference_count != 1 {
+        crate::serial_write_str("[KNT-FAIL-TC-16] Reference count must decrement to 1\r\n");
+        return false;
+    }
+
+    // 3. Verify Tile Pool Dynamic Compaction & Transparent Page-Table Remapping
+    let mut comp_pool = PhysicalTilePool::new(8);
+    let desc2 = SparseVirtualTextureDescriptor {
+        texture_id: 2,
+        width: 128,
+        height: 128,
+        depth: 1,
+        mip_levels: 1,
+        bytes_per_pixel: 4,
+        tier: TiledResourceTier::Tier2,
+        tile_width_texels: 64,
+        tile_height_texels: 64,
+    };
+    let mut tex2 = SparseVirtualTexture::new(desc2);
+
+    let pt0 = comp_pool.allocate_tile(2, TileCoordinate::new(0, 0, 0, 0), TileEvictionPriority::Normal).unwrap();
+    let pt1 = comp_pool.allocate_tile(2, TileCoordinate::new(1, 0, 0, 0), TileEvictionPriority::Normal).unwrap();
+    let pt2 = comp_pool.allocate_tile(2, TileCoordinate::new(0, 1, 0, 0), TileEvictionPriority::Normal).unwrap();
+    let pt3 = comp_pool.allocate_tile(2, TileCoordinate::new(1, 1, 0, 0), TileEvictionPriority::Normal).unwrap();
+    let pt4 = comp_pool.allocate_tile(2, TileCoordinate::new(0, 0, 0, 0), TileEvictionPriority::Normal).unwrap();
+    let pt5 = comp_pool.allocate_tile(2, TileCoordinate::new(1, 0, 0, 0), TileEvictionPriority::Normal).unwrap();
+
+    let v00 = TileCoordinate::new(0, 0, 0, 0);
+    let v10 = TileCoordinate::new(1, 0, 0, 0);
+    let v01 = TileCoordinate::new(0, 1, 0, 0);
+    let v11 = TileCoordinate::new(1, 1, 0, 0);
+
+    tex2.map_resident_tile(&v00, pt0).unwrap();
+    tex2.map_resident_tile(&v10, pt4).unwrap(); // mapped to high physical tile 4
+    tex2.map_resident_tile(&v01, pt2).unwrap();
+    tex2.map_resident_tile(&v11, pt5).unwrap(); // mapped to high physical tile 5
+
+    // Free intermediate tiles pt1 and pt3 to create fragmentation holes at indices 1 and 3
+    comp_pool.free_or_unalias(pt1).unwrap();
+    comp_pool.free_or_unalias(pt3).unwrap();
+
+    let pre_report = TilePoolCompactor::analyze_fragmentation(&comp_pool);
+    if pre_report.hole_count != 2 {
+        crate::serial_write_str("[KNT-FAIL-TC-17] Pre-compaction hole count must be 2\r\n");
+        return false;
+    }
+    if pre_report.fragmentation_index <= 0.0 {
+        crate::serial_write_str("[KNT-FAIL-TC-18] Fragmentation index must be positive\r\n");
+        return false;
+    }
+
+    // Run dynamic memory compactor
+    let mut textures = [tex2];
+    let comp_result = TilePoolCompactor::compact(&mut comp_pool, &mut textures);
+
+    if comp_result.tiles_relocated != 2 {
+        crate::serial_write_str("[KNT-FAIL-TC-19] Exactly 2 tiles must be relocated\r\n");
+        return false;
+    }
+    if comp_result.remaining_holes != 0 {
+        crate::serial_write_str("[KNT-FAIL-TC-20] Post-compaction remaining holes must be 0\r\n");
+        return false;
+    }
+    if comp_result.max_contiguous_free_after != 4 {
+        crate::serial_write_str("[KNT-FAIL-TC-21] Max contiguous free tiles must be 4\r\n");
+        return false;
+    }
+
+    // Verify transparent page-table remapping: virtual coordinates remain resident with no coordinate disruption
+    if !textures[0].get_residency(&v00).is_resident()
+        || !textures[0].get_residency(&v10).is_resident()
+        || !textures[0].get_residency(&v01).is_resident()
+        || !textures[0].get_residency(&v11).is_resident()
+    {
+        crate::serial_write_str("[KNT-FAIL-TC-22] Virtual tiles lost residency after compaction\r\n");
+        return false;
+    }
+    if textures[0].resident_tile_count() != 4 {
+        crate::serial_write_str("[KNT-FAIL-TC-23] Post-compaction resident tile count mismatch\r\n");
+        return false;
+    }
+
+    // Verify that physical tiles 4 and 5 were moved to indices 1 and 3
+    let p_v10 = textures[0].get_residency(&v10).physical_tile_id().unwrap();
+    let p_v11 = textures[0].get_residency(&v11).physical_tile_id().unwrap();
+    if (p_v10 != 1 && p_v10 != 3) || (p_v11 != 1 && p_v11 != 3) {
+        crate::serial_write_str("[KNT-FAIL-TC-24] Page table not updated to compacted physical indices\r\n");
+        return false;
+    }
+
+    // 4. Verify Sparse Virtual Texture LRU Eviction & Memory Pressure Response
+    let mut evict_pool = PhysicalTilePool::new(4);
+    let desc3 = SparseVirtualTextureDescriptor {
+        texture_id: 3,
+        width: 128,
+        height: 64,
+        depth: 1,
+        mip_levels: 2,
+        bytes_per_pixel: 4,
+        tier: TiledResourceTier::Tier2,
+        tile_width_texels: 64,
+        tile_height_texels: 64,
+    };
+    let mut tex3 = SparseVirtualTexture::new(desc3);
+
+    let ep0 = evict_pool.allocate_tile(3, TileCoordinate::new(0, 0, 0, 0), TileEvictionPriority::Low).unwrap();
+    let ep1 = evict_pool.allocate_tile(3, TileCoordinate::new(1, 0, 0, 0), TileEvictionPriority::Normal).unwrap();
+    let ep2 = evict_pool.allocate_tile(3, TileCoordinate::new(0, 0, 0, 1), TileEvictionPriority::Critical).unwrap();
+
+    let c_mip0_0 = TileCoordinate::new(0, 0, 0, 0);
+    let c_mip0_1 = TileCoordinate::new(1, 0, 0, 0);
+    let c_mip1_0 = TileCoordinate::new(0, 0, 0, 1);
+
+    tex3.map_resident_tile(&c_mip0_0, ep0).unwrap();
+    tex3.map_resident_tile(&c_mip0_1, ep1).unwrap();
+    tex3.map_resident_tile(&c_mip1_0, ep2).unwrap();
+
+    // Verify initial Min-LOD is 0.0 (all mapped)
+    if SparseVirtualTextureEvictionGovernor::recalculate_min_lod(&mut tex3) != 0.0 {
+        crate::serial_write_str("[KNT-FAIL-TC-25] Initial Min-LOD must be 0.0\r\n");
+        return false;
+    }
+
+    // Configure governor: high watermark 0.70 (3/4 = 75% -> pressure triggered)
+    let mut governor = SparseVirtualTextureEvictionGovernor::new(0.70, 0.50);
+    if !governor.is_under_pressure(&evict_pool) {
+        crate::serial_write_str("[KNT-FAIL-TC-26] Pool should be flagged under pressure\r\n");
+        return false;
+    }
+
+    let mut evict_textures = [tex3];
+    let evict_res = match governor.respond_to_memory_pressure(&mut evict_pool, &mut evict_textures) {
+        Some(res) => res,
+        None => {
+            crate::serial_write_str("[KNT-FAIL-TC-27] Eviction failed to trigger under pressure\r\n");
+            return false;
+        }
+    };
+
+    if evict_res.tiles_evicted < 1 {
+        crate::serial_write_str("[KNT-FAIL-TC-28] Expected at least 1 tile evicted\r\n");
+        return false;
+    }
+
+    // Low priority tile ep0 at c_mip0_0 must be evicted first
+    if evict_textures[0].get_residency(&c_mip0_0) != TileResidencyState::Unmapped {
+        crate::serial_write_str("[KNT-FAIL-TC-29] Low priority tile must be unmapped\r\n");
+        return false;
+    }
+
+    // Critical priority tile ep2 at c_mip1_0 must remain resident
+    if !evict_textures[0].get_residency(&c_mip1_0).is_resident() {
+        crate::serial_write_str("[KNT-FAIL-TC-30] Critical mip tail tile must remain resident\r\n");
+        return false;
+    }
+
+    // Verify Min-LOD was dynamically clamped to 1.0 because Mip 0 has unmapped tiles
+    if evict_textures[0].min_resident_lod < 1.0 {
+        crate::serial_write_str("[KNT-FAIL-TC-31] Min-LOD must clamp to 1.0 or higher\r\n");
+        return false;
+    }
+
+    // 5. Emit deterministic boot sentinel
+    crate::serial_write_str("[KNT-GPU-TILE-COMPACT-PASS] Direct3D 12 dynamic tile pool memory compactor & sparse virtual texture eviction engine verified\r\n");
+
+    true
+}
+
 
 
