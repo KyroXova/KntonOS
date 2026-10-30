@@ -506,6 +506,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] ELF64 loader subsystem self-test failed!\r\n");
     }
 
+    // Milestone 100: Unified Gaming Subsystem Health Matrix & Benchmark Supervisor
+    if !sys::test_milestone_100_health_matrix() {
+        serial_write_str("[KNT-PANIC] Milestone 100 health matrix and benchmark supervisor self-test failed!\r\n");
+    }
+
     // Spawn and execute initial Win32 PE64 userland process (/bin/init.exe)
     if !pe::run_init_process() {
         serial_write_str("[KNT-PANIC] Initial Win32 user process execution failed!\r\n");
