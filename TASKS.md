@@ -17,9 +17,9 @@ These branches are managed by their respective developers with granular commit l
 
 | Contributor identity | Branch | Local workspace | Status |
 | --- | --- | --- | --- |
-| Ada Chen | `workspace/ada-chen` | `E:\Git Lab's\kntonOS-ada-chen` | Active (TASK-KNT-133) |
-| Jules Martin | `workspace/jules-martin` | `E:\Git Lab's\kntonOS-jules-martin` | Active (TASK-KNT-131) |
-| Priya Nair | `workspace/priya-nair` | `E:\Git Lab's\kntonOS-priya-nair` | Active (TASK-KNT-132) |
+| Ada Chen | `workspace/ada-chen` | `E:\Git Lab's\kntonOS-ada-chen` | Idle (Holding for cleanup session) |
+| Jules Martin | `workspace/jules-martin` | `E:\Git Lab's\kntonOS-jules-martin` | Idle (Holding for cleanup session) |
+| Priya Nair | `workspace/priya-nair` | `E:\Git Lab's\kntonOS-priya-nair` | Idle (Holding for cleanup session) |
 
 ## Task index
 
@@ -155,13 +155,10 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-128 | Unified Handheld PC High-Precision Capacitive Touchpad & Multi-Finger Haptic Gesture Filter Engine | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-128-touchpad-gesture.md) |
 | TASK-KNT-129 | Direct3D 12 Dynamic Micro-Mesh Displacement & Sub-Triangle Geometry LOD Compressor | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-129-micromesh.md) |
 | TASK-KNT-130 | Real-Time In-Game 3D Audio Positional Occlusion & Acoustic Ray-Bouncing Reflection Engine | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-130-audio-occlusion.md) |
-| TASK-KNT-131 | Unified Handheld PC Multi-Axis Gyroscope Zero-Drift Auto-Centering & Motion Aiming Governor | Claimed | TASK-KNT-113 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-131-gyro-aiming.md) |
-| TASK-KNT-132 | Direct3D 12 Variable-Rate Shading (VRS) Tier 2 Screen-Space Shading Rate Image Generator | Claimed | TASK-KNT-052 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-132-vrs-tier2.md) |
-| TASK-KNT-133 | Kernel-Direct Ultra-Low-Latency In-Game Voice Activity Detector (VAD) & Spatial Echo Canceller | Claimed | TASK-KNT-103 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-133-vad-echo.md) |
+| TASK-KNT-131 | Unified Handheld PC Multi-Axis Gyroscope Zero-Drift Auto-Centering & Motion Aiming Governor | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-131-gyro-aiming.md) |
+| TASK-KNT-132 | Direct3D 12 Variable-Rate Shading (VRS) Tier 2 Screen-Space Shading Rate Image Generator | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-132-vrs-tier2.md) |
+| TASK-KNT-133 | Kernel-Direct Ultra-Low-Latency In-Game Voice Activity Detector (VAD) & Spatial Echo Canceller | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-133-vad-echo.md) |
 
 ## Active reservations
 
 - `kernel/src/pkg/`: reserved by ArdenKestrel for TASK-KNT-045.
-- `kernel/src/drivers/input/gyro_aim.rs`: reserved by Jules Martin for TASK-KNT-131.
-- `kernel/src/gfx/vrs.rs`: reserved by Priya Nair for TASK-KNT-132.
-- `kernel/src/audio/vad.rs`: reserved by Ada Chen for TASK-KNT-133.
