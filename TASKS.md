@@ -104,13 +104,16 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-077 | Unified Handheld PC Battery Gauge, Coulomb Counter, & Smart Charging State Machine | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-077-battery-gauge.md) |
 | TASK-KNT-078 | Zero-Latency Kernel-Bypassed Input Polling Ring & Micro-Jitter Smoothing Filter | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-078-input-ring.md) |
 | TASK-KNT-079 | Dynamic VMM Kernel Memory Compactor & Transparent Page Defragmentation Engine | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-079-memory-compactor.md) |
-| TASK-KNT-080 | Unified Handheld PC Gyro Aiming & Motion Assist Dynamic Angle Governor | Claimed | TASK-KNT-051 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-080-gyro-aiming.md) |
-| TASK-KNT-081 | Zero-Copy Direct Storage Direct3D 12 Compressed GpuTexture Streaming Pipeline | Claimed | TASK-KNT-046 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-081-direct-storage.md) |
-| TASK-KNT-082 | Real-Time Game Audio Equalizer (Parametric 10-Band EQ & Dynamic Bass Booster) | Claimed | TASK-KNT-060 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-082-audio-eq.md) |
+| TASK-KNT-080 | Unified Handheld PC Gyro Aiming & Motion Assist Dynamic Angle Governor | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-080-gyro-aiming.md) |
+| TASK-KNT-081 | Zero-Copy Direct Storage Direct3D 12 Compressed GpuTexture Streaming Pipeline | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-081-direct-storage.md) |
+| TASK-KNT-082 | Real-Time Game Audio Equalizer (Parametric 10-Band EQ & Dynamic Bass Booster) | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-082-audio-eq.md) |
+| TASK-KNT-083 | Unified Handheld PC Backlight PWM Modulator & Flicker-Free DC Dimming Governor | Claimed | TASK-KNT-074 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-083-backlight-pwm.md) |
+| TASK-KNT-084 | Zero-Copy GPU Asynchronous Compute Dispatch & Shader Execution Fence Engine | Claimed | TASK-KNT-071 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-084-gpu-compute.md) |
+| TASK-KNT-085 | Micro-Kernel Lock-Free Ring Buffer Object Pool & Slab Cache Allocator | Claimed | TASK-KNT-079 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-085-slab-allocator.md) |
 
 ## Active reservations
 
 - `kernel/src/pkg/`: reserved by ArdenKestrel for TASK-KNT-045.
-- `kernel/src/drivers/input/gyro_aim.rs`, `kernel/src/drivers/input/motion_assist.rs`: reserved by Jules Martin for TASK-KNT-080.
-- `kernel/src/drivers/storage/direct_storage.rs`, `kernel/src/gfx/texture_stream.rs`: reserved by Priya Nair for TASK-KNT-081.
-- `kernel/src/audio/eq.rs`, `kernel/src/audio/bass_boost.rs`: reserved by Ada Chen for TASK-KNT-082.
+- `kernel/src/drivers/display/backlight.rs`, `kernel/src/drivers/display/pwm.rs`: reserved by Jules Martin for TASK-KNT-083.
+- `kernel/src/gfx/compute.rs`, `kernel/src/gfx/gpu_fence.rs`: reserved by Priya Nair for TASK-KNT-084.
+- `kernel/src/mem/slab.rs`, `kernel/src/mem/magazine.rs`: reserved by Ada Chen for TASK-KNT-085.
