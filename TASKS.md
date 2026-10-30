@@ -17,9 +17,9 @@ These branches are managed by their respective developers with granular commit l
 
 | Contributor identity | Branch | Local workspace | Status |
 | --- | --- | --- | --- |
-| Ada Chen | `workspace/ada-chen` | `E:\Git Lab's\kntonOS-ada-chen` | Active (TASK-KNT-109) |
-| Jules Martin | `workspace/jules-martin` | `E:\Git Lab's\kntonOS-jules-martin` | Active (TASK-KNT-107) |
-| Priya Nair | `workspace/priya-nair` | `E:\Git Lab's\kntonOS-priya-nair` | Active (TASK-KNT-108) |
+| Ada Chen | `workspace/ada-chen` | `E:\Git Lab's\kntonOS-ada-chen` | Idle (TASK-KNT-109 complete) |
+| Jules Martin | `workspace/jules-martin` | `E:\Git Lab's\kntonOS-jules-martin` | Idle (TASK-KNT-107 complete) |
+| Priya Nair | `workspace/priya-nair` | `E:\Git Lab's\kntonOS-priya-nair` | Idle (TASK-KNT-108 complete) |
 
 ## Task index
 
@@ -131,13 +131,10 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-104 | Unified Handheld PC Hall Effect Magnetic Joystick & Trigger Calibration Engine | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-104-hall-effect.md) |
 | TASK-KNT-105 | Kernel-Direct GPU Sampler Feedback Streaming & Texture LOD Clamp Engine | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-105-sampler-feedback.md) |
 | TASK-KNT-106 | Low-Latency In-Game Bluetooth LE Gamepad & Wireless Headset Audio Streamer | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-106-ble-audio.md) |
-| TASK-KNT-107 | Unified Handheld PC Fingerprint Sensor & Biometric Windows Hello Token Engine | Claimed | TASK-KNT-033 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-107-biometric.md) |
-| TASK-KNT-108 | Direct3D 12 Enhanced Barriers & Split-Barrier Synchronized GPU Resource Transition Engine | Claimed | TASK-KNT-084 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-108-enhanced-barriers.md) |
-| TASK-KNT-109 | Unified Game State Overlay Compositor & Zero-Copy Hardware Cursor Plane Subsystem | Claimed | TASK-KNT-062 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-109-overlay-plane.md) |
+| TASK-KNT-107 | Unified Handheld PC Fingerprint Sensor & Biometric Windows Hello Token Engine | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-107-biometric.md) |
+| TASK-KNT-108 | Direct3D 12 Enhanced Barriers & Split-Barrier Synchronized GPU Resource Transition Engine | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-108-enhanced-barriers.md) |
+| TASK-KNT-109 | Unified Game State Overlay Compositor & Zero-Copy Hardware Cursor Plane Subsystem | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-109-overlay-plane.md) |
 
 ## Active reservations
 
 - `kernel/src/pkg/`: reserved by ArdenKestrel for TASK-KNT-045.
-- `kernel/src/drivers/input/biometric.rs`: reserved by Jules Martin for TASK-KNT-107.
-- `kernel/src/gfx/barriers.rs`: reserved by Priya Nair for TASK-KNT-108.
-- `kernel/src/ui/overlay_plane.rs`: reserved by Ada Chen for TASK-KNT-109.
