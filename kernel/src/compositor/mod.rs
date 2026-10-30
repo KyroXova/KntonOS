@@ -13,6 +13,7 @@ pub mod compositor;
 pub mod taskbar;
 pub mod launcher;
 pub mod wayland;
+pub mod overlay;
 
 use crate::display::color::Color;
 use crate::display::framebuffer::{FramebufferInfo, LinearFramebuffer};
