@@ -7,6 +7,7 @@ pub mod magazine;
 pub use slab::{
     MultiClassSlabAllocator, Slab, SlabCache, SlabError, SlabState,
     SLAB_SIZE_CLASSES, NUM_SIZE_CLASSES, SLAB_PAGE_SIZE,
+    TaggedSlot, LockFreeFreelist, LockFreeObjectPool, INVALID_SLOT_INDEX,
 };
 pub use magazine::{
     Magazine, MagazineDepot, PerCpuMagazineCache, PerCpuMagazineLayer,
