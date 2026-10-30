@@ -6,7 +6,8 @@
 //! - 16-band Bark-scale bandpass analysis filterbank for spectral decomposition.
 //! - Voice Activity Detection (VAD) with energy thresholds, zero-crossing rates, and speech probability scoring.
 //! - Spectral noise estimation and continuous background noise tracking with speech hangover hysteresis.
-//! - Real-time Automatic Gain Control (AGC) with smooth envelope follower and soft-saturation limiter.
+//! - Real-time spectral subtraction (Wiener-style multi-band gain attenuation) suppressing acoustic noise.
+//! - Automatic Gain Control (AGC) with smooth envelope follower, vocal level leveling, and soft-saturation limiter.
 
 #![allow(dead_code)]
 
@@ -249,7 +250,7 @@ impl VoiceCaptureRing {
 }
 
 // -----------------------------------------------------------------------------
-// Bandpass Analysis Filterbank
+// Bandpass Analysis & Synthesis Filterbank
 // -----------------------------------------------------------------------------
 
 /// 2nd-Order Biquad IIR Bandpass Filter (Direct Form II Transposed).
@@ -574,7 +575,232 @@ impl SpectralNoiseEstimator {
 }
 
 // -----------------------------------------------------------------------------
-// Unit Self-Tests for Commits 1 & 2
+// Real-Time Spectral Subtraction Noise Suppressor
+// -----------------------------------------------------------------------------
+
+/// Multi-band Wiener-style spectral subtraction acoustic noise suppressor.
+pub struct SpectralNoiseSuppressor {
+    over_subtraction_factor: f32, // Alpha factor (e.g. 1.3) to prevent musical noise
+    min_gain_floor: f32,           // Minimum gain floor (e.g. 0.05 = -26 dB)
+    smoothed_gains: [f32; NUM_SPECTRAL_BANDS],
+}
+
+impl SpectralNoiseSuppressor {
+    pub fn new() -> Self {
+        Self {
+            over_subtraction_factor: 1.3,
+            min_gain_floor: 0.05,
+            smoothed_gains: [1.0f32; NUM_SPECTRAL_BANDS],
+        }
+    }
+
+    /// Compute per-band Wiener gains from signal band energies and estimated noise energies.
+    pub fn compute_band_gains(
+        &mut self,
+        signal_energies: &[f32; NUM_SPECTRAL_BANDS],
+        noise_energies: &[f32; NUM_SPECTRAL_BANDS],
+        vad: &VadDecision,
+    ) -> [f32; NUM_SPECTRAL_BANDS] {
+        let mut target_gains = [1.0f32; NUM_SPECTRAL_BANDS];
+
+        for i in 0..NUM_SPECTRAL_BANDS {
+            let sig_e = signal_energies[i].max(1e-10);
+            let noise_e = noise_energies[i].max(1e-10);
+
+            // Wiener gain with over-subtraction: G = max(G_min, 1 - alpha * N / S)
+            let sub = 1.0 - (self.over_subtraction_factor * noise_e / sig_e);
+            let mut gain = sub.clamp(self.min_gain_floor, 1.0);
+
+            // During silence, apply aggressive attenuation towards min gain floor
+            if !vad.is_speech {
+                gain *= 0.1;
+                gain = gain.max(self.min_gain_floor);
+            }
+
+            target_gains[i] = gain;
+
+            // Attack/Release smoothing: fast attack (0.6), moderate release (0.2)
+            let smooth_coeff = if target_gains[i] < self.smoothed_gains[i] { 0.4 } else { 0.2 };
+            self.smoothed_gains[i] = (1.0 - smooth_coeff) * self.smoothed_gains[i] + smooth_coeff * target_gains[i];
+        }
+
+        self.smoothed_gains
+    }
+
+    /// Apply computed gains across the time-domain audio samples.
+    pub fn apply_noise_suppression(
+        &self,
+        samples: &[f32; VOICE_FRAME_SAMPLES],
+        band_gains: &[f32; NUM_SPECTRAL_BANDS],
+        out_samples: &mut [f32; VOICE_FRAME_SAMPLES],
+    ) {
+        // Average spectral gain across the critical speech formant bands (Bands 1 to 9)
+        let mut voice_gain_acc = 0.0f32;
+        for i in 1..=9 {
+            voice_gain_acc += band_gains[i];
+        }
+        let effective_gain = voice_gain_acc / 9.0;
+
+        for (i, &s) in samples.iter().enumerate() {
+            out_samples[i] = s * effective_gain;
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Automatic Gain Control (AGC) & Peak Limiter
+// -----------------------------------------------------------------------------
+
+/// Real-time Automatic Gain Control (AGC) maintaining consistent speech levels.
+pub struct AutomaticGainControl {
+    target_rms: f32,       // Target vocal RMS level (~ -16 dBFS = 0.158)
+    envelope: f32,         // Signal envelope tracker
+    current_gain: f32,     // Smoothed dynamic gain factor
+    min_gain: f32,         // Min attenuation (0.25 = -12 dB)
+    max_gain: f32,         // Max boost (4.0 = +12 dB)
+}
+
+impl AutomaticGainControl {
+    pub fn new() -> Self {
+        Self {
+            target_rms: 0.16,
+            envelope: 0.05,
+            current_gain: 1.0,
+            min_gain: 0.25,
+            max_gain: 4.0,
+        }
+    }
+
+    /// Process a frame through the AGC envelope follower and soft-saturation limiter.
+    pub fn process(
+        &mut self,
+        samples: &[f32; VOICE_FRAME_SAMPLES],
+        vad: &VadDecision,
+        out_samples: &mut [f32; VOICE_FRAME_SAMPLES],
+    ) -> f32 {
+        // Calculate frame RMS
+        let mut sum_sq = 0.0f32;
+        for &s in samples {
+            sum_sq += s * s;
+        }
+        let frame_rms = sqrt_f32(sum_sq / (VOICE_FRAME_SAMPLES as f32));
+
+        // Update envelope follower only when speech is present (prevent noise pumping)
+        if vad.is_speech {
+            let attack = 0.1f32;
+            let release = 0.02f32;
+            let coeff = if frame_rms > self.envelope { attack } else { release };
+            self.envelope = (1.0 - coeff) * self.envelope + coeff * frame_rms;
+
+            // Target gain: target_rms / envelope
+            let desired_gain = (self.target_rms / self.envelope.max(0.01)).clamp(self.min_gain, self.max_gain);
+            self.current_gain = 0.90 * self.current_gain + 0.10 * desired_gain;
+        }
+
+        // Apply gain and soft-saturation peak limiter
+        for (i, &s) in samples.iter().enumerate() {
+            let amplified = s * self.current_gain;
+            out_samples[i] = Self::soft_limit(amplified);
+        }
+
+        self.current_gain
+    }
+
+    /// Cubic soft-saturation limiter: keeps signal strictly within [-1.0, 1.0].
+    #[inline]
+    fn soft_limit(x: f32) -> f32 {
+        if x > 1.0 {
+            1.0
+        } else if x < -1.0 {
+            -1.0
+        } else if x > 0.66 {
+            // Soft knee compression: 0.66 + (x - 0.66) / (1.0 + (x - 0.66))
+            let d = x - 0.66;
+            0.66 + d / (1.0 + d * 0.5)
+        } else if x < -0.66 {
+            let d = -x - 0.66;
+            -(0.66 + d / (1.0 + d * 0.5))
+        } else {
+            x
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Voice DSP Engine (Unified Processing Pipeline)
+// -----------------------------------------------------------------------------
+
+/// Comprehensive voice audio DSP pipeline integrating Capture, Filterbank, VAD,
+/// Noise Cancellation, and Automatic Gain Control.
+pub struct VoiceDspEngine {
+    pub ring: VoiceCaptureRing,
+    pub filterbank: VoiceFilterbank,
+    pub vad: VoiceActivityDetector,
+    pub noise_estimator: SpectralNoiseEstimator,
+    pub noise_suppressor: SpectralNoiseSuppressor,
+    pub agc: AutomaticGainControl,
+    pub total_processed_frames: u64,
+    pub last_speech_probability: f32,
+    pub last_snr_db: f32,
+    pub last_applied_gain: f32,
+}
+
+impl VoiceDspEngine {
+    pub fn new() -> Self {
+        Self {
+            ring: VoiceCaptureRing::new(),
+            filterbank: VoiceFilterbank::new(),
+            vad: VoiceActivityDetector::new(),
+            noise_estimator: SpectralNoiseEstimator::new(),
+            noise_suppressor: SpectralNoiseSuppressor::new(),
+            agc: AutomaticGainControl::new(),
+            total_processed_frames: 0,
+            last_speech_probability: 0.0,
+            last_snr_db: 0.0,
+            last_applied_gain: 1.0,
+        }
+    }
+
+    /// Process a 10ms raw input PCM frame and return the noise-cancelled, level-controlled output frame.
+    pub fn process_frame(&mut self, input: &VoicePcmFrame) -> VoicePcmFrame {
+        let mut float_in = [0.0f32; VOICE_FRAME_SAMPLES];
+        input.to_float(&mut float_in);
+
+        // 1. Spectral filterbank analysis
+        let mut band_energies = [0.0f32; NUM_SPECTRAL_BANDS];
+        self.filterbank.analyze_frame(&float_in, &mut band_energies);
+
+        // 2. Voice Activity Detection (VAD)
+        let vad_decision = self.vad.analyze(&float_in, &band_energies);
+        self.last_speech_probability = vad_decision.speech_probability;
+        self.last_snr_db = vad_decision.snr_db;
+
+        // 3. Spectral background noise estimation update
+        self.noise_estimator.update(&band_energies, &vad_decision);
+
+        // 4. Multi-band Wiener noise suppression gains
+        let band_gains = self.noise_suppressor.compute_band_gains(
+            &band_energies,
+            &self.noise_estimator.noise_energies,
+            &vad_decision,
+        );
+
+        let mut denoised = [0.0f32; VOICE_FRAME_SAMPLES];
+        self.noise_suppressor.apply_noise_suppression(&float_in, &band_gains, &mut denoised);
+
+        // 5. Automatic Gain Control (AGC) & Soft-Limiter
+        let mut final_out = [0.0f32; VOICE_FRAME_SAMPLES];
+        let agc_gain = self.agc.process(&denoised, &vad_decision, &mut final_out);
+        self.last_applied_gain = agc_gain;
+
+        self.total_processed_frames += 1;
+
+        VoicePcmFrame::from_float(&final_out, input.sequence_number, input.timestamp_us)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Unit Self-Tests for Commits 1, 2, and 3
 // -----------------------------------------------------------------------------
 
 /// Verify VoicePcmFrame conversions, capture ring buffer operations, and filterbank energy decomposition.
@@ -757,6 +983,97 @@ pub fn test_vad_and_noise_estimator() -> bool {
     // Verify noise energies in bands 2 and 4 did not get blown out by the voice frame
     if noise_estimator.band_noise_energy(2) > 0.01 {
         return false;
+    }
+
+    true
+}
+
+/// Verify spectral subtraction noise suppression, Automatic Gain Control (AGC), and peak limiting.
+pub fn test_noise_suppressor_and_agc() -> bool {
+    let mut engine = VoiceDspEngine::new();
+
+    // 1. Calibrate engine with 20 frames of stationary fan/hiss noise (amplitude 0.05)
+    let mut noise_samples = [0.0f32; VOICE_FRAME_SAMPLES];
+    for i in 0..VOICE_FRAME_SAMPLES {
+        let t = (i as f32) / (VOICE_SAMPLE_RATE as f32);
+        // Multitone background noise: 120 Hz hum + 3400 Hz fan hiss
+        noise_samples[i] = 0.03 * sin_f32(TWO_PI * 120.0 * t) + 0.02 * sin_f32(TWO_PI * 3400.0 * t);
+    }
+    let noise_frame = VoicePcmFrame::from_float(&noise_samples, 0, 0);
+
+    for i in 0..20 {
+        let mut f = noise_frame;
+        f.sequence_number = i as u32;
+        let _ = engine.process_frame(&f);
+    }
+
+    // Process one more noise frame after calibration: noise suppression must attenuate noise significantly
+    let post_cal_noise = engine.process_frame(&noise_frame);
+    let post_rms = post_cal_noise.rms_energy();
+    let initial_rms = noise_frame.rms_energy();
+
+    // Post-suppression RMS should be attenuated by at least 6 dB (halved amplitude)
+    if post_rms > initial_rms * 0.60 {
+        return false;
+    }
+
+    // 2. Test Voice with Background Noise: Voice (400 Hz vowel, amp 0.35) + Noise (amp 0.05)
+    let mut speech_plus_noise = [0.0f32; VOICE_FRAME_SAMPLES];
+    for i in 0..VOICE_FRAME_SAMPLES {
+        let t = (i as f32) / (VOICE_SAMPLE_RATE as f32);
+        let voice = 0.30 * sin_f32(TWO_PI * 400.0 * t) + 0.15 * sin_f32(TWO_PI * 850.0 * t);
+        let noise = 0.03 * sin_f32(TWO_PI * 120.0 * t) + 0.02 * sin_f32(TWO_PI * 3400.0 * t);
+        speech_plus_noise[i] = voice + noise;
+    }
+    let speech_frame = VoicePcmFrame::from_float(&speech_plus_noise, 25, 250_000);
+
+    let output_speech = engine.process_frame(&speech_frame);
+
+    // VAD should recognize speech and probability should be high
+    if engine.last_speech_probability < 0.5 {
+        return false;
+    }
+    // Output should retain strong speech amplitude
+    if output_speech.rms_energy() < 0.10 {
+        return false;
+    }
+
+    // 3. Test AGC on soft/whispered speech (amplitude 0.02)
+    let mut soft_speech = [0.0f32; VOICE_FRAME_SAMPLES];
+    for i in 0..VOICE_FRAME_SAMPLES {
+        let t = (i as f32) / (VOICE_SAMPLE_RATE as f32);
+        soft_speech[i] = 0.02 * sin_f32(TWO_PI * 400.0 * t);
+    }
+    let mut agc = AutomaticGainControl::new();
+    let vad_active = VadDecision {
+        is_speech: true,
+        speech_probability: 0.85,
+        frame_energy_db: -30.0,
+        snr_db: 20.0,
+        zero_crossing_rate: 0.05,
+        state: VadState::Speech,
+    };
+
+    let mut agc_out = [0.0f32; VOICE_FRAME_SAMPLES];
+    let mut last_gain = 1.0;
+    for _ in 0..10 {
+        last_gain = agc.process(&soft_speech, &vad_active, &mut agc_out);
+    }
+
+    // AGC should have boosted gain above 1.5x for soft speech
+    if last_gain < 1.5 {
+        return false;
+    }
+
+    // 4. Test Soft-Saturation Limiter with loud input (amplitude 2.5)
+    let loud_speech = [2.5f32; VOICE_FRAME_SAMPLES];
+    let mut limited_out = [0.0f32; VOICE_FRAME_SAMPLES];
+    agc.process(&loud_speech, &vad_active, &mut limited_out);
+
+    for &s in &limited_out {
+        if s > 1.0 || s < -1.0 {
+            return false;
+        }
     }
 
     true
