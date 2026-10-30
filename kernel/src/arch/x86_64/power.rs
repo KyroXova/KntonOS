@@ -1,7 +1,4 @@
-//! ACPI Power Management Subsystem (FADT/DSDT S3/S5, CPU Throttling, Reset & Shutdown).
-//!
-//! Provides parsing of Fixed ACPI Description Table (FADT), power management register blocks
-//! (PM1a/PM1b Control, SMI command), reset register mechanisms, and sleep state transitions.
+//! ACPI power management subsystem for FADT/DSDT sleep states, throttling, and reset.
 
 use super::acpi::{AcpiHeader, AcpiParser};
 use crate::serial_write_str;

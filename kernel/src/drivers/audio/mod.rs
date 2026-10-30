@@ -1,7 +1,4 @@
-//! Real-Time Audio Subsystem for KntonOS.
-//!
-//! Provides Intel High Definition Audio (HDA) Specification 1.0a controller
-//! and codec drivers, PCM audio stream DMA engine, and software sample mixer.
+//! Real-time audio subsystem for KntonOS.
 
 pub mod hda;
 pub mod mixer;
@@ -29,10 +26,6 @@ pub use mixer::{
 };
 
 /// Comprehensive verification of the real-time audio subsystem.
-///
-/// Tests HDA MMIO register maps, BDL entry sizing, CORB/RIRB ring buffers,
-/// Codec discovery, DAC-to-PinComplex widget routing, Stream DMA cyclic buffer
-/// management, and multi-channel software PCM mixer with saturation arithmetic.
 pub fn test_audio_subsystem() -> bool {
     if !verify_hda_structures() {
         return false;
@@ -73,10 +66,7 @@ pub fn test_audio_subsystem() -> bool {
     true
 }
 
-/// Comprehensive verification suite for zero-latency cyclic DMA audio ring buffer,
-/// multi-channel dynamic gain mixer with soft-knee limiter, and linear interpolation SRC.
-///
-/// Emits sentinel [KNT-AUDIO-MIXER-PASS] upon successful validation.
+/// Verification suite for DMA audio ring buffer, multi-channel mixer, and linear SRC.
 pub fn test_realtime_audio_mixer_subsystem() -> bool {
     // 1. Verify cyclic DMA ring buffer descriptors, wrap-around, and position reporting
     if !verify_streamer_ring_buffer() {
@@ -93,9 +83,7 @@ pub fn test_realtime_audio_mixer_subsystem() -> bool {
         return false;
     }
 
-    // 4. End-to-end integration test:
-    // Create multi-stream mixer (two concurrent client audio streams: 44.1 kHz converted to 48 kHz + 48 kHz native tone),
-    // mix into DMA ring buffer periods, verify non-clipping limited output and cyclic DMA write advancement.
+    // Multi-stream mixer: concurrent 44.1 kHz converted to 48 kHz + 48 kHz native tone.
     let mut mixer = AudioMixer::new();
 
     // Stream 0: 44.1 kHz client stream resampled to 48 kHz

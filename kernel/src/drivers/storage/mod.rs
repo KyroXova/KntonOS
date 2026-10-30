@@ -1,7 +1,4 @@
 //! Persistent Storage Device Drivers for KntonOS.
-//!
-//! Provides support for SATA/AHCI controllers, port command queues,
-//! and ATA block devices.
 
 pub mod ahci;
 pub mod nvme;
@@ -63,10 +60,6 @@ pub use ahci::{
 };
 
 /// Comprehensive verification of the AHCI SATA controller and port command engine.
-///
-/// Tests HBA Generic Host Control registers, port memory mappings, SATA device
-/// signature classification, Command Headers, PRDT scatter-gather lists, ATA IDENTIFY
-/// device parameter parsing, and 48-bit LBA DMA sector transfers.
 pub fn test_ahci_sata_subsystem() -> bool {
     // 1. Verify HBA MMIO register maps and capability decoding
     if !verify_ahci_structures() {
@@ -124,11 +117,7 @@ pub fn test_ahci_sata_subsystem() -> bool {
 }
 
 
-/// Comprehensive verification of the NVMe storage controller and submission/completion queue engine.
-///
-/// Tests NVMe MMIO register structures, CAP/CC decoding, 64-byte SQE and 16-byte CQE descriptors,
-/// circular queue rings with phase bit toggling, Admin IDENTIFY controller/namespace parsing,
-/// and 512-byte sector loopback data integrity via PRP DMA commands.
+/// Comprehensive verification of the NVMe storage controller and queue engine.
 pub fn test_nvme_subsystem() -> bool {
     // 1. Verify NVMe MMIO register maps, capabilities, and descriptor structures
     if !verify_nvme_structures() {
@@ -205,12 +194,7 @@ pub fn test_nvme_subsystem() -> bool {
     true
 }
 
-/// Comprehensive verification of the High-Speed NVMe Overlapped Async I/O (io_uring Style) Completion Engine.
-///
-/// Tests shared-memory SQ/CQ lockless ring buffers with atomic cursors, 64-byte SQE translation,
-/// overlapped NVMe asynchronous dispatch, out-of-order completion harvesting, and token correlation.
-///
-/// Emits sentinel [KNT-NVME-URING-PASS] upon successful validation.
+/// Comprehensive verification of the NVMe Async I/O (io_uring style) completion engine.
 pub fn test_nvme_uring_subsystem() -> bool {
     // 1. Verify SQ/CQ lockless ring buffer mechanics, atomic cursors, and wrap-around
     if !verify_uring_ring_buffers() {
@@ -227,10 +211,7 @@ pub fn test_nvme_uring_subsystem() -> bool {
         return false;
     }
 
-    // 4. End-to-end overlapped multi-operation async pipeline simulation:
-    // User submits 4 concurrent overlapped operations (Read, Write, Fsync, NOP) to SQ ring,
-    // dispatcher submits to NVMe queue pair, hardware completes with arbitrary delay/out-of-order,
-    // completions harvested into CQ ring, and verified by token and result byte count.
+    // 4. Overlapped multi-operation async pipeline simulation across submission and completion rings.
     let mut ring_ctx = IoUringContext::<16>::new(1);
     let mut dispatcher = AsyncIoDispatcher::new();
     let mut nvme_qp = NvmeQueuePair::new(1, 16, 0, 0);
@@ -313,9 +294,7 @@ pub fn test_nvme_uring_subsystem() -> bool {
 }
 
 
-/// Comprehensive verification self-test for Zero-Copy DirectStorage NVMe-to-GPU Streaming & Compressed Texture Pipeline.
-///
-/// Emits sentinel [KNT-STORAGE-DIRECT-PASS] upon successful validation.
+/// Verification self-test for DirectStorage NVMe-to-GPU streaming and compressed texture pipeline.
 pub fn test_direct_storage_subsystem() -> bool {
     // 1. Verify GPU BAR1 aperture allocation and priority-ordered DirectStorage DMA queue
     if !direct_storage::verify_direct_storage_queue_and_bar_mapping() {
@@ -445,10 +424,7 @@ pub fn test_direct_storage_subsystem() -> bool {
     true
 }
 
-/// Comprehensive verification self-test suite for Handheld PC MicroSD Card UHS-I/II Host Controller
-/// and Fast Game Storage Driver.
-///
-/// Emits sentinel [KNT-STORAGE-SD-PASS] upon successful validation.
+/// Verification self-test suite for MicroSD UHS-I/II host controller and fast storage driver.
 pub fn test_sdhci_and_microsd_subsystem() -> bool {
     crate::serial_write_str("[KNT-SDHCI] Testing handheld MicroSD host controller & storage driver...\r\n");
 

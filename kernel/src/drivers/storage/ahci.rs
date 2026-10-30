@@ -1,8 +1,4 @@
-//!  AHCI SATA Specification 1.3.1 Memory Registers & Host Controller Structures.
-//!
-//! Provides the memory-mapped register definitions for the Advanced Host Controller
-//! Interface (AHCI), including Generic Host Control (GHC), Port Control registers,
-//! Command Headers, Command Tables, PRDT scatter-gather lists, and SATA FIS structures.
+//! AHCI SATA Specification 1.3.1 Memory Registers & Host Controller Structures.
 
 use crate::drivers::pci_scanner::PciDevice;
 
@@ -10,7 +6,7 @@ pub const PCI_CLASS_MASS_STORAGE: u8 = 0x01;
 pub const PCI_SUBCLASS_SATA: u8 = 0x06;
 pub const PCI_PROGIF_AHCI: u8 = 0x01;
 
-// --- Generic Host Control (GHC) Register Offsets ---
+// Generic Host Control (GHC) Register Offsets.
 pub const AHCI_REG_CAP: usize = 0x00;      // Host Capabilities (32-bit)
 pub const AHCI_REG_GHC: usize = 0x04;      // Global Host Control (32-bit)
 pub const AHCI_REG_IS: usize = 0x08;       // Interrupt Status (32-bit)
@@ -23,13 +19,13 @@ pub const AHCI_REG_EM_CTL: usize = 0x20;   // Enclosure Management Control (32-b
 pub const AHCI_REG_CAP2: usize = 0x24;     // Host Capabilities Extended (32-bit)
 pub const AHCI_REG_BOHC: usize = 0x28;     // BIOS/OS Handoff Control and Status (32-bit)
 
-// --- GHC Register Bitmasks ---
+// GHC Register Bitmasks.
 pub const GHC_HR: u32 = 1 << 0;            // HBA Reset (0: operational, 1: reset)
 pub const GHC_IE: u32 = 1 << 1;            // Global Interrupt Enable
 pub const GHC_MRSM: u32 = 1 << 2;          // MSI Revert to Single Message
 pub const GHC_AE: u32 = 1 << 31;           // AHCI Enable (1: AHCI mode, 0: legacy IDE)
 
-// --- Host Capabilities (CAP) Bitmasks ---
+// Host Capabilities (CAP) Bitmasks.
 pub const CAP_S64A: u32 = 1 << 31;         // Supports 64-bit Addressing
 pub const CAP_SNCQ: u32 = 1 << 30;         // Supports Native Command Queuing
 pub const CAP_SSNTF: u32 = 1 << 29;        // Supports SNotification Register
@@ -40,19 +36,19 @@ pub const CAP_SAM: u32 = 1 << 18;          // Supports AHCI Mode Only
 pub const CAP_SPM: u32 = 1 << 17;          // Supports Port Multiplier
 pub const CAP_FBSS: u32 = 1 << 16;         // Supports FIS-based Switching
 
-// --- BIOS/OS Handoff (BOHC) Bitmasks ---
+// BIOS/OS Handoff (BOHC) Bitmasks.
 pub const BOHC_BOS: u32 = 1 << 0;          // BIOS Owned Semaphore
 pub const BOHC_OOS: u32 = 1 << 1;          // OS Owned Semaphore
 pub const BOHC_SOOE: u32 = 1 << 2;         // SMI on OS Ownership Change
 pub const BOHC_OOC: u32 = 1 << 3;          // OS Ownership Change
 pub const BOHC_BB: u32 = 1 << 4;           // BIOS Busy
 
-// --- Port Register Offsets & Strides ---
+// Port Register Offsets & Strides.
 pub const AHCI_PORT_BASE: usize = 0x100;
 pub const AHCI_PORT_STRIDE: usize = 0x80;
 pub const MAX_PORTS: usize = 32;
 
-// --- Port Registers (Offset within Port structure) ---
+// Port Registers (Offset within Port structure).
 pub const PORT_REG_CLB: usize = 0x00;      // Command List Base Address (32-bit)
 pub const PORT_REG_CLBU: usize = 0x04;     // Command List Base Address Upper (32-bit)
 pub const PORT_REG_FB: usize = 0x08;       // FIS Base Address (32-bit)
@@ -70,7 +66,7 @@ pub const PORT_REG_CI: usize = 0x38;       // Command Issue (32-bit)
 pub const PORT_REG_SNTF: usize = 0x3C;     // SATA Notification (32-bit)
 pub const PORT_REG_FBS: usize = 0x40;      // FIS-based Switching (32-bit)
 
-// --- Port Command (CMD) Bitmasks ---
+// Port Command (CMD) Bitmasks.
 pub const PORT_CMD_ST: u32 = 1 << 0;       // Start command processing
 pub const PORT_CMD_SUD: u32 = 1 << 1;      // Spin-Up Device
 pub const PORT_CMD_POD: u32 = 1 << 2;      // Power On Device
@@ -93,7 +89,7 @@ pub const PORT_CMD_ALPE: u32 = 1 << 26;    // Aggressive Link Power Management
 pub const PORT_CMD_ASP: u32 = 1 << 27;     // Aggressive Slumber / Partial
 pub const PORT_CMD_ICC_ACTIVE: u32 = 1 << 28; // Interface Communication: Active
 
-// --- Port Interrupt Status (IS) & Enable (IE) Bitmasks ---
+// Port Interrupt Status (IS) & Enable (IE) Bitmasks.
 pub const PORT_IS_DHRS: u32 = 1 << 0;      // Device to Host Register FIS Interrupt
 pub const PORT_IS_PSS: u32 = 1 << 1;       // PIO Setup FIS Interrupt
 pub const PORT_IS_DSS: u32 = 1 << 2;       // DMA Setup FIS Interrupt
@@ -112,19 +108,19 @@ pub const PORT_IS_HBFS: u32 = 1 << 29;     // Host Bus Fatal Error Status
 pub const PORT_IS_TFES: u32 = 1 << 30;     // Task File Error Status
 pub const PORT_IS_CPDS: u32 = 1 << 31;     // Cold Port Detect Status
 
-// --- Task File Data (TFD) Status Bits ---
+// Task File Data (TFD) Status Bits.
 pub const ATA_DEV_BUSY: u8 = 0x80;         // BSY: Device Busy
 pub const ATA_DEV_DRDY: u8 = 0x40;         // DRDY: Device Ready
 pub const ATA_DEV_DRQ: u8 = 0x08;          // DRQ: Data Request
 pub const ATA_DEV_ERR: u8 = 0x01;          // ERR: Error
 
-// --- SATA Device Signatures (SIG register) ---
+// SATA Device Signatures (SIG register).
 pub const SATA_SIG_ATA: u32 = 0x0000_0101;  // SATA Hard Disk
 pub const SATA_SIG_ATAPI: u32 = 0xEB14_0101;// SATAPI Optical / Tape Device
 pub const SATA_SIG_SEMB: u32 = 0xC33C_0101; // Enclosure Management Bridge
 pub const SATA_SIG_PM: u32 = 0x9669_0101;   // Port Multiplier
 
-// --- SATA Status (SSTS) Detection Constants ---
+// SATA Status (SSTS) Detection Constants.
 pub const SSTS_DET_MASK: u32 = 0x0F;
 pub const SSTS_DET_PRESENT_PHY: u32 = 0x03; // Device detected and Phy connection established
 pub const SSTS_IPM_MASK: u32 = 0x0F00;
@@ -211,16 +207,14 @@ pub struct HbaPortRegisters {
     pub vendor_specific: [u32; 4],
 }
 
-// ============================================================================
-// AHCI Command Headers, Command Tables, PRDT Lists, and SATA FIS Structures
-// ============================================================================
+// AHCI Command Headers, Command Tables, PRDT Lists, and SATA FIS Structures.
 
 pub const MAX_COMMAND_SLOTS: usize = 32;
 pub const MAX_PRDT_ENTRIES: usize = 16;
 pub const PRDT_MAX_BYTES: usize = 4 * 1024 * 1024; // 4 MiB max per PRDT descriptor
 pub const PRDT_IOC: u32 = 1 << 31;                 // Interrupt on Completion flag
 
-// --- SATA FIS Types (Serial ATA Revision 3.0 Section 10.3) ---
+// SATA FIS Types (Serial ATA Revision 3.0 Section 10.3).
 pub const FIS_TYPE_REG_H2D: u8 = 0x27;   // Register FIS - Host to Device
 pub const FIS_TYPE_REG_D2H: u8 = 0x34;   // Register FIS - Device to Host
 pub const FIS_TYPE_DMA_ACT: u8 = 0x39;   // DMA Activate FIS - Device to Host
@@ -230,7 +224,7 @@ pub const FIS_TYPE_BIST: u8 = 0x58;      // BIST Activate FIS - Bidirectional
 pub const FIS_TYPE_PIO_SETUP: u8 = 0x5F; // PIO Setup FIS - Device to Host
 pub const FIS_TYPE_DEV_BITS: u8 = 0xA1;  // Set Device Bits FIS - Device to Host
 
-// --- ATA Command Opcode Constants ---
+// ATA Command Opcode Constants.
 pub const ATA_CMD_READ_DMA_EXT: u8 = 0x25;
 pub const ATA_CMD_WRITE_DMA_EXT: u8 = 0x35;
 pub const ATA_CMD_IDENTIFY: u8 = 0xEC;

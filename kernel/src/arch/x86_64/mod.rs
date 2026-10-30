@@ -80,8 +80,7 @@ pub fn init_power_management() {
     power::init();
 }
 
-/// Comprehensive verification suite for Hardware Debug Registers, MMIO Range Watchpoints,
-/// and Single-Step Trap Execution.
+/// Verification suite for hardware debug registers, MMIO range watchpoints, and single-step trap execution.
 pub fn test_debug_trap_and_watchpoints() -> bool {
     serial_write_str("[KNT-ARCH-TRAP-TEST] Running MMIO Watchpoint & Debug Trap verification suite...\r\n");
 

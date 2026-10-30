@@ -1,11 +1,4 @@
-//! Micro-Jitter Suppression Filter & Adaptive Deadzone Shaping.
-//!
-//! Provides esports-grade analog filtering for Hall effect sensors and analog potentiometers:
-//! - 1-Euro adaptive low-pass filter (Casiez et al., CHI 2012)
-//!   Suppresses high-frequency micro-jitter and electrical noise at rest while
-//!   providing zero-latency response during fast flicks.
-//! - Radial (circular) and Axial deadzone shaping.
-//! - Dynamic center calibration and Hall effect magnetic drift compensation.
+//! Micro-jitter suppression filter and adaptive deadzone shaping.
 
 use super::imu::{atan2_f32, sqrt_f32, PI};
 
@@ -71,12 +64,7 @@ pub fn compute_alpha(fc_hz: f32, dt_sec: f32) -> f32 {
     r / (r + 1.0)
 }
 
-/// 1-Euro Adaptive Low-Pass Filter (Casiez et al., CHI 2012).
-///
-/// Dynamically adjusts the filter cutoff frequency based on the filtered derivative (speed)
-/// of the input signal. At low speeds / rest, cutoff approaches `min_cutoff_hz`, virtually
-/// eliminating analog jitter. At high speeds, cutoff increases linearly with `beta * |dx|`,
-/// driving phase lag to near zero.
+/// 1-Euro adaptive low-pass filter (Casiez et al., CHI 2012) for speed-dependent jitter reduction.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OneEuroFilter {
     pub min_cutoff_hz: f32,
@@ -288,11 +276,7 @@ impl JitterDeadzoneConfig {
     }
 }
 
-/// Dynamic Center & Hall Effect Magnetic Drift Calibrator.
-///
-/// Hall effect sensors experience thermal variations and magnetic hysteresis drift over time.
-/// This calibrator tracks the resting baseline when the thumbstick is idle inside the inner deadzone
-/// and dynamically centers the analog coordinate origin.
+/// Dynamic center and Hall-effect magnetic drift calibrator tracking resting baselines.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HallEffectCenterCalibrator {
     pub center_offset_x: f32,
@@ -337,12 +321,7 @@ impl HallEffectCenterCalibrator {
 }
 
 
-/// Physical stick rebound / snapback suppression filter.
-///
-/// When an analog stick is released from full deflection, centering springs cause
-/// mechanical overshoot past the center resting point, which can cause spurious opposite-direction
-/// inputs in esports titles. This filter detects rapid return towards center and suppresses
-/// reverse overshoot within a brief settling window (typically 15-25ms).
+/// Physical stick rebound and snapback suppression filter for rapid center returns.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AntiReboundSmoother {
     /// Activation threshold: stick must have reached at least this magnitude to arm snapback protection.

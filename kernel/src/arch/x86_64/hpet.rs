@@ -1,11 +1,4 @@
-//! High-Precision Event Timer (HPET) & Real-Time Monotonic Clock for KntonOS.
-//!
-//! Implements IA-PC HPET Specification Revision 1.0a:
-//! - ACPI HPET description table parser (Signature 'HPET' / 0x54455048)
-//! - HPET MMIO register map (GCAP_ID, GEN_CONF, GINTR_STA, MAIN_CNT, TIMn_CONF, TIMn_COMP)
-//! - Counter frequency discovery via COUNTER_CLK_PERIOD (femtoseconds per tick)
-//! - 64-bit main counter management and periodic comparator configuration
-//! - Monotonic nanosecond clock (CLOCK_MONOTONIC) and fast TSC calibration engine.
+//! High-Precision Event Timer (HPET) and real-time monotonic clock driver.
 
 use core::mem::size_of;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -21,7 +14,7 @@ pub const HPET_SIGNATURE_U32: u32 = 0x5445_5048;
 /// Standard default HPET MMIO base physical address on x86 platforms.
 pub const DEFAULT_HPET_BASE_ADDRESS: u64 = 0xFED0_0000;
 
-// --- HPET MMIO Register Offsets (IA-PC HPET Spec 1.0a Section 2.3) ---
+// HPET MMIO register offsets (IA-PC HPET Spec 1.0a Section 2.3).
 pub const HPET_REG_GCAP_ID: usize = 0x000;       // General Capabilities and ID (64-bit)
 pub const HPET_REG_GEN_CONF: usize = 0x010;      // General Configuration (64-bit)
 pub const HPET_REG_GINTR_STA: usize = 0x020;     // General Interrupt Status (64-bit)
@@ -33,11 +26,11 @@ pub const HPET_REG_TIM0_FSB: usize = 0x110;      // Timer 0 FSB Interrupt Route
 /// Base offset per timer register block (32 bytes per timer comparator).
 pub const HPET_TIMER_STRIDE: usize = 0x020;
 
-// --- General Configuration Register Bitmasks ---
+// General configuration register bitmasks.
 pub const HPET_GEN_CONF_ENABLE: u64 = 1 << 0;    // Overall enable (main counter runs)
 pub const HPET_GEN_CONF_LEG_RT: u64 = 1 << 1;    // Legacy Replacement Route enable
 
-// --- Timer Configuration Register Bitmasks ---
+// Timer configuration register bitmasks.
 pub const HPET_TN_INT_TYPE: u64 = 1 << 1;        // 0 = Edge, 1 = Level
 pub const HPET_TN_INT_ENABLE: u64 = 1 << 2;      // 1 = Enable interrupt generation
 pub const HPET_TN_TYPE_PERIODIC: u64 = 1 << 3;   // 0 = Non-periodic, 1 = Periodic
@@ -320,9 +313,7 @@ pub fn verify_hpet_structures() -> bool {
     true
 }
 
-// ============================================================================
-// HPET Device Driver, Main Counter, & Periodic Comparator Engine
-// ============================================================================
+// HPET device driver, main counter, and periodic comparator engine.
 
 /// Operating mode for an HPET comparator timer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -596,9 +587,7 @@ pub fn verify_hpet_counter_and_timers() -> bool {
     true
 }
 
-// ============================================================================
-// Monotonic Nanosecond Clock & Fast TSC Calibration Engine
-// ============================================================================
+// Monotonic nanosecond clock and fast TSC calibration engine.
 
 /// Global HPET device driver instance.
 pub static HPET_DEVICE: Spinlock<Option<HpetDevice>> = Spinlock::new(None);
@@ -737,10 +726,7 @@ pub fn verify_hpet_monotonic_and_tsc() -> bool {
         last_ns = current_ns;
     }
 
-    // 3. TSC calibration math verification
-    // Simulate 5ms duration on a 3.0 GHz processor:
-    // 5ms = 50,000 HPET ticks @ 10 MHz.
-    // In 5ms, 3.0 GHz CPU cycles = 3,000,000,000 * 0.005 = 15,000,000 cycles.
+    // 3. Verify TSC calibration math (simulate 5ms duration on 3.0 GHz CPU, 50,000 HPET ticks).
     let tsc_start = 100_000_000u64;
     let tsc_end = tsc_start + 15_000_000u64;
     let hpet_ticks = 50_000u64;

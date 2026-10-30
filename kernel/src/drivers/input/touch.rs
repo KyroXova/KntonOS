@@ -1,14 +1,6 @@
-//! Capacitive Touch Controller Driver & Multi-Point Digitizer Subsystem.
-//!
-//! Provides precision multi-touch tracking for handheld gaming PC displays:
-//! - Up to 10 simultaneous capacitive contact points (`TouchContact`)
-//! - Raw ADC coordinate normalization to display resolution (e.g. 1280x800, 1920x1080)
-//! - Contact geometry tracking (major/minor ellipse axes, pressure 0..255)
-//! - Temporal low-pass jitter smoothing and per-finger velocity/acceleration tracking ($v_x, v_y, a_x, a_y$)
+//! Capacitive touch controller driver and multi-point digitizer subsystem.
 
-// -----------------------------------------------------------------------------
-// Constants and Configuration
-// -----------------------------------------------------------------------------
+// Constants and configuration.
 
 /// Maximum simultaneous capacitive touch contacts supported by the hardware.
 pub const MAX_TOUCH_CONTACTS: usize = 10;
@@ -96,9 +88,7 @@ impl DigitizerConfig {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Normalized Touch Contact & Frame
-// -----------------------------------------------------------------------------
+// Normalized touch contact and frame.
 
 /// Fully normalized, display-calibrated contact point with kinematic velocity tracking.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -198,9 +188,7 @@ impl TouchFrame {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Temporal Jitter Filter & Kinematic State
-// -----------------------------------------------------------------------------
+// Temporal jitter filter and kinematic state.
 
 /// Internal temporal filter and kinematic history per contact slot.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -226,9 +214,7 @@ impl ContactFilterState {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Touch Digitizer Driver
-// -----------------------------------------------------------------------------
+// Touch digitizer driver.
 
 /// Capacitive touch digitizer controller tracking up to 10 simultaneous contacts
 /// with low-pass jitter smoothing and velocity/acceleration estimation.
@@ -265,9 +251,7 @@ impl TouchDigitizer {
         }
     }
 
-    /// Ingests a raw hardware digitizer report containing up to 10 touch points,
-    /// performs coordinate normalization, applies temporal jitter filtering, and computes
-    /// per-finger velocities and accelerations.
+    /// Ingests raw hardware digitizer report, normalizes coordinates, filters jitter, and computes kinematics.
     pub fn process_raw_frame(
         &mut self,
         timestamp_us: u64,
@@ -433,9 +417,7 @@ impl TouchDigitizer {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Unit Tests & Verification
-// -----------------------------------------------------------------------------
+// Unit tests and verification.
 
 /// Unit test verifying capacitive touch digitizer driver and 10-point contact tracker.
 pub fn verify_touch_digitizer_and_10_point_tracking() -> bool {
@@ -581,10 +563,7 @@ pub fn verify_touch_jitter_filter_and_kinematics() -> bool {
         prev_filtered = cj.filtered_x;
     }
 
-    // 3. Constant Velocity Translation
-    // Move along X at 500 px/sec.
-    // In 1280 display width: 500 px/s = 500 / 1280 * 4095 ~ 1600 raw units/sec
-    // In 20ms (20,000 us), delta_x = 10 px = 10 / 1280 * 4095 ~ 32 raw units
+    // Constant velocity translation test (500 px/sec along X axis).
     let mut raw_x = 2000u16;
     let mut t = 200_000u64;
     for _ in 0..15 {

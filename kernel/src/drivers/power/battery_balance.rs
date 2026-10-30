@@ -1,11 +1,4 @@
-//! Unified Handheld PC Dual-Battery Balance Manager & Fast USB-PD 3.1 Extended Power Profile Engine.
-//!
-//! Provides bare-metal power architecture for high-TDP handheld gaming PCs featuring:
-//! - Dual-battery cell balancing architecture (Cell 1 & Cell 2 active balancing).
-//! - SMBus / I2C multi-cell fuel gauge telemetry (BQ40Z50 / MAX17320 style).
-//! - Active cell load-balancing, State-of-Charge (SoC) estimation, and thermal-throttled charge curves.
-//! - Pass-through bypass power mode (wall power directly driving APU without cycling battery).
-//! - USB-PD 3.1 Extended Power Range (EPR) contract negotiator supporting up to 140W (28V @ 5A).
+//! Handheld PC dual-battery balance manager and USB-PD 3.1 power engine.
 
 /// Hardware I2C / SMBus fuel gauge and charge controller register definitions.
 pub mod registers {

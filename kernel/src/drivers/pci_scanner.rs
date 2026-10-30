@@ -1,7 +1,4 @@
 //! Full PCI Configuration Space Bus Scanner and Device Discovery.
-//!
-//! Scans PCI hierarchy (buses, slots, functions) via configuration space ports 0xCF8 / 0xCFC,
-//! recording Vendor IDs, Device IDs, Class codes, Base Address Registers (BARs), and IRQ lines.
 
 use alloc::vec::Vec;
 use super::pci_db::{pci_class_name, pci_progif_name, pci_subclass_name, pci_vendor_name};

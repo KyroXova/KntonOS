@@ -1,14 +1,6 @@
-//! Handheld Ambient Light Sensor (ALS) I2C / ACPI HID Driver & Lux EMA Filtering.
-//!
-//! Provides ambient illuminance acquisition, classification, and noise dampening:
-//! - ACPI HID (Usage 0x0041) & I2C sensor interfaces
-//! - Illuminance range 0 to 100,000+ Lux
-//! - 6-tier ambient lighting categorization (Pitch Dark to Direct Sunlight)
-//! - Fixed-point Exponential Moving Average (EMA) filter with transient shadow rejection
+//! Handheld Ambient Light Sensor (ALS) driver and lux EMA filtering.
 
-// -----------------------------------------------------------------------------
-// Ambient Lighting Categories & Hardware Interface
-// -----------------------------------------------------------------------------
+// Ambient lighting categories and hardware interface.
 
 /// Hardware interface through which the ALS communicates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,9 +44,7 @@ impl LuxCategory {
     }
 }
 
-// -----------------------------------------------------------------------------
-// ALS Driver & Fixed-Point Exponential Moving Average (EMA) Filter
-// -----------------------------------------------------------------------------
+// ALS driver and fixed-point exponential moving average (EMA) filter.
 
 /// Ambient Light Sensor driver instance with noise filtering.
 #[derive(Debug, Clone)]
@@ -127,9 +117,7 @@ impl AlsDriver {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Unit Tests & Verification
-// -----------------------------------------------------------------------------
+// Unit tests and verification.
 
 /// Unit test verifying ALS driver initialization, lux tier classification, and EMA smoothing.
 pub fn verify_als_driver_and_lux_filter() -> bool {

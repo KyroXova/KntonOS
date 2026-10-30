@@ -1,7 +1,4 @@
-//! ACPI (Advanced Configuration and Power Interface) RSDP/XSDT & MADT Parser.
-//!
-//! Discovers multi-core symmetric multiprocessing (SMP) topology, Local APIC base addresses,
-//! and I/O APIC routing tables from system firmware ACPI structures.
+//! ACPI RSDP/XSDT and MADT parser for SMP topology and interrupt routing.
 
 use alloc::vec::Vec;
 use crate::serial_write_str;

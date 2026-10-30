@@ -1,21 +1,9 @@
-//! PCIe Function-Level Reset (FLR) & Link Re-initialization Subsystem.
-//!
-//! Implements PCIe Base Specification Function-Level Reset (FLR) sequence:
-//! 1. Capabilities pointer traversal and PCIe capability structure discovery (Cap ID 0x10).
-//! 2. FLR capability verification in Device Capabilities register (DevCap bit 28).
-//! 3. Pre-reset quiescence: Bus Master Enable (BME) deassertion and Transactions Pending drain.
-//! 4. Device Control register FLR triggering (DevCtl bit 15).
-//! 5. Hardware quiescence delay (>= 100ms per PCIe specification).
-//! 6. Post-reset device responsiveness polling (Vendor ID recovery).
-//! 7. PCI configuration space state restoration (BARs, Command, MSI/Interrupts).
-//! 8. Link status re-verification (Link Active, Width, Speed).
+//! PCIe Function-Level Reset (FLR) and link re-initialization subsystem.
 
 use crate::arch::x86_64::{monotonic_sleep_ns, monotonic_time_ms};
 use crate::drivers::pci_scanner::PciScanner;
 
-// -----------------------------------------------------------------------------
-// PCI / PCIe Configuration Space Constants
-// -----------------------------------------------------------------------------
+// PCI / PCIe configuration space constants.
 
 /// Standard PCI Configuration Header Offsets
 pub const PCI_VENDOR_ID_OFFSET: u8 = 0x00;
@@ -70,9 +58,7 @@ pub const FLR_QUIESCENCE_TIMEOUT_MS: u64 = 100;
 pub const FLR_MANDATED_RESET_DELAY_MS: u64 = 100;
 pub const FLR_POLL_TIMEOUT_MS: u64 = 1000;
 
-// -----------------------------------------------------------------------------
-// PCIe FLR Data Types & State Tracking
-// -----------------------------------------------------------------------------
+// PCIe FLR data types and state tracking.
 
 /// Preserved PCI configuration space state restored after hardware FLR.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,9 +133,7 @@ pub enum PcieResetError {
     ConfigRestoreFailed,
 }
 
-// -----------------------------------------------------------------------------
-// PCIe FLR Hardware Controller
-// -----------------------------------------------------------------------------
+// PCIe FLR hardware controller.
 
 pub struct PcieFlrManager;
 
@@ -376,9 +360,7 @@ impl PcieFlrManager {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Emulated / Mock PCIe Configuration Space for Verification Suite
-// -----------------------------------------------------------------------------
+// Emulated PCIe configuration space for verification suite.
 
 /// Deterministic mock PCIe device configuration space for verifying FLR transitions.
 #[derive(Debug, Clone)]

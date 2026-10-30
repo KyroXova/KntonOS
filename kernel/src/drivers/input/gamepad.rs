@@ -1,17 +1,8 @@
-//! High-Performance 1000Hz Gamepad Input Pipeline with Deadzone Shaping & Trigger Normalization.
-//!
-//! Provides esports-grade gamepad processing at up to 1000Hz (1ms polling):
-//! - Bitwise button state management with edge detection (just pressed, just released)
-//! - Circular and axial analog stick deadzone shaping with exponential curve scaling
-//! - Trigger normalization with configurable inner/outer deadzones and digital actuation
-//! - 1000Hz jitter and polling rate diagnostics
-//! - Integrated 6-axis IMU gyro-aiming calculations and haptic feedback control
+//! High-performance 1000Hz gamepad input pipeline with deadzone shaping and trigger normalization.
 
 use super::imu::{atan2_f32, sqrt_f32, Quaternion, RawImuSample, SensorFusion, Vector3};
 
-// -----------------------------------------------------------------------------
-// Button Bitflags
-// -----------------------------------------------------------------------------
+// Button bitflags.
 
 /// Bitmask constants representing physical gamepad buttons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -90,9 +81,7 @@ impl GamepadButtons {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Deadzone & Stick Shaping
-// -----------------------------------------------------------------------------
+// Deadzone and stick shaping.
 
 /// Deadzone calculation geometry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -229,9 +218,7 @@ pub struct AnalogStick {
     pub angle_rad: f32,
 }
 
-// -----------------------------------------------------------------------------
-// Trigger Normalization
-// -----------------------------------------------------------------------------
+// Trigger normalization.
 
 /// Analog trigger deadzone configuration.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -300,9 +287,7 @@ pub struct AnalogTrigger {
     pub is_clicked: bool,
 }
 
-// -----------------------------------------------------------------------------
-// Haptic & Rumble Feedback
-// -----------------------------------------------------------------------------
+// Haptic and rumble feedback.
 
 /// Dual-motor and trigger haptic rumble feedback command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -337,9 +322,7 @@ impl HapticFeedback {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Raw Report & Processed State
-// -----------------------------------------------------------------------------
+// Raw report and processed state.
 
 /// Raw input report packet received directly from USB HID or Bluetooth controller endpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -391,9 +374,7 @@ pub struct GamepadState {
     pub timestamp_us: u64,
 }
 
-// -----------------------------------------------------------------------------
-// 1000Hz Input Pipeline Engine
-// -----------------------------------------------------------------------------
+// 1000Hz input pipeline engine.
 
 /// High-performance 1000Hz Gamepad Input Pipeline.
 pub struct GamepadPipeline {
@@ -536,17 +517,13 @@ impl GamepadPipeline {
     }
 
     /// Calculates motion aiming crosshair delta (dx, dy) in pixels from IMU angular rate.
-    ///
-    /// Uses yaw rate for horizontal aiming and pitch rate for vertical aiming.
     pub fn calculate_gyro_aiming(&self, state: &GamepadState, dt: f32) -> (f32, f32) {
         if !self.gyro_aiming_enabled {
             return (0.0, 0.0);
         }
 
         if let Some(gyro) = state.imu_angular_rate {
-            // Gyroscope angular rate in rad/s:
-            // Yaw rate (Z or Y depending on controller grip) -> horizontal aim
-            // Pitch rate (X) -> vertical aim
+            // Gyroscope angular rate: yaw for horizontal aim, pitch for vertical aim.
             let dx = -gyro.z * self.gyro_sensitivity * dt * 1000.0;
             let dy = -gyro.x * self.gyro_sensitivity * dt * 1000.0;
             (dx, dy)

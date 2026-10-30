@@ -1,9 +1,4 @@
-//! Hardware-Synchronized Cyclic DMA Audio Ring Buffer and Streamer Subsystem.
-//!
-//! Provides zero-latency cyclic DMA audio ring buffer descriptors matching
-//! Intel High Definition Audio (HDA) / AC97 Buffer Descriptor Lists (BDL),
-//! cyclic hardware position reporting, period interrupt progression tracking,
-//! and xrun (overrun/underrun) detection.
+//! Cyclic DMA audio ring buffer and streamer subsystem.
 
 pub const MAX_RING_PERIODS: usize = 32;
 
@@ -365,9 +360,6 @@ pub fn verify_streamer_ring_buffer() -> bool {
 }
 
 /// Fixed-point 16.16 linear interpolation sample rate converter (SRC).
-///
-/// Converts arbitrary audio sample rates (such as 44.1 kHz CD audio) into the
-/// native 48.0 kHz hardware codec presentation rate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LinearSampleRateConverter {
     pub in_sample_rate: u32,
@@ -503,11 +495,7 @@ pub fn verify_src_and_latency_pipeline() -> bool {
         }
     }
 
-    // 3. Sub-2ms deterministic latency pipeline verification
-    // At 48 kHz stereo 16-bit (4 bytes per frame):
-    // 1 ms = 48 frames = 192 bytes
-    // 2 ms = 96 frames = 384 bytes
-    // A ring buffer configured with period size <= 96 frames guarantees sub-2ms hardware interrupt presentation
+    // Verify sub-2ms deterministic latency pipeline at 48 kHz stereo 16-bit.
     let period_frames = 64; // 1.33 ms period
     let period_bytes = period_frames * 4; // 256 bytes
     let total_periods = 4;

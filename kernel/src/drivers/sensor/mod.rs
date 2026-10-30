@@ -8,10 +8,7 @@ pub use als::*;
 pub use brightness::*;
 pub use imu_fusion::*;
 
-/// Comprehensive verification self-test suite for Handheld Ambient Light Sensor (ALS)
-/// and HDR Auto-Brightness / Contrast Governor.
-///
-/// Emits sentinel [KNT-ALS-BRIGHTNESS-PASS] upon successful validation.
+/// Verification self-test suite for Handheld Ambient Light Sensor (ALS) and HDR governor.
 pub fn test_als_and_brightness_subsystem() -> bool {
     // 1. Verify ALS hardware interface, lux categorization, and EMA noise filter
     if !verify_als_driver_and_lux_filter() {

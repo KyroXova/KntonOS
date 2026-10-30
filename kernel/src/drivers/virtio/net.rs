@@ -1,9 +1,4 @@
 //! VirtIO Network Device Driver (virtio-net) and Packet Ring Buffer.
-//!
-//! Implements OASIS VirtIO 1.0+ network device specifications:
-//! - Standard 12-byte VirtioNetHeader with checksum and segmentation offloads
-//! - Dual Virtqueue architecture (Queue 0: Receive / RX, Queue 1: Transmit / TX)
-//! - Pre-allocated DMA receive buffer pools and zero-copy packet dispatch
 
 use super::pci::PciDevice;
 use super::virtqueue::{Virtqueue, VIRTQ_DESC_F_NEXT, VIRTQ_DESC_F_WRITE};

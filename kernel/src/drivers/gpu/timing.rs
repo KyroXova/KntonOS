@@ -1,8 +1,4 @@
-//! Dynamic VBLANK Presentation Timing & Frame Pacing Engine.
-//!
-//! Provides nanosecond-precision line timing, frame duration calculations,
-//! hardware VBLANK interrupt tracking, dynamic front-porch modulation,
-//! and frame presentation pacing queues.
+//! Dynamic VBLANK presentation timing and frame pacing engine.
 
 extern crate alloc;
 use alloc::vec::Vec;
@@ -71,9 +67,7 @@ pub fn calculate_target_vtotal(clock_khz: u32, htotal: u32, target_duration_ns: 
     ((target_duration_ns + line_time / 2) / line_time) as u32
 }
 
-// -----------------------------------------------------------------------------
-// Hardware VBLANK Interrupt Tracking
-// -----------------------------------------------------------------------------
+// Hardware VBLANK Interrupt Tracking.
 
 /// State tracker for hardware VBLANK interrupts, intervals, and drift monitoring.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -138,9 +132,7 @@ impl VblankTracker {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Vertical Front-Porch Duration Modulator
-// -----------------------------------------------------------------------------
+// Vertical Front-Porch Duration Modulator.
 
 /// Computes the exact vertical front-porch extension lines needed for dynamic VRR frame duration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -192,9 +184,7 @@ impl FrontPorchModulator {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Frame Pacing Queue
-// -----------------------------------------------------------------------------
+// Frame Pacing Queue.
 
 /// Paced presentation frame candidate queued for hardware scanout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -316,9 +306,7 @@ impl FramePacingQueue {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Unit Verification for VBLANK Tracking & Frame Pacing
-// -----------------------------------------------------------------------------
+// Unit Verification for VBLANK Tracking & Frame Pacing.
 
 /// Unit test verifying hardware VBLANK interrupt tracking, front-porch modulation, and frame pacing queue.
 pub fn verify_vblank_tracking_and_pacing() -> bool {

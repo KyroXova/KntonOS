@@ -1,7 +1,4 @@
 //! Standard USB Descriptor Parser & HID Boot Protocol Decoder for KntonOS.
-//!
-//! Implements USB 2.0/3.0 descriptor decoders (Device, Configuration, Interface,
-//! Endpoint, HID) and standard HID Boot Protocol parsers for Mouse and Keyboard.
 
 use alloc::vec::Vec;
 

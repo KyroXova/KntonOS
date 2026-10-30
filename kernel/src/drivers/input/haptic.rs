@@ -1,15 +1,9 @@
-//! Kernel-Direct Dual-Motor Rumble Controller & Playback Sequence Queue.
-//!
-//! Controls low-frequency (LF / heavy mass) and high-frequency (HF / light mass)
-//! gamepad rumble motors, manages active vibration step sequences, executes
-//! real-time timeline mixing, and evaluates motor output values (0-255).
+//! Dual-motor rumble controller and playback sequence queue.
 
 use alloc::vec::Vec;
 use crate::drivers::input::waveform::WaveformSynthesizer;
 
-// -----------------------------------------------------------------------------
-// Dual-Motor State & Step Sequence
-// -----------------------------------------------------------------------------
+// Dual-motor state and step sequence.
 
 /// Output vibration intensity for dual-motor gamepads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -103,9 +97,7 @@ impl RumbleEffectStep {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Playback Sequence Queue & Controller
-// -----------------------------------------------------------------------------
+// Playback sequence queue and controller.
 
 /// Maximum concurrent active rumble effects allowed in playback queue.
 pub const MAX_RUMBLE_QUEUE_CAPACITY: usize = 16;
@@ -191,13 +183,9 @@ impl DualMotorRumbleController {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Unit Tests & Verification
-// -----------------------------------------------------------------------------
+// Unit tests and verification.
 
-// -----------------------------------------------------------------------------
-// USB HID & Gamepad Force Feedback Report Framing
-// -----------------------------------------------------------------------------
+// USB HID and gamepad force feedback report framing.
 
 /// Wire protocol for gamepad force feedback / vibration output report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -210,16 +198,7 @@ pub enum HapticReportProtocol {
     PlayStationDs,
 }
 
-/// Standard Xbox GIP Haptic Output Report (Report ID 0x09).
-/// Format:
-/// [0]: Report ID (0x09)
-/// [1]: Sub-command / flags (0x00)
-/// [2]: Left trigger motor (0-255)
-/// [3]: Right trigger motor (0-255)
-/// [4]: Left main LF motor (0-255)
-/// [5]: Right main HF motor (0-255)
-/// [6]: Duration in 10ms increments (0 = continuous)
-/// [7]: Delay in 10ms increments
+/// Standard Xbox GIP haptic output report (Report ID 0x09).
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct XboxHapticReport {
@@ -317,12 +296,7 @@ impl HapticReportFormatter {
                 if out_buf.len() < 10 {
                     return 0;
                 }
-                // DualSense / DS4 compatible rumble frame
-                // [0] = 0x05 (Report ID)
-                // [1] = 0x07 (Motor flag enable)
-                // [2] = 0x00
-                // [3] = Weak HF motor (right)
-                // [4] = Strong LF motor (left)
+                // DualSense / DS4 compatible rumble frame.
                 out_buf[0] = 0x05;
                 out_buf[1] = 0x07;
                 out_buf[2] = 0x00;
@@ -392,9 +366,7 @@ pub fn verify_dual_motor_controller() -> bool {
         return false;
     }
 
-    // Step 2: Advance past 50ms duration (advance by 50ms => total elapsed = 55ms, finished)
-    // The update will sample (at elapsed=5ms), then advance by 50ms to 55ms, marking it finished
-    // and removing it from active_effects.
+    // Advance past 50ms duration and verify effect completion.
     let _ = controller.update(50);
     // A subsequent update samples with an empty queue, returning off
     let motors_end = controller.update(5);

@@ -1,19 +1,10 @@
-//! Gyroscopic Aiming Subsystem & Natural Sensitivity Scale Integrator.
-//!
-//! Provides high-precision gyro aiming for handheld gaming PCs (Steam Deck, ROG Ally, Legion Go):
-//! - Pitch / Yaw angular velocity integration with sub-pixel delta accumulation
-//! - Natural Sensitivity Scale (NSS - 1:1 real-world angular to in-game pixel ratio)
-//! - Capacitive touch thumbstick / touchpad and analog trigger ADS activation modes
-//! - Automatic stationary zero-bias calibration drift removal
-//! - Sub-pixel fraction preservation eliminating micro-movement truncation
+//! Gyroscopic aiming subsystem and natural sensitivity scale integrator.
 
 use crate::drivers::input::imu::PI;
 
 pub const TWO_PI: f32 = PI * 2.0;
 
-// -----------------------------------------------------------------------------
-// Natural Sensitivity Scale & Configuration
-// -----------------------------------------------------------------------------
+// Natural sensitivity scale and configuration.
 
 /// Default calibration: 3600 mouse counts per full 360° revolution (10 counts per degree).
 pub const DEFAULT_DOTS_PER_REVOLUTION: f32 = 3600.0;
@@ -113,9 +104,7 @@ impl GyroAimConfig {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Zero-Bias Auto-Calibration & Angular Velocity Integrator
-// -----------------------------------------------------------------------------
+// Zero-bias auto-calibration and angular velocity integrator.
 
 /// Automatic stationary zero-bias calibrator to eliminate IMU temperature drift.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -242,7 +231,6 @@ impl GyroAimIntegrator {
     }
 
     /// Integrates calibrated angular velocity (rad/s) over timestep `dt_sec` and outputs integer mouse deltas (dx, dy).
-    ///
     /// `gyro_rad_per_sec`: `(pitch_x, yaw_y, roll_z)`.
     pub fn integrate(&mut self, gyro_rad_per_sec: (f32, f32, f32), dt_sec: f32) -> (i32, i32) {
         let (raw_pitch, raw_yaw, raw_roll) = gyro_rad_per_sec;
@@ -289,18 +277,14 @@ impl GyroAimIntegrator {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Unit Tests & Verification
-// -----------------------------------------------------------------------------
+// Unit tests and verification.
 
 /// Unit test verifying gyro angular velocity integration, sub-pixel residual preservation, and Natural Sensitivity Scale.
 pub fn verify_gyro_angular_velocity_and_natural_sensitivity() -> bool {
     let config = GyroAimConfig::default_handheld();
     let mut integrator = GyroAimIntegrator::new(config);
 
-    // 1. Verify 1:1 Natural Sensitivity Scale
-    // Rotating at 1.0 rad/s yaw for 1.0 second with 3600 dots/rev (3600 / 2*PI dots/rad):
-    // Expected pixels = 1.0 * (3600 / 2*PI) * 1.0 = ~572.9578 pixels
+    // 1. Verify 1:1 natural sensitivity scale (1.0 rad/s yaw for 1.0s @ 3600 dots/rev).
     let (dx1, dy1) = integrator.integrate((0.0, 1.0, 0.0), 1.0);
     if dx1 != 572 || dy1 != 0 {
         return false;
@@ -310,9 +294,7 @@ pub fn verify_gyro_angular_velocity_and_natural_sensitivity() -> bool {
         return false;
     }
 
-    // 2. Verify sub-pixel accumulation across fine micro-movements
-    // Small rotational speed: 0.005 rad/s over 0.01s (10ms frame):
-    // delta_rad = 0.00005 rad. scale = ~572.96 -> delta_pixels = ~0.0286 pixels/frame
+    // 2. Verify sub-pixel accumulation across fine micro-movements (0.005 rad/s over 10ms).
     integrator.reset();
     let mut accumulated_dx = 0;
     // Over 100 frames (1 second total at 0.05 rad/s):
@@ -429,9 +411,7 @@ pub fn verify_activation_modes_and_calibration() -> bool {
     true
 }
 
-// -----------------------------------------------------------------------------
-// Multi-Axis Gyroscope Zero-Drift & Motion Aiming Governor (TASK-KNT-131)
-// -----------------------------------------------------------------------------
+// Multi-axis gyroscope zero-drift and motion aiming governor.
 
 /// Conversion factor: Degrees to Radians.
 pub const DEG2RAD: f32 = PI / 180.0;
@@ -718,9 +698,7 @@ pub fn verify_stationary_drift_calibration() -> bool {
     true
 }
 
-// -----------------------------------------------------------------------------
-// Pure no_std Fast Math Approximations for Curve Calculation
-// -----------------------------------------------------------------------------
+// Fast math approximations for curve calculation.
 
 /// Fast natural logarithm approximation for positive f32.
 pub fn ln_f32(x: f32) -> f32 {
@@ -762,9 +740,7 @@ pub fn powf_f32(base: f32, exp: f32) -> f32 {
     exp_f32(exp * ln_f32(base))
 }
 
-// -----------------------------------------------------------------------------
-// Motion Aiming Governor & Auto-Centering Ratchet
-// -----------------------------------------------------------------------------
+// Motion aiming governor and auto-centering ratchet.
 
 /// Motion aiming governor handling sensitivity curve mapping, tremor deadzone suppression,
 /// flick angular acceleration, and yaw auto-centering ratcheting during thumbstick panning.
@@ -794,10 +770,7 @@ impl MotionAimingGovernor {
         }
     }
 
-    /// Evaluates transfer function for a single angular velocity axis in °/s.
-    ///
-    /// Applies tremor deadzone clamping, curve translation (Linear, Exponential, DualZone),
-    /// and speed-dependent angular flick acceleration.
+    /// Evaluates transfer function for a single angular velocity axis in degrees/second.
     pub fn apply_transfer_function(&self, speed_dps: f32) -> f32 {
         let abs_speed = speed_dps.abs();
         if abs_speed <= self.profile.tremor_deadzone_dps {
@@ -835,10 +808,7 @@ impl MotionAimingGovernor {
         }
     }
 
-    /// Updates the auto-centering ratchet governor based on right analog stick deflection.
-    ///
-    /// When the player holds a large stick turn (|right_stick_x| >= ratchet_threshold),
-    /// the gyro yaw angle is smoothly ratcheted back toward zero to relieve wrist strain.
+    /// Updates auto-centering ratchet governor based on right analog stick deflection.
     pub fn update_ratchet(&mut self, right_stick_x: f32, dt_sec: f32) -> bool {
         if right_stick_x.abs() >= self.ratchet_threshold {
             self.is_ratcheting = true;
@@ -856,7 +826,6 @@ impl MotionAimingGovernor {
     }
 
     /// Processes an input angular velocity frame, updating yaw integration and auto-centering.
-    ///
     /// Returns compensated and curved angular velocity: `(pitch_dps, yaw_dps)`.
     pub fn process_motion(
         &mut self,

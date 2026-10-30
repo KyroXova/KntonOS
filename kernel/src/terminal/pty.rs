@@ -1,10 +1,4 @@
-//! Pseudoterminal (PTY) Master/Slave Multiplexer & Line Discipline.
-//!
-//! Implements POSIX / Linux compatible PTY pairs (/dev/ptmx master, /dev/pts/N slave):
-//! - Termios configuration (c_iflag, c_oflag, c_cflag, c_lflag, c_cc)
-//! - Canonical mode line discipline with interactive line editing (backspace, line-kill ^U, EOF ^D)
-//! - Raw mode transparent byte-stream passthrough
-//! - PTY master/slave bidirectional data queues and multiplexer
+//! Pseudoterminal (PTY) master/slave multiplexer and line discipline.
 
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::format;

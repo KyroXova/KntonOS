@@ -1,17 +1,4 @@
-//! Unified Handheld PC Dual-IMU Dead Reckoning & Motion Drift Eliminator.
-//!
-//! Implements a 1000 Hz dual-IMU sensor fusion engine for handheld gaming PCs
-//! featuring spatially separated 6-axis inertial sensors (Left Grip and Right Grip).
-//!
-//! In handheld gaming devices (Steam Deck, ROG Ally, Ayaneo), single-IMU tracking suffers
-//! from rotational lever-arm artifacts, high common-mode thermal bias drift, and rapid
-//! dead reckoning divergence. By deploying dual 6-axis IMUs on opposite sides of the chassis,
-//! the fusion engine:
-//! - Separates true linear chassis acceleration from angular centripetal/tangential components.
-//! - Eliminates uncorrelated thermal sensor noise through multi-sensor averaging.
-//! - Isolates the 1g gravity vector from dynamic user movements via quaternion kinematics.
-//! - Implements Zero-Velocity Updates (ZUPT) and leaky velocity damping for drift-free
-//!   sub-millimeter motion tracking and gyro aiming.
+//! Handheld PC dual-IMU dead reckoning and motion drift eliminator.
 
 use crate::graphics::{cos_f32, sin_f32, sqrt_f32};
 use crate::drivers::input::imu::{asin_f32, atan2_f32};
@@ -317,9 +304,7 @@ pub fn verify_dual_imu_topology_and_quaternions() -> bool {
     true
 }
 
-// -----------------------------------------------------------------------------
-// Commit 2: Complementary & EKF Dual-IMU Sensor Fusion & Gravity Isolation
-// -----------------------------------------------------------------------------
+// Dual-IMU sensor fusion and gravity isolation.
 
 /// Fused dual-IMU kinematics at a single 1000 Hz discrete time step.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -390,9 +375,7 @@ impl DualImuFusionFilter {
             (left.gyro_rad_s[2] + right.gyro_rad_s[2]) * 0.5 - self.gyro_bias[2],
         ];
 
-        // 2. Dual-IMU Accelerometer Averaging & Lever-Arm Cancellation:
-        // Because left lever arm r_L = [-d/2, 0, 0] and right r_R = [+d/2, 0, 0],
-        // centripetal and tangential rotational accelerations cancel out identically!
+        // Dual-IMU accelerometer averaging and lever-arm rotational cancellation.
         let proper_accel = [
             (left.accel_mss[0] + right.accel_mss[0]) * 0.5 - self.accel_bias[0],
             (left.accel_mss[1] + right.accel_mss[1]) * 0.5 - self.accel_bias[1],
@@ -514,10 +497,7 @@ pub fn verify_dual_imu_fusion_and_gravity_isolation() -> bool {
         return false;
     }
 
-    // 2. Dual-IMU Lever-Arm Cancellation during Handheld Yaw Rotation:
-    // When rotating around Z at omega_z = 2.0 rad/s:
-    // Left grip (x = -0.14m): centripetal accel = +omega^2 * 0.14 = +0.56 m/s^2 along X
-    // Right grip (x = +0.14m): centripetal accel = -omega^2 * 0.14 = -0.56 m/s^2 along X
+    // Dual-IMU lever-arm cancellation during handheld yaw rotation (omega_z = 2.0 rad/s).
     let mut s_left_rot = s_left;
     s_left_rot.accel_mss[0] = 0.56;
     s_left_rot.gyro_rad_s[2] = 2.0;
@@ -540,9 +520,7 @@ pub fn verify_dual_imu_fusion_and_gravity_isolation() -> bool {
     true
 }
 
-// -----------------------------------------------------------------------------
-// Commit 3: Zero-Velocity Update (ZUPT) & Sub-Millimeter Dead Reckoning Tracker
-// -----------------------------------------------------------------------------
+// Zero-Velocity Update (ZUPT) and dead reckoning tracker.
 
 /// Zero-Velocity Update (ZUPT) detector state machine.
 #[derive(Debug, Clone, Copy, PartialEq)]

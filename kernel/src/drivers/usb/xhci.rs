@@ -1,8 +1,4 @@
 //! USB 3.0 Extensible Host Controller Interface (xHCI) Driver & Discovery.
-//!
-//! Provides xHCI Host Controller PCI discovery, capability register decoding (CAPLENGTH,
-//! HCIVERSION, HCSPARAMS, HCCPARAMS), operational register MMIO base mapping, Command Ring &
-//! Event Ring TRB processing, and Device Context structures (DCBAA, Slot Context, Endpoint Context).
 
 use crate::drivers::pci_scanner::PciDevice;
 

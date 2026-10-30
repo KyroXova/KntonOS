@@ -40,9 +40,7 @@ pub fn test_backlight_pwm_subsystem() -> bool {
 }
 
 
-/// Verification self-test suite for Unified Handheld PC USB-C DisplayPort Alternate Mode & Hot-Plug Modeset Daemon.
-///
-/// Emits sentinel [KNT-DISPLAY-DP-PASS] upon successful validation.
+/// Verification self-test suite for USB-C DisplayPort Alternate Mode and hot-plug daemon.
 pub fn test_dp_alt_mode_subsystem() -> bool {
     serial_write_str("[KNT-DISPLAY] Testing USB-C DisplayPort Alternate Mode & Hot-Plug Modeset Daemon...\r\n");
 

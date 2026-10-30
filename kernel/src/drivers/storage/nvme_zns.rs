@@ -1,10 +1,4 @@
 //! NVMe Zoned Namespaces (ZNS) Device Subsystem & Sequential Zone State Machine.
-//!
-//! Implements modern NVMe Zoned Namespaces (ZNS TP 4053 / NVMe 2.0 Command Set):
-//! - Sequential Write Required (SWR) zone geometry layout
-//! - Standard ZNS Zone State Machine (Empty, Implicitly Opened, Explicitly Opened, Closed, Full, Read Only, Offline)
-//! - Active and Open zone capacity limit tracking and resource governance
-//! - Zone Management Send and Receive command entry construction
 
 #![allow(dead_code)]
 
@@ -12,9 +6,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 use crate::drivers::storage::nvme::NvmeSubmissionEntry;
 
-// -----------------------------------------------------------------------------
-// ZNS Command Opcodes & Action Definitions
-// -----------------------------------------------------------------------------
+// ZNS Command Opcodes & Action Definitions.
 
 /// NVMe ZNS Command Opcodes.
 pub const NVME_ZNS_MANAGEMENT_SEND: u8 = 0x79;
@@ -54,9 +46,7 @@ pub enum ZoneState {
     Offline = 0x0F,
 }
 
-// -----------------------------------------------------------------------------
-// Zone Descriptor
-// -----------------------------------------------------------------------------
+// Zone Descriptor.
 
 /// Descriptor tracking physical geometry, write pointer, and runtime state of a zone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,9 +113,7 @@ impl ZoneDescriptor {
     }
 }
 
-// -----------------------------------------------------------------------------
-// ZNS Namespace & Zone State Machine
-// -----------------------------------------------------------------------------
+// ZNS Namespace & Zone State Machine.
 
 /// In-kernel NVMe Zoned Namespace device abstraction.
 #[derive(Debug, Clone)]
@@ -283,9 +271,7 @@ impl ZnsNamespace {
     }
 }
 
-// -----------------------------------------------------------------------------
-// NVMe ZNS Command Submission Builders
-// -----------------------------------------------------------------------------
+// NVMe ZNS Command Submission Builders.
 
 /// Constructs an NVMe Zone Management Send submission entry.
 pub fn build_zone_management_send(
@@ -325,9 +311,7 @@ pub fn build_zone_management_receive(
 }
 
 
-// -----------------------------------------------------------------------------
-// Zone Append Command Queue & Multi-Writer Dispatcher
-// -----------------------------------------------------------------------------
+// Zone Append Command Queue & Multi-Writer Dispatcher.
 
 /// Status of an asynchronous Zone Append operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -486,9 +470,7 @@ impl ZoneAppendQueue {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Active Zone Capacity Tracker & Governor
-// -----------------------------------------------------------------------------
+// Active Zone Capacity Tracker & Governor.
 
 /// Active zone capacity tracker ensuring active/open zone limits and capacity monitoring.
 #[derive(Debug, Default, Clone, Copy)]
@@ -571,14 +553,9 @@ impl ActiveZoneCapacityTracker {
 }
 
 
-// -----------------------------------------------------------------------------
-// Subsystem Verification Self-Test
-// -----------------------------------------------------------------------------
+// Subsystem Verification Self-Test.
 
-/// Comprehensive verification self-test suite for Kernel-Direct NVMe ZNS (Zoned Namespaces)
-/// and Hardware Copy Offload Engine.
-///
-/// Emits sentinel [KNT-NVME-ZNS-PASS] upon successful validation.
+/// Verification self-test suite for Kernel-Direct NVMe ZNS and Hardware Copy Offload Engine.
 pub fn test_nvme_zns_subsystem() -> bool {
     use crate::drivers::storage::copy_offload::{
         NvmeCopyOffloadEngine, NvmeCopyRangeDescriptor, NVME_NVM_COPY,

@@ -1,7 +1,4 @@
-//! Anonymous Pipe IPC Channel & Lockless FIFO Byte Ring for Shell Pipelines.
-//!
-//! Connects output streams of pipeline stage N to input streams of stage N+1
-//! with buffered writes, bounded FIFO capacity, and EOF signaling.
+//! Anonymous pipe IPC channel and FIFO byte ring for shell pipelines.
 
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;

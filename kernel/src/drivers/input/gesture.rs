@@ -1,11 +1,4 @@
-//! Multi-Finger Gesture Recognition Engine & Edge-Swipe Detector.
-//!
-//! Provides kernel-level touch gesture interpretation for handheld gaming PCs:
-//! - Taps: SingleTap, DoubleTap, LongPress (>500ms)
-//! - Pan & Inertial Momentum: 1-finger drag, 2-finger scroll, Fling velocity
-//! - Transformation: 2-finger Pinch-to-zoom ($S = d / d_0$) and 2-finger Rotate
-//! - System Task Control: 3-finger swipe (task / window switcher)
-//! - Quick-Access Menus: EdgeSwipe originating within screen borders (Left, Right, Top, Bottom)
+//! Multi-finger gesture recognition engine and edge-swipe detector.
 
 extern crate alloc;
 use alloc::vec::Vec;
@@ -13,9 +6,7 @@ use crate::drivers::input::touch::{TouchContact, TouchFrame, ContactStatus, MAX_
 use crate::drivers::input::imu::atan2_f32;
 use crate::graphics::sqrt_f32;
 
-// -----------------------------------------------------------------------------
-// Gesture Events & Types
-// -----------------------------------------------------------------------------
+// Gesture events and types.
 
 /// Direction of multi-finger swipe or fling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,9 +84,7 @@ pub enum GestureEvent {
     },
 }
 
-// -----------------------------------------------------------------------------
-// Gesture Engine Configuration
-// -----------------------------------------------------------------------------
+// Gesture engine configuration.
 
 /// Configuration thresholds for gesture recognition.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -145,9 +134,7 @@ impl GestureConfig {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Gesture Engine
-// -----------------------------------------------------------------------------
+// Gesture recognition engine.
 
 /// Kernel-level multi-finger gesture recognition engine.
 pub struct GestureEngine {
@@ -577,9 +564,7 @@ impl GestureEngine {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Unit Tests & Verification
-// -----------------------------------------------------------------------------
+// Unit tests and verification.
 
 /// Unit test verifying multi-finger gesture recognition state machine and edge swipe detector.
 pub fn verify_gesture_recognition_and_edge_swipe() -> bool {

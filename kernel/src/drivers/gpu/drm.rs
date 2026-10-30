@@ -1,15 +1,6 @@
-//! Direct Rendering Manager (DRM) and Kernel Mode Setting (KMS) Core Abstractions.
-//!
-//! Implements hardware scanout pipeline components:
-//! - CRTC (timing generator and scanout engine)
-//! - Planes (Primary, Cursor, Hardware Overlay)
-//! - Encoders (pixel format serializing bridges)
-//! - Connectors (physical/virtual display outputs, EDID, connection status)
-//! - Standard VESA/CEA/CTA Video Mode Database (Timing, Modelines, Refreshes)
+//! Direct Rendering Manager (DRM) and Kernel Mode Setting (KMS) abstractions.
 
-// -----------------------------------------------------------------------------
-// DRM Mode Object Types
-// -----------------------------------------------------------------------------
+// DRM Mode Object Types.
 
 pub const DRM_MODE_OBJECT_CRTC: u32 = 0xCCCC_CCCC;
 pub const DRM_MODE_OBJECT_CONNECTOR: u32 = 0xC0C0_C0C0;
@@ -20,9 +11,7 @@ pub const DRM_MODE_OBJECT_FB: u32 = 0xFBFB_FBFB;
 pub const DRM_MODE_OBJECT_BLOB: u32 = 0xBBBB_BBBB;
 pub const DRM_MODE_OBJECT_PLANE: u32 = 0xEEEE_0001;
 
-// -----------------------------------------------------------------------------
-// DRM Capabilities
-// -----------------------------------------------------------------------------
+// DRM Capabilities.
 
 pub const DRM_CAP_DUMB_BUFFER: u64 = 0x1;
 pub const DRM_CAP_VBLANK_HIGH_CRTC: u64 = 0x2;
@@ -32,9 +21,7 @@ pub const DRM_CAP_PRIME: u64 = 0x7;
 pub const DRM_CAP_ADDFB2_MODIFIERS: u64 = 0x10;
 pub const DRM_CAP_ATOMIC: u64 = 0x11;
 
-// -----------------------------------------------------------------------------
-// DRM Format FourCC Codes (Little-Endian)
-// -----------------------------------------------------------------------------
+// DRM Format FourCC Codes (Little-Endian).
 
 pub const DRM_FORMAT_INVALID: u32 = 0;
 pub const DRM_FORMAT_XRGB8888: u32 = 0x3432_5258; // 'X' 'R' '2' '4'
@@ -43,9 +30,7 @@ pub const DRM_FORMAT_XBGR8888: u32 = 0x3432_4258; // 'X' 'B' '2' '4'
 pub const DRM_FORMAT_ABGR8888: u32 = 0x3432_4241; // 'A' 'B' '2' '4'
 pub const DRM_FORMAT_RGB565: u32 = 0x3631_4752;   // 'R' 'G' '1' '6'
 
-// -----------------------------------------------------------------------------
-// Plane Types & Capabilities
-// -----------------------------------------------------------------------------
+// Plane Types & Capabilities.
 
 pub const DRM_PLANE_TYPE_OVERLAY: u32 = 0;
 pub const DRM_PLANE_TYPE_PRIMARY: u32 = 1;
@@ -60,9 +45,7 @@ pub const DRM_MODE_REFLECT_Y: u32 = 1 << 5;
 pub const DRM_MODE_ROTATE_MASK: u32 = DRM_MODE_ROTATE_0 | DRM_MODE_ROTATE_90 | DRM_MODE_ROTATE_180 | DRM_MODE_ROTATE_270;
 pub const DRM_MODE_REFLECT_MASK: u32 = DRM_MODE_REFLECT_X | DRM_MODE_REFLECT_Y;
 
-// -----------------------------------------------------------------------------
-// DRM Atomic Properties & Flags
-// -----------------------------------------------------------------------------
+// DRM Atomic Properties & Flags.
 
 pub const DRM_MODE_ATOMIC_TEST_ONLY: u32 = 0x0100;
 pub const DRM_MODE_ATOMIC_NONBLOCK: u32 = 0x0200;
@@ -89,9 +72,7 @@ pub const DRM_SCALING_FILTER_DEFAULT: u32 = 0;
 pub const DRM_SCALING_FILTER_NEAREST: u32 = 1;
 pub const DRM_SCALING_FILTER_LINEAR: u32 = 2;
 
-// -----------------------------------------------------------------------------
-// Encoder Types
-// -----------------------------------------------------------------------------
+// Encoder Types.
 
 pub const DRM_MODE_ENCODER_NONE: u32 = 0;
 pub const DRM_MODE_ENCODER_DAC: u32 = 1;
@@ -103,9 +84,7 @@ pub const DRM_MODE_ENCODER_DSI: u32 = 6;
 pub const DRM_MODE_ENCODER_DPMST: u32 = 7;
 pub const DRM_MODE_ENCODER_DPI: u32 = 8;
 
-// -----------------------------------------------------------------------------
-// Connector Types & Connection Status
-// -----------------------------------------------------------------------------
+// Connector Types & Connection Status.
 
 pub const DRM_MODE_CONNECTOR_UNKNOWN: u32 = 0;
 pub const DRM_MODE_CONNECTOR_VGA: u32 = 1;
@@ -137,9 +116,7 @@ pub const DRM_MODE_SUBPIXEL_VERTICAL_RGB: u32 = 4;
 pub const DRM_MODE_SUBPIXEL_VERTICAL_BGR: u32 = 5;
 pub const DRM_MODE_SUBPIXEL_NONE: u32 = 6;
 
-// -----------------------------------------------------------------------------
-// Video Modeline Flags & Types
-// -----------------------------------------------------------------------------
+// Video Modeline Flags & Types.
 
 pub const DRM_MODE_FLAG_PHSYNC: u32 = 1 << 0;
 pub const DRM_MODE_FLAG_NHSYNC: u32 = 1 << 1;
@@ -159,9 +136,7 @@ pub const DRM_MODE_TYPE_DEFAULT: u32 = 1 << 4;
 pub const DRM_MODE_TYPE_USERDEF: u32 = 1 << 5;
 pub const DRM_MODE_TYPE_DRIVER: u32 = 1 << 6;
 
-// -----------------------------------------------------------------------------
-// DRM Mode Info (Modeline / Timing Structure)
-// -----------------------------------------------------------------------------
+// DRM Mode Info (Modeline / Timing Structure).
 
 /// Standard DRM Video Modeline descriptor.
 #[repr(C)]
@@ -272,9 +247,7 @@ impl DrmModeInfo {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Standard VESA/CEA/CTA Video Mode Database
-// -----------------------------------------------------------------------------
+// Standard VESA/CEA/CTA Video Mode Database.
 
 pub const MODE_640X480_60: DrmModeInfo = DrmModeInfo {
     clock: 25175,
@@ -421,9 +394,7 @@ pub fn find_mode_by_resolution(width: u16, height: u16, refresh: u32) -> Option<
     None
 }
 
-// -----------------------------------------------------------------------------
-// DRM CRTC (Scanout Engine & Timing Controller)
-// -----------------------------------------------------------------------------
+// DRM CRTC (Scanout Engine & Timing Controller).
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DrmCrtc {
@@ -472,9 +443,7 @@ impl DrmCrtc {
     }
 }
 
-// -----------------------------------------------------------------------------
-// DRM Plane (Primary, Cursor, Hardware Overlay)
-// -----------------------------------------------------------------------------
+// DRM Plane (Primary, Cursor, Hardware Overlay).
 
 pub const MAX_PLANE_FORMATS: usize = 8;
 
@@ -557,9 +526,7 @@ impl DrmPlane {
     }
 }
 
-// -----------------------------------------------------------------------------
-// DRM Encoder (Pixel Serializer / Bridge)
-// -----------------------------------------------------------------------------
+// DRM Encoder (Pixel Serializer / Bridge).
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DrmEncoder {
@@ -586,9 +553,7 @@ impl DrmEncoder {
     }
 }
 
-// -----------------------------------------------------------------------------
-// DRM Connector (Physical/Virtual Display Output)
-// -----------------------------------------------------------------------------
+// DRM Connector (Physical/Virtual Display Output).
 
 pub const MAX_CONNECTOR_MODES: usize = 8;
 pub const MAX_CONNECTOR_ENCODERS: usize = 4;
@@ -659,9 +624,7 @@ impl DrmConnector {
     }
 }
 
-// -----------------------------------------------------------------------------
-// DRM Framebuffer Abstraction
-// -----------------------------------------------------------------------------
+// DRM Framebuffer Abstraction.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DrmFramebuffer {
@@ -704,9 +667,7 @@ impl DrmFramebuffer {
     }
 }
 
-// -----------------------------------------------------------------------------
-// DRM Device (KMS Pipeline Topology Container)
-// -----------------------------------------------------------------------------
+// DRM Device (KMS Pipeline Topology Container).
 
 pub const MAX_DRM_CRTCS: usize = 2;
 pub const MAX_DRM_PLANES: usize = 6;
@@ -839,9 +800,7 @@ impl DrmDevice {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Unit Verification for DRM Abstractions
-// -----------------------------------------------------------------------------
+// Unit Verification for DRM Abstractions.
 
 /// Verifies DRM object definitions, video mode timings, and topology registration.
 pub fn verify_drm_abstractions() -> bool {

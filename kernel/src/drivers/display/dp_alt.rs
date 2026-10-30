@@ -1,10 +1,4 @@
-//! Type-C Configuration Channel (CC) Controller & DisplayPort Alternate Mode Engine.
-//!
-//! Implements USB Type-C and USB Power Delivery (USB PD 3.0 / VESA DisplayPort Alt Mode on Type-C 2.0):
-//! - CC line state monitoring and plug orientation detection (Normal vs Flipped)
-//! - Structured Vendor Defined Message (VDM) negotiation state machine
-//! - VESA SVID 0xFF01 DisplayPort discovery, mode entry, and status exchange
-//! - Dynamic Pin Assignment configuration: Pin C (4-lane DP), Pin D (2-lane DP + USB 3.2), Pin E (4-lane DP)
+//! Type-C Configuration Channel (CC) controller and DisplayPort Alternate Mode engine.
 
 #![allow(dead_code)]
 
@@ -13,9 +7,7 @@ extern crate alloc;
 /// Standard VESA DisplayPort SVID (Standard / Vendor ID).
 pub const DP_SVID: u16 = 0xFF01;
 
-// -----------------------------------------------------------------------------
-// Type-C CC Line States & Plug Orientation
-// -----------------------------------------------------------------------------
+// Type-C CC line states and plug orientation.
 
 /// Configuration Channel (CC) line electrical termination state.
 #[repr(u8)]
@@ -73,9 +65,7 @@ impl DpPinAssignment {
     }
 }
 
-// -----------------------------------------------------------------------------
-// USB Power Delivery (USB PD) Structured VDM Definitions
-// -----------------------------------------------------------------------------
+// USB Power Delivery (USB PD) structured VDM definitions.
 
 /// VDM Command Types.
 #[repr(u8)]
@@ -194,9 +184,7 @@ impl DpCapabilitiesVdo {
     }
 }
 
-// -----------------------------------------------------------------------------
-// DisplayPort Alternate Mode Controller State Machine
-// -----------------------------------------------------------------------------
+// DisplayPort Alternate Mode controller state machine.
 
 /// Connection and negotiation state machine for Type-C DisplayPort Alt Mode.
 #[repr(u8)]

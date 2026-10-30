@@ -1,22 +1,4 @@
-//! Unified Handheld PC Hall Effect Magnetic Joystick & Trigger Calibration Engine.
-//!
-//! Provides contact-free, zero-wear, zero-drift magnetic sensing for handheld gaming PC
-//! joysticks (Left/Right Stick X/Y) and analog triggers (L2/R2).
-//!
-//! Unlike carbon-film potentiometers which suffer from mechanical wear, wiper dust, and
-//! progressive analog center drift, Hall effect magnetic sensors detect changes in magnetic
-//! flux density (B-field) as the neodymium magnet attached to the gimbal or trigger paddle
-//! translates or pivots across a multi-axis Hall IC (e.g. A1304 / TMAG5170 / MLX90393).
-//!
-//! This module provides:
-//! - Raw 12-bit (`0..4095`) and 16-bit (`0..65535`) magnetic flux ADC ingestion.
-//! - Temperature drift compensation based on chassis/sensor thermistor telemetry.
-//! - Deadzone profiles: Radial (circular Euclidean) and Axial deadzones with inner/outer bounds.
-//! - Anti-deadzone compensation to eliminate hardcoded deadzone lag in game engines.
-//! - Outer boundary saturation clamping to guarantee 100% deflection in all diagonal vectors.
-//! - Circularity normalization algorithms (True Circular vs Squaring the Circle).
-//! - Customizable trigger travel response curves (Linear, Exponential, Hair-Trigger, Dual-Stage).
-//! - Dynamic self-centering bias tracking with resting state exponential moving average (EMA).
+//! Handheld PC Hall-effect magnetic joystick and trigger calibration engine.
 
 
 use crate::graphics::sqrt_f32;
@@ -150,9 +132,7 @@ pub struct DeadzoneProfile {
     /// Outer deadzone threshold [0.0, 1.0].
     /// Deflections above this magnitude are clamped to 1.0 full scale.
     pub outer_deadzone: f32,
-    /// Anti-deadzone offset [0.0, 0.5].
-    /// Instantly boosts output to this minimum floor when breaking out of inner deadzone,
-    /// counteracting aggressive game-engine internal deadzones.
+    /// Anti-deadzone offset [0.0, 0.5] boosting output when breaking out of inner deadzone.
     pub anti_deadzone: f32,
 }
 
@@ -226,14 +206,7 @@ impl AxisCalibration {
         }
     }
 
-    /// Applies temperature compensation to raw ADC readings.
-    ///
-    /// As temperature increases, neodymium magnet flux density decreases by ~0.11%/°C,
-    /// while Hall element sensitivity typically increases by ~0.06%/°C, yielding a net
-    /// system drift of ~ -0.05%/°C.
-    ///
-    /// Given ΔT = (T_current - T_ref):
-    /// Compensated_Delta = Raw_Delta / (1.0 + TempCoeff * ΔT)
+    /// Applies temperature compensation to raw magnetic flux ADC readings.
     #[inline]
     pub fn compensate_temperature(&self, raw: u16, temp_c: f32) -> f32 {
         let center = self.raw_center as f32;
@@ -377,9 +350,7 @@ pub fn verify_calibration_and_adc_profiles() -> bool {
         return false;
     }
 
-    // At elevated temperature (65°C -> ΔT = +40°C), magnet weakens:
-    // temp_scale = 1.0 + (-0.0005 * 40) = 0.98.
-    // Compensated delta should be larger than raw delta to counteract weakening.
+    // Compensated delta counteracts thermal magnet weakening.
     let comp_hot = cal12.compensate_temperature(3072, 65.0);
     let raw_delta = 3072.0 - 2048.0; // 1024.0
     let expected_delta = raw_delta / 0.98; // ~1044.8979
@@ -421,9 +392,7 @@ pub fn verify_calibration_and_adc_profiles() -> bool {
     true
 }
 
-// -----------------------------------------------------------------------------
-// Commit 2: Circularity Normalization, Anti-Deadzone & Boundary Clamping
-// -----------------------------------------------------------------------------
+// Circularity normalization, anti-deadzone, and boundary clamping.
 
 /// Mode for mapping 2D joystick coordinates from physical circular gate to game space.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -738,9 +707,7 @@ pub fn verify_circularity_and_anti_deadzone() -> bool {
     true
 }
 
-// -----------------------------------------------------------------------------
-// Commit 3: Trigger Response Curves, Dynamic Centering & Subsystem Engine
-// -----------------------------------------------------------------------------
+// Trigger response curves, dynamic centering, and subsystem engine.
 
 /// Pure no_std fast power approximation x^y for base in [0.0, 1.0].
 #[inline]
@@ -906,11 +873,7 @@ pub fn process_trigger_curve(
     }
 }
 
-/// Dynamic self-centering bias tracking engine.
-///
-/// Slowly observes the resting position of a Hall effect joystick when no user input
-/// is detected, adjusting the center offset with an exponential moving average (EMA)
-/// to eliminate thermal remanence and spring relaxation drift.
+/// Dynamic self-centering bias tracking engine using resting-state EMA.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DynamicCenteringTracker {
     /// Estimated horizontal center bias offset.

@@ -42,9 +42,7 @@ use crate::serial_write_str;
 pub fn test_imu_and_gamepad_subsystem() -> bool {
     serial_write_str("[KNT-INPUT] Testing 6-axis IMU sensor fusion & 1000Hz gamepad pipeline...\r\n");
 
-    // -------------------------------------------------------------------------
     // 1. Test IMU Sensitivity & Scale Conversions
-    // -------------------------------------------------------------------------
     {
         let accel_2g = AccelRange::Range2g;
         // 16384 LSB = 1.0 g = 9.80665 m/s^2
@@ -77,9 +75,7 @@ pub fn test_imu_and_gamepad_subsystem() -> bool {
         }
     }
 
-    // -------------------------------------------------------------------------
     // 2. Test IMU Static Calibration & Low-Pass Filtering
-    // -------------------------------------------------------------------------
     {
         // Stationary samples pointing +1g upward along Z, with deliberate 50 LSB gyro bias
         let mut samples = [RawImuSample::default(); 16];
@@ -135,9 +131,7 @@ pub fn test_imu_and_gamepad_subsystem() -> bool {
         }
     }
 
-    // -------------------------------------------------------------------------
     // 3. Test Quaternion Mathematics & Orientation Angles
-    // -------------------------------------------------------------------------
     {
         // Identity quaternion
         let q_id = Quaternion::IDENTITY;
@@ -176,9 +170,7 @@ pub fn test_imu_and_gamepad_subsystem() -> bool {
         }
     }
 
-    // -------------------------------------------------------------------------
     // 4. Test Sensor Fusion Filters (Madgwick & Mahony) & Dynamic Acceleration
-    // -------------------------------------------------------------------------
     {
         let config = ImuConfig::default();
         let cal = ImuCalibration::default();
@@ -224,9 +216,7 @@ pub fn test_imu_and_gamepad_subsystem() -> bool {
         }
     }
 
-    // -------------------------------------------------------------------------
     // 5. Test Analog Stick Deadzone Shaping & Response Curves
-    // -------------------------------------------------------------------------
     {
         let deadzone = StickDeadzone::new(0.10, 0.90, 1.0, DeadzoneShape::Circular);
 
@@ -261,9 +251,7 @@ pub fn test_imu_and_gamepad_subsystem() -> bool {
         }
     }
 
-    // -------------------------------------------------------------------------
     // 6. Test Trigger Normalization & Digital Click Actuation
-    // -------------------------------------------------------------------------
     {
         let trig_deadzone = TriggerDeadzone::new(0.05, 0.95, 0.50);
 
@@ -289,9 +277,7 @@ pub fn test_imu_and_gamepad_subsystem() -> bool {
         }
     }
 
-    // -------------------------------------------------------------------------
     // 7. Test 1000Hz Gamepad Pipeline, Jitter Tracking & Gyro Aiming
-    // -------------------------------------------------------------------------
     {
         let mut pipeline = GamepadPipeline::new();
         let fusion = SensorFusion::new(ImuConfig::default(), ImuCalibration::default(), 0.041);
@@ -414,9 +400,7 @@ pub fn test_gamepad_haptic_subsystem() -> bool {
 }
 
 
-/// Comprehensive verification self-test for Zero-Latency Kernel-Bypassed Input Polling Ring & Micro-Jitter Smoothing Filter.
-///
-/// Emits sentinel [KNT-INPUT-FAST-RING-PASS] upon successful validation.
+/// Verification self-test for fast input polling ring and micro-jitter smoothing filter.
 pub fn test_fast_input_ring_and_jitter_subsystem() -> bool {
     serial_write_str("[KNT-INPUT-FAST-RING] Running zero-latency input ring & jitter filter verification suite...\r\n");
 
@@ -438,10 +422,7 @@ pub fn test_fast_input_ring_and_jitter_subsystem() -> bool {
         return false;
     }
 
-    // 4. End-to-end integration scenario:
-    // Full competitive esports gaming input stream simulation (250 samples at 1000Hz / 1ms intervals).
-    // Tests resting jitter suppression, high-speed flick response, spring rebound suppression,
-    // and direct zero-syscall userspace consumption.
+    // 4. Full competitive esports gaming input stream simulation (250 samples at 1000Hz).
     let mut dispatcher = FastInputPollingDispatcher::new(DEFAULT_FAST_RING_CAPACITY);
     let start_ts = 2_000_000_000u64; // 2 seconds
 

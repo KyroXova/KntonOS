@@ -1,10 +1,4 @@
 //! NVMe Simple Copy Command Engine & Hardware Copy Offload Subsystem.
-//!
-//! Implements NVMe 1.4+ Copy Offload (TP 4065):
-//! - Controller-internal peer-to-peer data replication bypassing host DRAM and PCIe memory bus
-//! - 32-byte hardware Copy Range Descriptor encoding (Format 0)
-//! - Multi-range intra-controller and zone compaction data movement
-//! - ZNS zone copy offload engine for zero-overhead garbage collection
 
 #![allow(dead_code)]
 
@@ -18,9 +12,7 @@ pub const NVME_NVM_COPY: u8 = 0x19;
 /// Maximum number of ranges per NVMe Simple Copy command.
 pub const NVME_COPY_MAX_RANGES: usize = 64;
 
-// -----------------------------------------------------------------------------
-// Copy Range Descriptor (Format 0)
-// -----------------------------------------------------------------------------
+// Copy Range Descriptor (Format 0).
 
 /// 32-byte NVMe Copy Range Descriptor (Format 0 per NVMe 1.4+ specification).
 #[repr(C, align(8))]
@@ -54,9 +46,7 @@ impl NvmeCopyRangeDescriptor {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Hardware Copy Command Builder
-// -----------------------------------------------------------------------------
+// Hardware Copy Command Builder.
 
 /// Constructs an NVMe Simple Copy command entry.
 pub fn build_copy_command(
@@ -77,9 +67,7 @@ pub fn build_copy_command(
     entry
 }
 
-// -----------------------------------------------------------------------------
-// Controller-Internal Copy Offload Engine
-// -----------------------------------------------------------------------------
+// Controller-Internal Copy Offload Engine.
 
 /// Telemetry metrics for hardware copy offload operations.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

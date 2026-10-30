@@ -1,11 +1,4 @@
 //! Unified Handheld PC Multi-Zone Thermocouple & Peltier Active Cooler Module Driver.
-//!
-//! Provides bare-metal thermal management for extreme TDP handheld gaming PCs featuring:
-//! - Multi-zone thermocouple temperature sensing (APU junction, VRM, Battery, Cold Plate, Hot Plate).
-//! - Thermoelectric Cooler (TEC / Peltier module) active cooling control.
-//! - Closed-loop PID junction temperature controller.
-//! - Dew-point condensation prevention engine to stop moisture buildup on cold plate.
-//! - Synchronized Fan-TEC thermal curve with dynamic turbo cooling burst governor.
 
 /// Hardware I2C / SMBus thermocouple ADC and TEC controller register definitions.
 pub mod tec_registers {
@@ -259,10 +252,7 @@ pub fn verify_thermal_registers_and_tec_state() -> bool {
 /// Safety margin in °C maintained strictly above ambient dew point to avoid condensation.
 pub const DEW_POINT_SAFETY_MARGIN_C: f32 = 3.0;
 
-/// Approximates ambient air dew point in °C from ambient temperature and relative humidity.
-///
-/// Uses the Lawrence-Magnus psychrometric linear-rational approximation for fast no_std bare-metal execution:
-/// T_dew = T - ((100 - RH) / 5)
+/// Approximates ambient air dew point from ambient temperature and relative humidity.
 #[inline]
 pub fn calculate_dew_point_c(ambient_temp_c: f32, relative_humidity_pct: f32) -> f32 {
     let rh_clamped = relative_humidity_pct.clamp(1.0, 100.0);
@@ -270,8 +260,6 @@ pub fn calculate_dew_point_c(ambient_temp_c: f32, relative_humidity_pct: f32) ->
 }
 
 /// Evaluates whether the Peltier cold plate is at risk of condensation.
-///
-/// Returns (is_at_risk, minimum_safe_cold_temp_c).
 pub fn evaluate_condensation_risk(telemetry: &MultiZoneThermalTelemetry) -> (bool, f32) {
     let dew_point = calculate_dew_point_c(telemetry.ambient_air_c, telemetry.ambient_humidity_pct);
     let min_safe_temp = dew_point + DEW_POINT_SAFETY_MARGIN_C;
@@ -318,9 +306,7 @@ impl TecPidController {
         self.previous_error = 0.0;
     }
 
-    /// Updates the PID loop given the current temperature reading and time delta (dt in seconds).
-    ///
-    /// Returns the calculated TEC PWM duty cycle (0..100%).
+    /// Updates the PID loop given current temperature and delta time (dt in seconds).
     pub fn update(
         &mut self,
         current_temp_c: f32,
@@ -415,8 +401,6 @@ pub const TURBO_GRADIENT_TRIGGER_C_PER_SEC: f32 = 2.0;
 pub const TURBO_TEMP_THRESHOLD_C: f32 = 75.0;
 
 /// Computes the synchronized heatsink exhaust fan duty cycle.
-///
-/// Ensures heatsink airflow is sufficient to dissipate combined APU and Peltier hot-plate thermal wattage.
 pub fn calculate_synchronized_fan_duty(
     apu_temp_c: f32,
     tec_duty_pct: u8,
@@ -485,10 +469,7 @@ impl PeltierCoolerManager {
         }
     }
 
-    /// Primary thermal management loop iteration.
-    ///
-    /// Evaluates multi-zone telemetry, checks condensation and hot-plate boundaries,
-    /// runs the PID / turbo burst governor, and outputs (tec_duty_pct, fan_duty_pct).
+    /// Primary thermal management loop iteration evaluating telemetry, condensation, and PID governor.
     pub fn update(
         &mut self,
         telemetry: &MultiZoneThermalTelemetry,

@@ -1,14 +1,6 @@
-//! Hardware PWM Timer Frequency Synthesizer & Duty-Cycle Modulator.
-//!
-//! Provides precision hardware PWM timer generation for handheld PC display backlights:
-//! - Programmable frequencies from 200Hz (legacy low-power) up to 25kHz (ultrasonic anti-flicker mode)
-//! - 16-bit duty-cycle resolution (0..65535, corresponding to 0.0% to 100.0%)
-//! - Inverted polarity support for active-low LED driver ICs (e.g. LP8556, TPS61165, RT8540)
-//! - Glitch-free double-buffered duty cycle and frequency shadow updates
+//! Hardware PWM timer frequency synthesizer and duty-cycle modulator.
 
-// -----------------------------------------------------------------------------
-// Constants and Error Types
-// -----------------------------------------------------------------------------
+// Constants and error types.
 
 /// Minimum supported PWM frequency in Hz (200 Hz).
 pub const PWM_MIN_FREQ_HZ: u32 = 200;
@@ -38,9 +30,7 @@ pub enum PwmError {
     InvalidClockFrequency,
 }
 
-// -----------------------------------------------------------------------------
-// PWM Timer Synthesizer
-// -----------------------------------------------------------------------------
+// PWM timer synthesizer.
 
 /// Hardware PWM timer frequency synthesizer and prescaler calculator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,9 +108,7 @@ impl PwmTimerSynthesizer {
     }
 }
 
-// -----------------------------------------------------------------------------
-// PWM Modulator
-// -----------------------------------------------------------------------------
+// PWM modulator.
 
 /// Hardware PWM channel modulator with double-buffered shadow register updates.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -229,9 +217,7 @@ impl PwmModulator {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Unit Tests & Verification
-// -----------------------------------------------------------------------------
+// Unit tests and verification.
 
 /// Unit test verifying hardware PWM timer frequency synthesizer and duty-cycle modulator.
 pub fn verify_pwm_frequency_and_duty_cycle() -> bool {

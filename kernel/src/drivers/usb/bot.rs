@@ -1,10 +1,4 @@
 //! USB Mass Storage Class Bulk-Only Transport (BOT) Protocol Driver (USB MSC BOT 1.0).
-//!
-//! Implements USB MSC Bulk-Only Transport 1.0 specification:
-//! - Command Block Wrapper (CBW, 31 bytes, signature `USBC` / 0x43425355)
-//! - Command Status Wrapper (CSW, 13 bytes, signature `USBS` / 0x53425355)
-//! - Three-phase command execution state machine (CBW -> Data In/Out -> CSW)
-//! - Bulk endpoint communication and stall/error recovery handling.
 
 use core::mem::size_of;
 
@@ -66,8 +60,6 @@ impl ScsiCdb {
 }
 
 /// USB MSC Bulk-Only Transport (BOT) Command Block Wrapper (CBW).
-///
-/// 31-byte packet sent by the host on the Bulk-Out endpoint to initiate a command.
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CommandBlockWrapper {
@@ -172,8 +164,6 @@ impl CommandBlockWrapper {
 }
 
 /// USB MSC Bulk-Only Transport (BOT) Command Status Wrapper (CSW).
-///
-/// 13-byte packet sent by the device on the Bulk-In endpoint to report command completion.
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CommandStatusWrapper {
@@ -300,9 +290,7 @@ pub fn verify_bot_structures() -> bool {
     true
 }
 
-// ============================================================================
-// USB Bulk-Only Transport (BOT) State Machine & Endpoint Transfer Engine
-// ============================================================================
+// USB Bulk-Only Transport (BOT) State Machine & Endpoint Transfer Engine.
 
 /// Current phase of the USB MSC Bulk-Only Transport state machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

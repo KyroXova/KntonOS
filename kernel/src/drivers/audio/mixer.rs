@@ -1,8 +1,4 @@
-//! Multi-Channel PCM Software Audio Mixer and Real-Time Soft-Knee Limiter.
-//!
-//! Provides 16-bit signed stereo sample manipulation, dynamic gain scaling (up to 2.0x boost),
-//! stereo panning (-128..=127), soft-knee dynamic headroom compression to prevent clipping
-//! distortion, per-channel playback lifecycle control, and DMA buffer rendering.
+//! Multi-channel PCM software audio mixer and soft-knee limiter.
 
 pub const MAX_CHANNELS: usize = 8;
 pub const QUEUE_CAPACITY: usize = 1024;
@@ -84,11 +80,7 @@ pub fn apply_pan(left: i32, right: i32, pan: i8) -> (i32, i32) {
     ((left * l_mult) / 256, (right * r_mult) / 256)
 }
 
-/// Real-time Soft-Knee Limiter and Dynamic Headroom Compressor.
-///
-/// Prevents harsh digital clipping when multiple audio streams sum together,
-/// applying a transparent linear curve below `threshold` and a smooth rational
-/// asymptotic saturation curve between `threshold` and `ceiling`.
+/// Real-time soft-knee limiter and dynamic headroom compressor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SoftKneeLimiter {
     pub threshold: i32,

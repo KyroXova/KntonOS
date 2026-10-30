@@ -1,7 +1,4 @@
-//! Local APIC (Advanced Programmable Interrupt Controller) Driver.
-//!
-//! Handles memory-mapped LAPIC register operations, hardware enable via IA32_APIC_BASE MSR,
-//! spurious interrupt vector assignment, and End of Interrupt (EOI) signaling.
+//! Local APIC (Advanced Programmable Interrupt Controller) driver.
 
 use super::syscall::{rdmsr, wrmsr};
 use crate::memory::pmm::PhysAddr;

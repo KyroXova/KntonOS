@@ -1,16 +1,8 @@
-//! Virtual Trackball Physics Simulator & Kinetic Momentum Engine.
-//!
-//! Simulates a physical bearing trackball under the thumb touchpad:
-//! - Physical mass, radius, and spherical moment of inertia ($I = \frac{2}{5} m r^2$)
-//! - Dynamic viscous friction damping ($v_{t+1} = v_t \cdot (1 - \mu \cdot \Delta t)$)
-//! - Kinetic momentum spin-down after finger release
-//! - Instantaneous thumb "catch" halting kinetic spin on touch re-engagement
+//! Virtual trackball physics simulator and kinetic momentum engine.
 
 use crate::graphics::sqrt_f32;
 
-// -----------------------------------------------------------------------------
-// Types and Constants
-// -----------------------------------------------------------------------------
+// Types and constants.
 
 /// Operating state of the virtual trackball.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,9 +73,7 @@ impl TrackballStep {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Virtual Trackball Simulation Engine
-// -----------------------------------------------------------------------------
+// Virtual trackball simulation engine.
 
 /// Physics simulator tracking virtual trackball kinetic state.
 #[derive(Debug, Clone)]
@@ -172,9 +162,7 @@ impl VirtualTrackball {
         self.total_rotation_rad
     }
 
-    /// Handles thumb touch down:
-    /// In a physical trackball, placing a thumb on a freely spinning ball immediately
-    /// arrests (catches) its momentum.
+    /// Handles thumb touch down, arresting kinetic spin on contact.
     pub fn on_touch_down(&mut self) {
         self.state = TrackballState::Tracking;
         self.velocity_x = 0.0;
@@ -183,9 +171,7 @@ impl VirtualTrackball {
         self.tracked_vy = 0.0;
     }
 
-    /// Handles continuous thumb movement across the touchpad.
-    ///
-    /// Directly follows thumb motion deltas, while filtering velocity for kinetic release throw.
+    /// Handles continuous thumb motion across touchpad, tracking velocity for momentum throw.
     pub fn on_touch_move(&mut self, dx: f32, dy: f32, dt_sec: f32) -> TrackballStep {
         self.state = TrackballState::Tracking;
 
@@ -221,10 +207,7 @@ impl VirtualTrackball {
         }
     }
 
-    /// Handles thumb release:
-    ///
-    /// If release velocity exceeds `min_spin_velocity`, transitions to `Spinning`
-    /// to simulate kinetic momentum coasting. Otherwise halts to `Idle`.
+    /// Handles thumb release, transitioning to kinetic spinning or halting to idle.
     pub fn on_touch_up(&mut self) {
         let spd = sqrt_f32(self.tracked_vx * self.tracked_vx + self.tracked_vy * self.tracked_vy);
         if spd >= self.config.min_spin_velocity {
@@ -243,10 +226,7 @@ impl VirtualTrackball {
         }
     }
 
-    /// Advances the physics simulation for a time delta `dt_sec`.
-    ///
-    /// When `state == TrackballState::Spinning`, computes friction damping and
-    /// generates coasting displacements.
+    /// Advances physics simulation over timestep, applying friction damping during spin.
     pub fn step_simulation(&mut self, dt_sec: f32) -> TrackballStep {
         if self.state != TrackballState::Spinning || dt_sec <= 0.0 {
             return TrackballStep::zero(self.state);
@@ -316,9 +296,7 @@ impl VirtualTrackball {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Unit Tests & Verification
-// -----------------------------------------------------------------------------
+// Unit tests and verification.
 
 /// Unit test verifying virtual trackball physics model, friction damping, and kinetic spin.
 pub fn verify_virtual_trackball_physics() -> bool {
