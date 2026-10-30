@@ -14,6 +14,8 @@ pub use futex::{
 pub use ring::{
     test_spsc_ring, PacketHeader, RingBufferError, SharedMemoryRing, SharedRingHeader,
     SpscRingBuffer, CACHELINE_SIZE, PACKET_HEADER_SIZE, PACKET_MAGIC,
+    test_dual_ring_channel, DualRingChannel, DualRingChannelHeader, DualRingEndpoint,
+    DualRingPointers, DUAL_RING_MAGIC, DUAL_RING_VERSION,
 };
 pub use section::{SectionManager, SharedSection, SECTION_MANAGER};
 
