@@ -17,9 +17,9 @@ These branches are managed by their respective developers with granular commit l
 
 | Contributor identity | Branch | Local workspace | Status |
 | --- | --- | --- | --- |
-| Ada Chen | `workspace/ada-chen` | `E:\Git Lab's\kntonOS-ada-chen` | Active (TASK-KNT-112) |
-| Jules Martin | `workspace/jules-martin` | `E:\Git Lab's\kntonOS-jules-martin` | Active (TASK-KNT-110) |
-| Priya Nair | `workspace/priya-nair` | `E:\Git Lab's\kntonOS-priya-nair` | Active (TASK-KNT-111) |
+| Ada Chen | `workspace/ada-chen` | `E:\Git Lab's\kntonOS-ada-chen` | Idle (TASK-KNT-112 complete) |
+| Jules Martin | `workspace/jules-martin` | `E:\Git Lab's\kntonOS-jules-martin` | Idle (TASK-KNT-110 complete) |
+| Priya Nair | `workspace/priya-nair` | `E:\Git Lab's\kntonOS-priya-nair` | Idle (TASK-KNT-111 complete) |
 
 ## Task index
 
@@ -134,13 +134,10 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-107 | Unified Handheld PC Fingerprint Sensor & Biometric Windows Hello Token Engine | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-107-biometric.md) |
 | TASK-KNT-108 | Direct3D 12 Enhanced Barriers & Split-Barrier Synchronized GPU Resource Transition Engine | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-108-enhanced-barriers.md) |
 | TASK-KNT-109 | Unified Game State Overlay Compositor & Zero-Copy Hardware Cursor Plane Subsystem | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-109-overlay-plane.md) |
-| TASK-KNT-110 | Unified Handheld PC Wi-Fi 6E/7 Latency-Optimized Packet Scheduler & Roaming Daemon | Claimed | TASK-KNT-070 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-110-wifi-scheduler.md) |
-| TASK-KNT-111 | Direct3D 12 Shader Execution Reordering (SER) & Raytracing Hit-Sort Accelerator Engine | Claimed | TASK-KNT-093 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-111-d3d12-ser.md) |
-| TASK-KNT-112 | Unified Handheld PC Virtual Keyboard & Predictive Swipe IME Gesture Engine | Claimed | TASK-KNT-092 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-112-virtual-keyboard.md) |
+| TASK-KNT-110 | Unified Handheld PC Wi-Fi 6E/7 Latency-Optimized Packet Scheduler & Roaming Daemon | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-110-wifi-scheduler.md) |
+| TASK-KNT-111 | Direct3D 12 Shader Execution Reordering (SER) & Raytracing Hit-Sort Accelerator Engine | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-111-d3d12-ser.md) |
+| TASK-KNT-112 | Unified Handheld PC Virtual Keyboard & Predictive Swipe IME Gesture Engine | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-112-virtual-keyboard.md) |
 
 ## Active reservations
 
 - `kernel/src/pkg/`: reserved by ArdenKestrel for TASK-KNT-045.
-- `kernel/src/net/wifi_sched.rs`: reserved by Jules Martin for TASK-KNT-110.
-- `kernel/src/gfx/ser.rs`: reserved by Priya Nair for TASK-KNT-111.
-- `kernel/src/ui/keyboard.rs`: reserved by Ada Chen for TASK-KNT-112.
