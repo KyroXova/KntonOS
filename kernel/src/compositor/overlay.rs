@@ -360,8 +360,11 @@ pub fn verify_overlay_plane_abstraction() -> bool {
         return false;
     }
 
-    // Write semi-transparent green box (ARGB: 0x8000FF00) at (10, 10) to (20, 20)
+    // Clear dirty rect before writing specific pixels
     overlay.set_visible(true);
+    overlay.clear_dirty();
+
+    // Write semi-transparent green box (ARGB: 0x8000FF00) at (10, 10) to (20, 20)
     for y in 10..20 {
         for x in 10..20 {
             overlay.write_pixel(x, y, 0x8000_FF00);

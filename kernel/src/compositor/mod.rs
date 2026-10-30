@@ -263,6 +263,12 @@ pub fn test_compositor_subsystem() -> bool {
         return false;
     }
 
+    // 7. Verify In-Game Hardware Plane Overlay & Performance Telemetry HUD
+    if !test_hardware_overlay_and_hud_subsystem() {
+        serial_write_str("[KNT-PANIC] Hardware overlay and performance HUD self-test failed!\r\n");
+        return false;
+    }
+
     true
 }
 
@@ -583,6 +589,30 @@ pub fn test_taskbar_and_launcher() -> bool {
         serial_write_str("[KNT-PANIC] Wayland compositor backend self-test failed!\r\n");
         return false;
     }
+
+    true
+}
+
+/// Comprehensive verification self-test suite for In-Game Hardware Plane Overlay
+/// and Real-Time Performance Telemetry HUD.
+pub fn test_hardware_overlay_and_hud_subsystem() -> bool {
+    // 1. Verify Plane #2 hardware overlay abstraction, alpha blending, and dirty bounds
+    if !overlay::verify_overlay_plane_abstraction() {
+        return false;
+    }
+
+    // 2. Verify global overlay shortcut interceptor (Guide+A / Win+G) and latching
+    if !overlay::verify_overlay_shortcut_interception() {
+        return false;
+    }
+
+    // 3. Verify performance telemetry tracker, 99th %tile frametime calculation, and HUD renderer
+    if !hud::verify_telemetry_hud_tracking() {
+        return false;
+    }
+
+    // 4. Emit deterministic boot sentinel
+    crate::serial_write_str("[KNT-OVERLAY-HUD-PASS] Hardware plane overlay and performance HUD verified\r\n");
 
     true
 }

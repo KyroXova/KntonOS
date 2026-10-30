@@ -285,7 +285,7 @@ pub fn verify_telemetry_hud_tracking() -> bool {
     }
 
     // Render HUD onto Plane #2
-    let mut overlay = HardwareOverlayPlane::new(2, 400, 300);
+    let mut overlay = HardwareOverlayPlane::new(2, 290, 130);
     overlay.set_visible(true);
 
     let hud = TelemetryHudRenderer::new(10, 10, HUD_DEFAULT_WIDTH, HUD_DEFAULT_HEIGHT);
