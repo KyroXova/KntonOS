@@ -524,3 +524,242 @@ impl AmplificationShaderDispatcher {
         Ok(dispatches)
     }
 }
+
+/// Output vertex format emitted by the Mesh Shader directly into the primitive pipeline.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[repr(C)]
+pub struct MeshVertexOutput {
+    /// Clip-space homogeneous position `(x, y, z, w)`.
+    pub position: [f32; 4],
+    /// Normal vector for lighting and shading.
+    pub normal: Vec3,
+    /// Texture coordinates `(u, v)`.
+    pub uv: [f32; 2],
+    /// Vertex color RGBA.
+    pub color: [f32; 4],
+}
+
+impl Default for MeshVertexOutput {
+    fn default() -> Self {
+        Self {
+            position: [0.0, 0.0, 0.0, 1.0],
+            normal: Vec3::default(),
+            uv: [0.0, 0.0],
+            color: [1.0, 1.0, 1.0, 1.0],
+        }
+    }
+}
+
+/// Meshlet local triangle indices (3 local vertex indices in range 0..63).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(C)]
+pub struct MeshTriangleIndices {
+    /// First vertex index in meshlet local vertex array (0..63).
+    pub i0: u8,
+    /// Second vertex index in meshlet local vertex array (0..63).
+    pub i1: u8,
+    /// Third vertex index in meshlet local vertex array (0..63).
+    pub i2: u8,
+}
+
+impl MeshTriangleIndices {
+    /// Creates a new triangle primitive from 3 local vertex indices.
+    pub const fn new(i0: u8, i1: u8, i2: u8) -> Self {
+        Self { i0, i1, i2 }
+    }
+
+    /// Returns the indices as a 3-element array.
+    #[inline]
+    pub const fn as_array(self) -> [u8; 3] {
+        [self.i0, self.i1, self.i2]
+    }
+}
+
+/// Output primitive streamer buffer for a single meshlet threadgroup invocation.
+#[derive(Debug, Clone)]
+pub struct MeshletStreamOutput {
+    /// Output vertices (up to 64).
+    pub vertices: [MeshVertexOutput; MAX_MESHLET_VERTICES],
+    /// Output triangle primitive indices (up to 126).
+    pub primitives: [MeshTriangleIndices; MAX_MESHLET_PRIMITIVES],
+    /// Valid vertex count emitted (`SetMeshOutputCounts`).
+    pub vertex_count: u32,
+    /// Valid primitive count emitted (`SetMeshOutputCounts`).
+    pub primitive_count: u32,
+}
+
+impl Default for MeshletStreamOutput {
+    fn default() -> Self {
+        Self {
+            vertices: [MeshVertexOutput::default(); MAX_MESHLET_VERTICES],
+            primitives: [MeshTriangleIndices::default(); MAX_MESHLET_PRIMITIVES],
+            vertex_count: 0,
+            primitive_count: 0,
+        }
+    }
+}
+
+impl MeshletStreamOutput {
+    /// Sets the dynamic output counts for the meshlet (`SetMeshOutputCounts`).
+    pub fn set_mesh_output_counts(&mut self, vertex_count: u32, primitive_count: u32) -> Result<(), MeshShaderError> {
+        if vertex_count > MAX_MESHLET_VERTICES as u32 {
+            return Err(MeshShaderError::ExceededMaxVertices(vertex_count));
+        }
+        if primitive_count > MAX_MESHLET_PRIMITIVES as u32 {
+            return Err(MeshShaderError::ExceededMaxPrimitives(primitive_count));
+        }
+        self.vertex_count = vertex_count;
+        self.primitive_count = primitive_count;
+        Ok(())
+    }
+
+    /// Writes an output vertex at local slot `index`.
+    pub fn write_vertex(&mut self, index: usize, vertex: MeshVertexOutput) -> Result<(), MeshShaderError> {
+        if index >= self.vertex_count as usize || index >= MAX_MESHLET_VERTICES {
+            return Err(MeshShaderError::BufferOverflow);
+        }
+        self.vertices[index] = vertex;
+        Ok(())
+    }
+
+    /// Writes an output triangle primitive at local slot `index`.
+    pub fn write_primitive(&mut self, index: usize, tri: MeshTriangleIndices) -> Result<(), MeshShaderError> {
+        if index >= self.primitive_count as usize || index >= MAX_MESHLET_PRIMITIVES {
+            return Err(MeshShaderError::BufferOverflow);
+        }
+        if tri.i0 >= self.vertex_count as u8 || tri.i1 >= self.vertex_count as u8 || tri.i2 >= self.vertex_count as u8 {
+            return Err(MeshShaderError::InvalidPipelineConfig);
+        }
+        self.primitives[index] = tri;
+        Ok(())
+    }
+}
+
+/// Telemetry metrics for Mesh Shader primitive streaming.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MeshShaderStats {
+    /// Total meshlet threadgroups executed and expanded into primitives.
+    pub meshlets_expanded: u32,
+    /// Total vertices streamed to the primitive rasterizer.
+    pub vertices_streamed: u64,
+    /// Total primitive triangles streamed to the primitive rasterizer.
+    pub primitives_streamed: u64,
+    /// Peak vertices emitted by a single meshlet.
+    pub peak_vertices_per_meshlet: u32,
+    /// Peak primitives emitted by a single meshlet.
+    pub peak_primitives_per_meshlet: u32,
+}
+
+/// Mesh Shader Primitive Pipeline Execution Engine.
+///
+/// Executes Mesh Shader threadgroups dispatched by the Amplification Shader or CPU,
+/// reads meshlet cluster descriptors, expands vertices and indexed triangle topology,
+/// and streams primitives directly into the GPU rasterizer pipeline.
+#[derive(Debug)]
+pub struct MeshShaderEngine {
+    /// Active Mesh Shader PSO.
+    pipeline_state: MeshShaderPipelineState,
+    /// Profiling and primitive streaming telemetry.
+    stats: MeshShaderStats,
+}
+
+impl MeshShaderEngine {
+    /// Creates a new MeshShaderEngine with the specified PSO.
+    pub fn new(pipeline_state: MeshShaderPipelineState) -> Result<Self, MeshShaderError> {
+        pipeline_state.validate()?;
+        Ok(Self {
+            pipeline_state,
+            stats: MeshShaderStats::default(),
+        })
+    }
+
+    /// Active pipeline state object.
+    #[inline]
+    pub fn pipeline_state(&self) -> &MeshShaderPipelineState {
+        &self.pipeline_state
+    }
+
+    /// Current primitive streaming telemetry.
+    #[inline]
+    pub fn stats(&self) -> &MeshShaderStats {
+        &self.stats
+    }
+
+    /// Resets streaming telemetry statistics.
+    pub fn reset_stats(&mut self) {
+        self.stats = MeshShaderStats::default();
+    }
+
+    /// Executes a single `DispatchMeshDesc` batch against a meshlet database.
+    pub fn execute_dispatch(
+        &mut self,
+        dispatch: &DispatchMeshDesc,
+        meshlet_database: &[MeshletDescriptor],
+    ) -> Result<Vec<MeshletStreamOutput>, MeshShaderError> {
+        let mut outputs = Vec::with_capacity(dispatch.payload.meshlet_count as usize);
+
+        for &meshlet_id in &dispatch.payload.meshlet_indices[..dispatch.payload.meshlet_count as usize] {
+            let meshlet = meshlet_database
+                .get(meshlet_id as usize)
+                .ok_or(MeshShaderError::InvalidPipelineConfig)?;
+
+            meshlet.validate()?;
+
+            let mut stream = MeshletStreamOutput::default();
+            stream.set_mesh_output_counts(meshlet.vertex_count, meshlet.primitive_count)?;
+
+            // Stream vertices: synthesize positions and attributes for this meshlet
+            for v in 0..meshlet.vertex_count {
+                let local_v = v as f32;
+                let world_x = meshlet.bounds_sphere.center.x + (local_v * 0.1);
+                let world_y = meshlet.bounds_sphere.center.y + (local_v * 0.1);
+                let world_z = meshlet.bounds_sphere.center.z;
+
+                let vertex = MeshVertexOutput {
+                    position: [world_x, world_y, world_z, 1.0],
+                    normal: meshlet.bounds_cone.axis,
+                    uv: [local_v / (meshlet.vertex_count as f32), 0.5],
+                    color: [1.0, 1.0, 1.0, 1.0],
+                };
+                stream.write_vertex(v as usize, vertex)?;
+            }
+
+            // Stream primitive triangle topology: generate triangle strips/fans across local vertices
+            for p in 0..meshlet.primitive_count {
+                let v0 = 0u8;
+                let v1 = core::cmp::min((p + 1) as u8, (meshlet.vertex_count - 1) as u8);
+                let v2 = core::cmp::min((p + 2) as u8, (meshlet.vertex_count - 1) as u8);
+
+                let tri = MeshTriangleIndices::new(v0, v1, v2);
+                stream.write_primitive(p as usize, tri)?;
+            }
+
+            // Update stats
+            self.stats.meshlets_expanded += 1;
+            self.stats.vertices_streamed += meshlet.vertex_count as u64;
+            self.stats.primitives_streamed += meshlet.primitive_count as u64;
+            self.stats.peak_vertices_per_meshlet =
+                core::cmp::max(self.stats.peak_vertices_per_meshlet, meshlet.vertex_count);
+            self.stats.peak_primitives_per_meshlet =
+                core::cmp::max(self.stats.peak_primitives_per_meshlet, meshlet.primitive_count);
+
+            outputs.push(stream);
+        }
+
+        Ok(outputs)
+    }
+
+    /// Executes multiple `DispatchMeshDesc` batches against a meshlet database.
+    pub fn execute_dispatches(
+        &mut self,
+        dispatches: &[DispatchMeshDesc],
+        meshlet_database: &[MeshletDescriptor],
+    ) -> Result<Vec<MeshletStreamOutput>, MeshShaderError> {
+        let mut all_outputs = Vec::new();
+        for dispatch in dispatches {
+            let mut out = self.execute_dispatch(dispatch, meshlet_database)?;
+            all_outputs.append(&mut out);
+        }
+        Ok(all_outputs)
+    }
+}
