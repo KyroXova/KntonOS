@@ -1,7 +1,5 @@
 //! Dynamic Power Governor & Thermal Energy Meter Subsystem for KntonOS.
-//!
 //! Provides Intel RAPL MSR energy metering, AMD SMU power telemetry,
-//! digital thermal sensor monitoring, and closed-loop PID TDP governors.
 
 pub mod governor;
 pub mod rapl;
@@ -146,8 +144,6 @@ pub fn test_core_parking_and_cstate_subsystem() -> bool {
 
 /// Comprehensive verification self-test suite for High-Performance S0i3 / S3
 /// Instant-Resume Freeze and Wakeup Controller.
-///
-/// Emits sentinel [KNT-SUSPEND-RESUME-PASS] upon successful validation.
 pub fn test_s0i3_s3_suspend_resume_subsystem() -> bool {
     // 1. Verify S0i3/S3 state machine, device quiescence phases, and suspend hooks
     if !verify_quiescence_state_machine() {
@@ -172,8 +168,6 @@ pub fn test_s0i3_s3_suspend_resume_subsystem() -> bool {
 
 /// Comprehensive verification self-test suite for Handheld PC Thermal & Fan Profile Controller,
 /// Multi-Point Curves, Thermal Hysteresis Damping, and Acoustic Pacing Governor.
-///
-/// Emits sentinel [KNT-THERMAL-FAN-PASS] upon successful validation.
 pub fn test_handheld_thermal_and_fan_subsystem() -> bool {
     // 1. Verify multi-point fan interpolation curves (Linear & Cubic S-curve) and safety clamps
     if !verify_fan_curve_interpolation() {
@@ -196,11 +190,8 @@ pub fn test_handheld_thermal_and_fan_subsystem() -> bool {
     true
 }
 
-
 /// Comprehensive verification self-test suite for Direct-to-Disk Kernel Hibernation (S4 State)
 /// and In-Kernel LZ4 Fast-Restoration Engine.
-///
-/// Emits sentinel [KNT-POWER-HIBERNATE-PASS] upon successful validation.
 pub fn test_power_hibernate_subsystem() -> bool {
     // 1. Verify physical page frame bitmap scanner, memory exclusion, and swap header
     if !verify_page_scanner_and_swap_header() {
@@ -325,8 +316,6 @@ pub fn test_power_hibernate_subsystem() -> bool {
 
 /// Comprehensive verification self-test suite for Handheld Battery Fuel Gauge,
 /// Coulomb Counter, USB-PD Negotiator, and Smart CCCV Charger Controller.
-///
-/// Emits sentinel [KNT-POWER-BATTERY-PASS] upon successful validation.
 pub fn test_battery_and_charger_subsystem() -> bool {
     // 1. Verify Smart Battery System, Coulomb counting integration, and OCV recalibration
     if !verify_battery_gauge_and_coulomb_counter() {
@@ -349,9 +338,7 @@ pub fn test_battery_and_charger_subsystem() -> bool {
     true
 }
 
-
 /// Comprehensive verification self-test suite for Unified Kernel Dynamic Frequency Scaling (DVFS) & Micro-Voltage Stepping Governor.
-///
 /// Emits sentinel [KNT-POWER-DVFS-PASS] upon successful validation.
 pub fn test_dvfs_governor_subsystem() -> bool {
     crate::serial_write_str("[KNT-POWER-DVFS-TEST] Running Dynamic Frequency Scaling (DVFS) & Micro-Voltage Governor verification suite...\r\n");

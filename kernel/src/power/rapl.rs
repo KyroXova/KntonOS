@@ -1,9 +1,5 @@
 //! Intel RAPL (Running Average Power Limit) & AMD SMU Energy Interface.
-//!
 //! Implements hardware power and energy metering for x86-64 processors:
-//! - Intel RAPL MSR layout (MSR_RAPL_POWER_UNIT, MSR_PKG_POWER_LIMIT, MSR_PKG_ENERGY_STATUS)
-//! - Energy status unit conversions (microjoules and watts with wrap-around tracking)
-//! - AMD SMU (System Management Unit) Mailbox interface for Zen energy and PPT limits.
 
 // --- Intel RAPL Model-Specific Registers (MSRs) ---
 pub const MSR_RAPL_POWER_UNIT: u32 = 0x0000_0606;
