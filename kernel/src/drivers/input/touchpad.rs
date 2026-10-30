@@ -912,3 +912,228 @@ pub fn verify_touchpad_contact_structures_and_decoders() -> bool {
 
     true
 }
+/// Sub-pixel deadzone threshold in pixels to prevent static finger micro-tremor cursor drift.
+pub const SUBPIXEL_DEADZONE_PX: f32 = 1.2;
+
+/// Filtered contact state tracking position, smoothed velocity, and trajectory history.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FilteredContact {
+    /// Associated contact tracking identifier.
+    pub contact_id: u8,
+    /// Unfiltered raw position.
+    pub raw_x: f32,
+    pub raw_y: f32,
+    /// Adaptive smoothed position after jitter filtering.
+    pub filtered_x: f32,
+    pub filtered_y: f32,
+    /// Delta displacement from previous frame.
+    pub dx: f32,
+    pub dy: f32,
+    /// Estimated velocity in pixels per millisecond.
+    pub vx: f32,
+    pub vy: f32,
+    /// Touch-down origin coordinates.
+    pub start_x: f32,
+    pub start_y: f32,
+    /// Total Euclidean distance traversed since touch-down.
+    pub total_distance: f32,
+    /// Active contact flag.
+    pub active: bool,
+}
+
+impl FilteredContact {
+    /// Creates an empty inactive filtered contact.
+    pub const fn empty(contact_id: u8) -> Self {
+        Self {
+            contact_id,
+            raw_x: 0.0,
+            raw_y: 0.0,
+            filtered_x: 0.0,
+            filtered_y: 0.0,
+            dx: 0.0,
+            dy: 0.0,
+            vx: 0.0,
+            vy: 0.0,
+            start_x: 0.0,
+            start_y: 0.0,
+            total_distance: 0.0,
+            active: false,
+        }
+    }
+}
+
+/// Adaptive jitter filter and multi-contact tracking engine.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TouchpadTrackingEngine {
+    /// Array of filtered contact states for up to 5 concurrent contacts.
+    pub contacts: [FilteredContact; MAX_TOUCHPAD_CONTACTS],
+    /// Previous frame timestamp in microseconds.
+    pub prev_timestamp_us: u64,
+}
+
+impl TouchpadTrackingEngine {
+    /// Creates a new tracking engine instance.
+    pub const fn new() -> Self {
+        Self {
+            contacts: [
+                FilteredContact::empty(0),
+                FilteredContact::empty(1),
+                FilteredContact::empty(2),
+                FilteredContact::empty(3),
+                FilteredContact::empty(4),
+            ],
+            prev_timestamp_us: 0,
+        }
+    }
+
+    /// Ingests a raw TouchpadFrame, applies adaptive exponential jitter filtering and deadzone governor.
+    pub fn process_frame(&mut self, frame: &TouchpadFrame) {
+        let dt_ms = if self.prev_timestamp_us > 0 && frame.timestamp_us > self.prev_timestamp_us {
+            ((frame.timestamp_us - self.prev_timestamp_us) as f32 / 1000.0).max(1.0)
+        } else {
+            10.0 // Default 100Hz frame interval (10ms)
+        };
+        self.prev_timestamp_us = frame.timestamp_us;
+
+        // Mark all slots as inactive initially for frame reconciliation
+        let mut active_in_frame = [false; MAX_TOUCHPAD_CONTACTS];
+
+        for i in 0..(frame.contact_count as usize).min(MAX_TOUCHPAD_CONTACTS) {
+            let raw_c = &frame.contacts[i];
+            let id = (raw_c.contact_id as usize) % MAX_TOUCHPAD_CONTACTS;
+            active_in_frame[id] = true;
+
+            let fc = &mut self.contacts[id];
+
+            if !fc.active {
+                // New touch contact established
+                fc.contact_id = raw_c.contact_id;
+                fc.raw_x = raw_c.x;
+                fc.raw_y = raw_c.y;
+                fc.filtered_x = raw_c.x;
+                fc.filtered_y = raw_c.y;
+                fc.start_x = raw_c.x;
+                fc.start_y = raw_c.y;
+                fc.dx = 0.0;
+                fc.dy = 0.0;
+                fc.vx = 0.0;
+                fc.vy = 0.0;
+                fc.total_distance = 0.0;
+                fc.active = true;
+            } else {
+                // Existing contact update: compute raw displacement
+                let raw_dx = raw_c.x - fc.raw_x;
+                let raw_dy = raw_c.y - fc.raw_y;
+                fc.raw_x = raw_c.x;
+                fc.raw_y = raw_c.y;
+
+                let raw_dist = sqrt_f32(raw_dx * raw_dx + raw_dy * raw_dy);
+
+                // 1. Sub-pixel deadzone governor: suppress micro-jitter when nearly stationary
+                if raw_dist < SUBPIXEL_DEADZONE_PX {
+                    fc.dx = 0.0;
+                    fc.dy = 0.0;
+                    fc.vx = 0.0;
+                    fc.vy = 0.0;
+                } else {
+                    // 2. Adaptive Exponential Moving Average (EMA) smoothing factor:
+                    // High speed -> alpha = 0.85 (responsive, zero lag)
+                    // Low speed  -> alpha = 0.25 (heavy noise reduction)
+                    let speed = raw_dist / dt_ms; // px/ms
+                    let alpha = if speed > 1.5 { 0.85 } else if speed > 0.5 { 0.55 } else { 0.25 };
+
+                    let smooth_x = fc.filtered_x + alpha * (raw_c.x - fc.filtered_x);
+                    let smooth_y = fc.filtered_y + alpha * (raw_c.y - fc.filtered_y);
+
+                    fc.dx = smooth_x - fc.filtered_x;
+                    fc.dy = smooth_y - fc.filtered_y;
+                    fc.filtered_x = smooth_x;
+                    fc.filtered_y = smooth_y;
+
+                    fc.vx = fc.dx / dt_ms;
+                    fc.vy = fc.dy / dt_ms;
+                    fc.total_distance += sqrt_f32(fc.dx * fc.dx + fc.dy * fc.dy);
+                }
+            }
+        }
+
+        // Deactivate contacts not present in this frame
+        for id in 0..MAX_TOUCHPAD_CONTACTS {
+            if !active_in_frame[id] {
+                self.contacts[id].active = false;
+            }
+        }
+    }
+}
+
+/// Verification helper for Commit 2 jitter filter and contact tracking engine.
+pub fn verify_jitter_filter_and_contact_tracking() -> bool {
+    let mut engine = TouchpadTrackingEngine::new();
+
+    // 1. Initial touch down at (500.0, 500.0)
+    let mut frame0 = TouchpadFrame::empty(10_000);
+    frame0.contact_count = 1;
+    frame0.contacts[0] = TouchpadContact {
+        contact_id: 0,
+        state: TouchpadContactState::TouchDown,
+        x: 500.0,
+        y: 500.0,
+        pressure_z: 1000,
+        major_axis: 10,
+        minor_axis: 10,
+        orientation_deg: 0,
+        timestamp_us: 10_000,
+    };
+    engine.process_frame(&frame0);
+
+    let c0 = &engine.contacts[0];
+    if !c0.active || c0.filtered_x != 500.0 || c0.filtered_y != 500.0 {
+        return false;
+    }
+
+    // 2. Micro-jitter input: movement of only 0.5 px (below SUBPIXEL_DEADZONE_PX 1.2 px)
+    let mut frame_jitter = TouchpadFrame::empty(20_000);
+    frame_jitter.contact_count = 1;
+    frame_jitter.contacts[0] = TouchpadContact {
+        contact_id: 0,
+        state: TouchpadContactState::Moving,
+        x: 500.5,
+        y: 500.3,
+        pressure_z: 1000,
+        major_axis: 10,
+        minor_axis: 10,
+        orientation_deg: 0,
+        timestamp_us: 20_000,
+    };
+    engine.process_frame(&frame_jitter);
+
+    // Deadzone governor must suppress displacement to 0
+    let c_jit = &engine.contacts[0];
+    if c_jit.dx != 0.0 || c_jit.dy != 0.0 {
+        return false;
+    }
+
+    // 3. Significant deliberate movement: jump of 50.0 px (high speed)
+    let mut frame_move = TouchpadFrame::empty(30_000);
+    frame_move.contact_count = 1;
+    frame_move.contacts[0] = TouchpadContact {
+        contact_id: 0,
+        state: TouchpadContactState::Moving,
+        x: 550.0,
+        y: 500.0,
+        pressure_z: 1000,
+        major_axis: 10,
+        minor_axis: 10,
+        orientation_deg: 0,
+        timestamp_us: 30_000,
+    };
+    engine.process_frame(&frame_move);
+
+    let c_move = &engine.contacts[0];
+    // High speed EMA (alpha 0.85) produces strong responsive displacement (> 35.0 px)
+    if c_move.dx < 35.0 || c_move.vx <= 0.0 {
+        return false;
+    }
+
+    true
+}
