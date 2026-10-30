@@ -556,6 +556,225 @@ impl AlphaBlendPipeline {
     }
 }
 
+// =============================================================================
+// 5. Quick Settings Manager (TDP, Framerate, Fan, Brightness, Audio, Opacity)
+// =============================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FpsLimit {
+    Uncapped = 0,
+    Fps30 = 30,
+    Fps40 = 40,
+    Fps60 = 60,
+    Fps120 = 120,
+}
+
+impl FpsLimit {
+    pub const fn target_frametime_us(&self) -> u32 {
+        match self {
+            Self::Uncapped => 0,
+            Self::Fps30 => 33333,
+            Self::Fps40 => 25000,
+            Self::Fps60 => 16666,
+            Self::Fps120 => 8333,
+        }
+    }
+
+    pub fn cycle_next(&self) -> Self {
+        match self {
+            Self::Uncapped => Self::Fps30,
+            Self::Fps30 => Self::Fps40,
+            Self::Fps40 => Self::Fps60,
+            Self::Fps60 => Self::Fps120,
+            Self::Fps120 => Self::Uncapped,
+        }
+    }
+
+    pub fn cycle_prev(&self) -> Self {
+        match self {
+            Self::Uncapped => Self::Fps120,
+            Self::Fps30 => Self::Uncapped,
+            Self::Fps40 => Self::Fps30,
+            Self::Fps60 => Self::Fps40,
+            Self::Fps120 => Self::Fps60,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FanAcousticMode {
+    Quiet,
+    Balanced,
+    Performance,
+}
+
+impl FanAcousticMode {
+    pub fn target_dba(&self) -> u32 {
+        match self {
+            Self::Quiet => 28,
+            Self::Balanced => 35,
+            Self::Performance => 45,
+        }
+    }
+
+    pub fn cycle_next(&self) -> Self {
+        match self {
+            Self::Quiet => Self::Balanced,
+            Self::Balanced => Self::Performance,
+            Self::Performance => Self::Quiet,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuickSettingField {
+    TdpPowerLimit = 0,
+    FpsLimiter = 1,
+    FanProfile = 2,
+    Brightness = 3,
+    Volume = 4,
+    OverlayOpacity = 5,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuickSettingAction {
+    SelectNext,
+    SelectPrev,
+    AdjustLeft,  // Decrease slider / cycle backward
+    AdjustRight, // Increase slider / cycle forward
+    Toggle,
+}
+
+#[derive(Debug, Clone)]
+pub struct QuickSettingsManager {
+    pub tdp_watts: u8,               // 5 to 30 W (default 15 W)
+    pub fps_limit: FpsLimit,         // 30, 40, 60, 120, Uncapped
+    pub fan_mode: FanAcousticMode,   // Quiet, Balanced, Performance
+    pub brightness_percent: u8,     // 0 to 100%
+    pub volume_percent: u8,         // 0 to 100%
+    pub overlay_opacity_percent: u8, // 20 to 100% (default 85%)
+    pub active_field: QuickSettingField,
+}
+
+impl QuickSettingsManager {
+    pub fn new() -> Self {
+        Self {
+            tdp_watts: 15,
+            fps_limit: FpsLimit::Fps60,
+            fan_mode: FanAcousticMode::Balanced,
+            brightness_percent: 80,
+            volume_percent: 75,
+            overlay_opacity_percent: 85,
+            active_field: QuickSettingField::TdpPowerLimit,
+        }
+    }
+
+    pub fn set_tdp(&mut self, watts: u8) {
+        self.tdp_watts = watts.clamp(5, 30);
+    }
+
+    pub fn set_brightness(&mut self, percent: u8) {
+        self.brightness_percent = percent.min(100);
+    }
+
+    pub fn set_volume(&mut self, percent: u8) {
+        self.volume_percent = percent.min(100);
+    }
+
+    pub fn set_overlay_opacity(&mut self, percent: u8) {
+        self.overlay_opacity_percent = percent.clamp(20, 100);
+    }
+
+    /// Converts brightness percentage to 8-bit display backlight PWM value (0..255).
+    pub fn brightness_pwm_value(&self) -> u8 {
+        ((self.brightness_percent as u32 * 255) / 100) as u8
+    }
+
+    /// Computes 16-bit DRM global alpha from overlay opacity percentage.
+    pub fn global_alpha_u16(&self) -> u16 {
+        ((self.overlay_opacity_percent as u32 * 65535) / 100) as u16
+    }
+
+    /// Handles gamepad navigation and adjustments across quick settings items.
+    pub fn handle_action(&mut self, action: QuickSettingAction) {
+        match action {
+            QuickSettingAction::SelectNext => {
+                self.active_field = match self.active_field {
+                    QuickSettingField::TdpPowerLimit => QuickSettingField::FpsLimiter,
+                    QuickSettingField::FpsLimiter => QuickSettingField::FanProfile,
+                    QuickSettingField::FanProfile => QuickSettingField::Brightness,
+                    QuickSettingField::Brightness => QuickSettingField::Volume,
+                    QuickSettingField::Volume => QuickSettingField::OverlayOpacity,
+                    QuickSettingField::OverlayOpacity => QuickSettingField::TdpPowerLimit,
+                };
+            }
+            QuickSettingAction::SelectPrev => {
+                self.active_field = match self.active_field {
+                    QuickSettingField::TdpPowerLimit => QuickSettingField::OverlayOpacity,
+                    QuickSettingField::FpsLimiter => QuickSettingField::TdpPowerLimit,
+                    QuickSettingField::FanProfile => QuickSettingField::FpsLimiter,
+                    QuickSettingField::Brightness => QuickSettingField::FanProfile,
+                    QuickSettingField::Volume => QuickSettingField::Brightness,
+                    QuickSettingField::OverlayOpacity => QuickSettingField::Volume,
+                };
+            }
+            QuickSettingAction::AdjustLeft => match self.active_field {
+                QuickSettingField::TdpPowerLimit => {
+                    self.tdp_watts = self.tdp_watts.saturating_sub(1).max(5);
+                }
+                QuickSettingField::FpsLimiter => {
+                    self.fps_limit = self.fps_limit.cycle_prev();
+                }
+                QuickSettingField::FanProfile => {
+                    self.fan_mode = match self.fan_mode {
+                        FanAcousticMode::Quiet => FanAcousticMode::Performance,
+                        FanAcousticMode::Balanced => FanAcousticMode::Quiet,
+                        FanAcousticMode::Performance => FanAcousticMode::Balanced,
+                    };
+                }
+                QuickSettingField::Brightness => {
+                    self.brightness_percent = self.brightness_percent.saturating_sub(5);
+                }
+                QuickSettingField::Volume => {
+                    self.volume_percent = self.volume_percent.saturating_sub(5);
+                }
+                QuickSettingField::OverlayOpacity => {
+                    self.overlay_opacity_percent = self.overlay_opacity_percent.saturating_sub(5).max(20);
+                }
+            },
+            QuickSettingAction::AdjustRight => match self.active_field {
+                QuickSettingField::TdpPowerLimit => {
+                    self.tdp_watts = (self.tdp_watts + 1).min(30);
+                }
+                QuickSettingField::FpsLimiter => {
+                    self.fps_limit = self.fps_limit.cycle_next();
+                }
+                QuickSettingField::FanProfile => {
+                    self.fan_mode = self.fan_mode.cycle_next();
+                }
+                QuickSettingField::Brightness => {
+                    self.brightness_percent = (self.brightness_percent + 5).min(100);
+                }
+                QuickSettingField::Volume => {
+                    self.volume_percent = (self.volume_percent + 5).min(100);
+                }
+                QuickSettingField::OverlayOpacity => {
+                    self.overlay_opacity_percent = (self.overlay_opacity_percent + 5).min(100);
+                }
+            },
+            QuickSettingAction::Toggle => match self.active_field {
+                QuickSettingField::FpsLimiter => {
+                    self.fps_limit = self.fps_limit.cycle_next();
+                }
+                QuickSettingField::FanProfile => {
+                    self.fan_mode = self.fan_mode.cycle_next();
+                }
+                _ => {}
+            },
+        }
+    }
+}
+
 // -----------------------------------------------------------------------------
 // Unit Tests for Commit 1
 // -----------------------------------------------------------------------------
@@ -643,5 +862,43 @@ mod tests {
         let blended = AlphaBlendPipeline::blend_pixel(bg, fg, 0xFFFF);
         let r = (blended >> 16) & 0xFF;
         assert!(r >= 126 && r <= 130);
+    }
+    #[test]
+    pub fn test_quick_settings_manager() {
+        let mut qsm = QuickSettingsManager::new();
+        assert_eq!(qsm.tdp_watts, 15);
+        assert_eq!(qsm.fps_limit, FpsLimit::Fps60);
+        assert_eq!(qsm.fps_limit.target_frametime_us(), 16666);
+        assert_eq!(qsm.fan_mode, FanAcousticMode::Balanced);
+        assert_eq!(qsm.fan_mode.target_dba(), 35);
+
+        // Adjust TDP slider
+        qsm.handle_action(QuickSettingAction::AdjustRight);
+        assert_eq!(qsm.tdp_watts, 16);
+        qsm.set_tdp(35); // Test clamp
+        assert_eq!(qsm.tdp_watts, 30);
+        qsm.set_tdp(2);  // Test min clamp
+        assert_eq!(qsm.tdp_watts, 5);
+
+        // Navigate to FPS Limiter and cycle
+        qsm.handle_action(QuickSettingAction::SelectNext);
+        assert_eq!(qsm.active_field, QuickSettingField::FpsLimiter);
+        qsm.handle_action(QuickSettingAction::AdjustRight); // 60 -> 120
+        assert_eq!(qsm.fps_limit, FpsLimit::Fps120);
+        assert_eq!(qsm.fps_limit.target_frametime_us(), 8333);
+        qsm.handle_action(QuickSettingAction::AdjustRight); // 120 -> Uncapped
+        assert_eq!(qsm.fps_limit, FpsLimit::Uncapped);
+        assert_eq!(qsm.fps_limit.target_frametime_us(), 0);
+
+        // Brightness PWM
+        qsm.set_brightness(100);
+        assert_eq!(qsm.brightness_pwm_value(), 255);
+        qsm.set_brightness(50);
+        assert_eq!(qsm.brightness_pwm_value(), 127);
+
+        // Global alpha
+        qsm.set_overlay_opacity(85);
+        let alpha = qsm.global_alpha_u16();
+        assert!(alpha > 50000);
     }
 }
