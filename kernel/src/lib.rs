@@ -114,6 +114,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Memory subsystem self-test failed!\r\n");
     }
 
+    // Initialize and verify Demand Paging & Copy-on-Write (COW) Fork Engine
+    if !memory::test_cow_and_demand_paging() {
+        serial_write_str("[KNT-PANIC] Demand paging and COW fork self-test failed!\r\n");
+    }
+
     // Initialize SMP multi-core discovery and Local APIC timer
     arch::init_smp();
 

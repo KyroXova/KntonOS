@@ -63,6 +63,7 @@ impl PageTableFlags {
     pub const DIRTY: u64 = 1 << 6;
     pub const HUGE_PAGE: u64 = 1 << 7;
     pub const GLOBAL: u64 = 1 << 8;
+    pub const COW: u64 = 1 << 9; // Available for software Copy-on-Write tracking
     pub const NO_EXECUTE: u64 = 1 << 63;
 }
 
@@ -91,6 +92,29 @@ impl PageTableEntry {
     #[inline(always)]
     pub const fn is_user_accessible(&self) -> bool {
         (self.0 & PageTableFlags::USER_ACCESSIBLE) != 0
+    }
+
+    #[inline(always)]
+    pub const fn is_cow(&self) -> bool {
+        (self.0 & PageTableFlags::COW) != 0
+    }
+
+    #[inline(always)]
+    pub fn set_cow(&mut self, cow: bool) {
+        if cow {
+            self.0 |= PageTableFlags::COW;
+        } else {
+            self.0 &= !PageTableFlags::COW;
+        }
+    }
+
+    #[inline(always)]
+    pub fn set_writable(&mut self, writable: bool) {
+        if writable {
+            self.0 |= PageTableFlags::WRITABLE;
+        } else {
+            self.0 &= !PageTableFlags::WRITABLE;
+        }
     }
 
     #[inline(always)]
@@ -252,6 +276,62 @@ impl PageTableManager {
     }
 
     /// Translates a virtual address to its mapped physical address if present.
+    /// Retrieves a mutable reference to the PageTableEntry for the given virtual address if mapped.
+    pub unsafe fn get_pte_mut(&mut self, virt: VirtAddr) -> Option<&mut PageTableEntry> {
+        let pml4 = &mut *self.root_pml4;
+        let pml4_entry = &mut pml4.entries[virt.pml4_index()];
+        if !pml4_entry.is_present() {
+            return None;
+        }
+
+        let pdpt = pml4_entry.addr().0 as *mut PageTable;
+        let pdpt_entry = &mut (*pdpt).entries[virt.pdpt_index()];
+        if !pdpt_entry.is_present() {
+            return None;
+        }
+
+        let pd = pdpt_entry.addr().0 as *mut PageTable;
+        let pd_entry = &mut (*pd).entries[virt.pd_index()];
+        if !pd_entry.is_present() || (pd_entry.flags() & PageTableFlags::HUGE_PAGE) != 0 {
+            return None;
+        }
+
+        let pt = pd_entry.addr().0 as *mut PageTable;
+        let pte = &mut (*pt).entries[virt.pt_index()];
+        if !pte.is_present() {
+            return None;
+        }
+        Some(pte)
+    }
+
+    /// Retrieves a copy of the PageTableEntry for the given virtual address if mapped and present.
+    pub unsafe fn get_pte(&self, virt: VirtAddr) -> Option<PageTableEntry> {
+        let pml4 = &*self.root_pml4;
+        let pml4_entry = &pml4.entries[virt.pml4_index()];
+        if !pml4_entry.is_present() {
+            return None;
+        }
+
+        let pdpt = pml4_entry.addr().0 as *const PageTable;
+        let pdpt_entry = &(*pdpt).entries[virt.pdpt_index()];
+        if !pdpt_entry.is_present() {
+            return None;
+        }
+
+        let pd = pdpt_entry.addr().0 as *const PageTable;
+        let pd_entry = &(*pd).entries[virt.pd_index()];
+        if !pd_entry.is_present() || (pd_entry.flags() & PageTableFlags::HUGE_PAGE) != 0 {
+            return None;
+        }
+
+        let pt = pd_entry.addr().0 as *const PageTable;
+        let pte = (*pt).entries[virt.pt_index()];
+        if !pte.is_present() {
+            return None;
+        }
+        Some(pte)
+    }
+
     pub unsafe fn translate(&self, virt: VirtAddr) -> Option<PhysAddr> {
         let pml4 = &*self.root_pml4;
         let pml4_entry = &pml4.entries[virt.pml4_index()];
