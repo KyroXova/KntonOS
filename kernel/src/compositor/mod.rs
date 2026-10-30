@@ -575,5 +575,12 @@ pub fn test_taskbar_and_launcher() -> bool {
     }
 
     serial_write_str("[KNT-DESKTOP-TASKBAR-PASS] Desktop taskbar, RTC clock widget, app launcher, and system tray verified\r\n");
+
+    // 6. Verify Wayland Client Protocol Compositor Backend
+    if !wayland::test_wayland_compositor_subsystem() {
+        serial_write_str("[KNT-PANIC] Wayland compositor backend self-test failed!\r\n");
+        return false;
+    }
+
     true
 }

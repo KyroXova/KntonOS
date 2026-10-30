@@ -338,3 +338,33 @@ pub fn test_wayland_wire_and_object_table() -> bool {
 
     true
 }
+
+/// Comprehensive verification suite for Wayland client protocol backend (`wl_surface`, `wl_buffer`, `wl_shm`)
+/// and sub-surface synchronization.
+pub fn test_wayland_compositor_subsystem() -> bool {
+    crate::serial_write_str("[KNT-WAYLAND-TEST] Running Wayland Client Protocol Compositor verification suite...\r\n");
+
+    // 1. Verify Wayland protocol wire encoding/decoding and object table
+    if !test_wayland_wire_and_object_table() {
+        crate::serial_write_str("[KNT-PANIC] Wayland wire protocol encoding or object table test failed!\r\n");
+        return false;
+    }
+    crate::serial_write_str("  * Wayland protocol wire encoding, decoding, and interface object table verified\r\n");
+
+    // 2. Verify wl_shm shared-memory pool allocation, buffer attachments, and damage tracking
+    if !test_shm_and_surface_damage() {
+        crate::serial_write_str("[KNT-PANIC] Wayland wl_shm buffer attachment or damage tracking failed!\r\n");
+        return false;
+    }
+    crate::serial_write_str("  * wl_shm zero-copy pool allocation, buffer attachments, and damage tracking verified\r\n");
+
+    // 3. Verify sub-surface tree hierarchy, z-ordering, sync/desync modes, and frame callbacks
+    if !test_subsurface_and_frame_callbacks() {
+        crate::serial_write_str("[KNT-PANIC] Wayland sub-surface hierarchy or frame callback test failed!\r\n");
+        return false;
+    }
+    crate::serial_write_str("  * Sub-surface tree hierarchy, z-ordering, and frame callback synchronization verified\r\n");
+
+    crate::serial_write_str("[KNT-WAYLAND-PASS] Wayland client protocol compositor backend and sub-surface synchronization operational\r\n");
+    true
+}
