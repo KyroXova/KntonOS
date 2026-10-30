@@ -3,7 +3,18 @@
 //! Provides Intel RAPL MSR energy metering, AMD SMU power telemetry,
 //! digital thermal sensor monitoring, and closed-loop PID TDP governors.
 
+pub mod governor;
 pub mod rapl;
+
+pub use governor::{
+    verify_thermal_monitoring, CoreThermalStatus, ThermalSensorEngine, ThermalThrottleFlags,
+    DEFAULT_TJ_MAX_CELSIUS, IA32_TEMPERATURE_TARGET, IA32_THERM_INTERRUPT, IA32_THERM_STATUS,
+    MSR_PACKAGE_THERM_STATUS, THERMAL_CRITICAL_THRESHOLD_CELSIUS,
+    THERMAL_THROTTLE_THRESHOLD_CELSIUS, THERMAL_WARN_THRESHOLD_CELSIUS, THERM_STATUS_CRITICAL,
+    THERM_STATUS_CRITICAL_LOG, THERM_STATUS_PROCHOT, THERM_STATUS_PROCHOT_LOG,
+    THERM_STATUS_READOUT_MASK, THERM_STATUS_THROTTLE, THERM_STATUS_THROTTLE_LOG,
+    THERM_STATUS_VALID,
+};
 
 pub use rapl::{
     verify_rapl_and_smu_structures, AmdSmuMailbox, CpuPowerVendor, EnergyCounter, PkgPowerLimit,
