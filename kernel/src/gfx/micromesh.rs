@@ -12,7 +12,7 @@ use alloc::vec::Vec;
 
 /// Standard square root approximation for micro-kernel geometry routines.
 #[inline(always)]
-pub fn f32_sqrt(val: f32) -> f32 {
+fn f32_sqrt(val: f32) -> f32 {
     if val <= 0.0 {
         return 0.0;
     }
@@ -27,13 +27,13 @@ pub fn f32_sqrt(val: f32) -> f32 {
 
 /// 3D Vector for spatial coordinates, surface normals, and displacement offsets.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Vec3 {
+pub struct MicroMeshVec3 {
     pub x: f32,
     pub y: f32,
     pub z: f32,
 }
 
-impl Vec3 {
+impl MicroMeshVec3 {
     /// Creates a new 3D vector.
     pub const fn new(x: f32, y: f32, z: f32) -> Self {
         Self { x, y, z }
@@ -90,7 +90,7 @@ impl Vec3 {
         f32_sqrt(self.length_sq())
     }
 
-    /// Returns a normalized unit vector, or `Vec3::zero()` if length is negligible.
+    /// Returns a normalized unit vector, or `MicroMeshVec3::zero()` if length is negligible.
     pub fn normalize(&self) -> Self {
         let len = self.length();
         if len > 1e-6 {
@@ -220,28 +220,28 @@ impl MicroMeshFormat {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BaseTriangle {
     /// 3D positions of the base triangle vertices `[V0, V1, V2]`.
-    pub positions: [Vec3; 3],
+    pub positions: [MicroMeshVec3; 3],
     /// Vertex surface normals `[N0, N1, N2]`.
-    pub normals: [Vec3; 3],
+    pub normals: [MicroMeshVec3; 3],
     /// Texture / UV coordinates `[UV0, UV1, UV2]`.
     pub uvs: [[f32; 2]; 3],
 }
 
 impl BaseTriangle {
     /// Creates a base triangle from positions, normals, and UVs.
-    pub const fn new(positions: [Vec3; 3], normals: [Vec3; 3], uvs: [[f32; 2]; 3]) -> Self {
+    pub const fn new(positions: [MicroMeshVec3; 3], normals: [MicroMeshVec3; 3], uvs: [[f32; 2]; 3]) -> Self {
         Self { positions, normals, uvs }
     }
 
     /// Calculates the flat face normal of the base triangle via cross product $(V1 - V0) \times (V2 - V0)$.
-    pub fn face_normal(&self) -> Vec3 {
+    pub fn face_normal(&self) -> MicroMeshVec3 {
         let e1 = self.positions[1].sub(&self.positions[0]);
         let e2 = self.positions[2].sub(&self.positions[0]);
         e1.cross(&e2).normalize()
     }
 
     /// Computes base surface position $P_0(u, v, w) = w \cdot V0 + u \cdot V1 + v \cdot V2$.
-    pub fn evaluate_surface_point(&self, bary: &BarycentricCoord) -> Vec3 {
+    pub fn evaluate_surface_point(&self, bary: &BarycentricCoord) -> MicroMeshVec3 {
         let p0 = self.positions[0].scale(bary.w);
         let p1 = self.positions[1].scale(bary.u);
         let p2 = self.positions[2].scale(bary.v);
@@ -249,7 +249,7 @@ impl BaseTriangle {
     }
 
     /// Computes linearly interpolated surface normal $N(u, v, w) = \text{norm}(w \cdot N0 + u \cdot N1 + v \cdot N2)$.
-    pub fn evaluate_interpolated_normal(&self, bary: &BarycentricCoord) -> Vec3 {
+    pub fn evaluate_interpolated_normal(&self, bary: &BarycentricCoord) -> MicroMeshVec3 {
         let n0 = self.normals[0].scale(bary.w);
         let n1 = self.normals[1].scale(bary.u);
         let n2 = self.normals[2].scale(bary.v);
@@ -270,13 +270,13 @@ pub struct MicroVertex {
     /// Barycentric coordinates within the base triangle domain.
     pub barycentric: BarycentricCoord,
     /// Base triangle domain surface position before displacement.
-    pub base_position: Vec3,
+    pub base_position: MicroMeshVec3,
     /// Surface normal vector at this micro-vertex.
-    pub normal: Vec3,
+    pub normal: MicroMeshVec3,
     /// 3D displacement vector applied to this micro-vertex.
-    pub displacement: Vec3,
+    pub displacement: MicroMeshVec3,
     /// Final displaced world/object position: `base_position + displacement`.
-    pub final_position: Vec3,
+    pub final_position: MicroMeshVec3,
 }
 
 /// 3-index connectivity descriptor defining an individual micro-triangle.
@@ -388,7 +388,7 @@ pub struct DisplacementPayload {
 
 impl DisplacementPayload {
     /// Constructs a payload from uncompressed 3D vectors.
-    pub fn from_vec3_slice(vectors: &[Vec3]) -> Self {
+    pub fn from_vec3_slice(vectors: &[MicroMeshVec3]) -> Self {
         let mut data = Vec::with_capacity(vectors.len() * 12);
         for v in vectors {
             data.extend_from_slice(&v.x.to_le_bytes());
@@ -404,7 +404,7 @@ impl DisplacementPayload {
     /// Packs a 3D unit/normalized displacement vector into a 32-bit 11-11-10 word.
     ///
     /// Components in `[-1.0, 1.0]` are mapped into 11-bit X (0..2047), 11-bit Y (0..2047), and 10-bit Z (0..1023).
-    pub fn pack_11_11_10(v: &Vec3) -> u32 {
+    pub fn pack_11_11_10(v: &MicroMeshVec3) -> u32 {
         let clamp_x = if v.x < -1.0 { -1.0 } else if v.x > 1.0 { 1.0 } else { v.x };
         let clamp_y = if v.y < -1.0 { -1.0 } else if v.y > 1.0 { 1.0 } else { v.y };
         let clamp_z = if v.z < -1.0 { -1.0 } else if v.z > 1.0 { 1.0 } else { v.z };
@@ -452,11 +452,11 @@ impl DisplacementPayload {
     pub fn decompress_at(
         &self,
         index: usize,
-        interpolated_normal: &Vec3,
+        interpolated_normal: &MicroMeshVec3,
         scale: f32,
         min_displacement: f32,
         max_displacement: f32,
-    ) -> Vec3 {
+    ) -> MicroMeshVec3 {
         match self.format {
             MicroMeshFormat::UncompressedVec3 => {
                 let offset = index * 12;
@@ -470,9 +470,9 @@ impl DisplacementPayload {
                     let x = f32::from_le_bytes(bx) * scale;
                     let y = f32::from_le_bytes(by) * scale;
                     let z = f32::from_le_bytes(bz) * scale;
-                    Vec3::new(x, y, z)
+                    MicroMeshVec3::new(x, y, z)
                 } else {
-                    Vec3::zero()
+                    MicroMeshVec3::zero()
                 }
             }
             MicroMeshFormat::Packed11_11_10 => {
@@ -490,9 +490,9 @@ impl DisplacementPayload {
                     let fy = ((raw_y as f32) / 2047.0) * 2.0 - 1.0;
                     let fz = ((raw_z as f32) / 1023.0) * 2.0 - 1.0;
 
-                    Vec3::new(fx * scale, fy * scale, fz * scale)
+                    MicroMeshVec3::new(fx * scale, fy * scale, fz * scale)
                 } else {
-                    Vec3::zero()
+                    MicroMeshVec3::zero()
                 }
             }
             MicroMeshFormat::QuantizedScalar8 => {
@@ -502,7 +502,7 @@ impl DisplacementPayload {
                     let height = min_displacement + norm * (max_displacement - min_displacement);
                     interpolated_normal.scale(height * scale)
                 } else {
-                    Vec3::zero()
+                    MicroMeshVec3::zero()
                 }
             }
             MicroMeshFormat::QuantizedScalar16 => {
@@ -515,7 +515,7 @@ impl DisplacementPayload {
                     let height = min_displacement + norm * (max_displacement - min_displacement);
                     interpolated_normal.scale(height * scale)
                 } else {
-                    Vec3::zero()
+                    MicroMeshVec3::zero()
                 }
             }
         }
@@ -592,7 +592,7 @@ impl DisplacedMicroMesh {
             return;
         }
 
-        let mut accumulated_normals = alloc::vec![Vec3::zero(); self.vertices.len()];
+        let mut accumulated_normals = alloc::vec![MicroMeshVec3::zero(); self.vertices.len()];
 
         // Accumulate facet normals for each micro-triangle
         for tri in self.triangles.iter() {
@@ -742,7 +742,7 @@ impl MicroMeshLodGovernor {
     }
 
     /// Evaluates the discrete subdivision level and continuous morph parameter `t in [0.0, 1.0]`.
-    pub fn evaluate_lod(&self, camera_pos: &Vec3, target_pos: &Vec3) -> (SubdivisionLevel, f32) {
+    pub fn evaluate_lod(&self, camera_pos: &MicroMeshVec3, target_pos: &MicroMeshVec3) -> (SubdivisionLevel, f32) {
         let dist = camera_pos.sub(target_pos).length();
 
         if dist < self.distance_thresholds[0] {
@@ -778,27 +778,27 @@ impl MicroMeshLodGovernor {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Aabb3D {
     /// Minimum corner of the bounding box.
-    pub min: Vec3,
+    pub min: MicroMeshVec3,
     /// Maximum corner of the bounding box.
-    pub max: Vec3,
+    pub max: MicroMeshVec3,
 }
 
 impl Aabb3D {
     /// Creates an empty/inverted AABB ready for point expansion.
     pub const fn empty() -> Self {
         Self {
-            min: Vec3::new(f32::MAX, f32::MAX, f32::MAX),
-            max: Vec3::new(-f32::MAX, -f32::MAX, -f32::MAX),
+            min: MicroMeshVec3::new(f32::MAX, f32::MAX, f32::MAX),
+            max: MicroMeshVec3::new(-f32::MAX, -f32::MAX, -f32::MAX),
         }
     }
 
     /// Creates an AABB enclosing a single initial point.
-    pub const fn from_point(p: &Vec3) -> Self {
+    pub const fn from_point(p: &MicroMeshVec3) -> Self {
         Self { min: *p, max: *p }
     }
 
     /// Expands the AABB to enclose the point `p`.
-    pub fn expand_by_point(&mut self, p: &Vec3) {
+    pub fn expand_by_point(&mut self, p: &MicroMeshVec3) {
         if p.x < self.min.x { self.min.x = p.x; }
         if p.y < self.min.y { self.min.y = p.y; }
         if p.z < self.min.z { self.min.z = p.z; }
@@ -820,12 +820,12 @@ impl Aabb3D {
     }
 
     /// Center position of the bounding box.
-    pub fn center(&self) -> Vec3 {
+    pub fn center(&self) -> MicroMeshVec3 {
         self.min.add(&self.max).scale(0.5)
     }
 
     /// Extents (half-dimensions) of the bounding box.
-    pub fn extents(&self) -> Vec3 {
+    pub fn extents(&self) -> MicroMeshVec3 {
         self.max.sub(&self.min).scale(0.5)
     }
 
@@ -845,7 +845,7 @@ pub struct MicroMeshBoundingHierarchy {
     /// Conservative AABB computed from base triangle bounds expanded by maximum displacement.
     pub conservative_aabb: Aabb3D,
     /// Average surface normal across all micro-vertices.
-    pub average_normal: Vec3,
+    pub average_normal: MicroMeshVec3,
     /// Minimum dot product between any micro-triangle facet normal and the average normal.
     pub normal_cone_cutoff: f32,
 }
@@ -854,7 +854,7 @@ impl MicroMeshBoundingHierarchy {
     /// Constructs the bounding hierarchy by analyzing displaced vertices and normals.
     pub fn build(mesh: &DisplacedMicroMesh) -> Self {
         let mut tight = Aabb3D::empty();
-        let mut normal_sum = Vec3::zero();
+        let mut normal_sum = MicroMeshVec3::zero();
 
         for v in mesh.vertices.iter() {
             tight.expand_by_point(&v.final_position);
@@ -890,7 +890,7 @@ impl MicroMeshBoundingHierarchy {
     }
 
     /// Evaluates whether the entire micro-mesh is backfacing relative to the camera position.
-    pub fn is_backfacing(&self, camera_pos: &Vec3) -> bool {
+    pub fn is_backfacing(&self, camera_pos: &MicroMeshVec3) -> bool {
         let center = self.tight_aabb.center();
         let view_vec = camera_pos.sub(&center).normalize();
 
@@ -901,5 +901,212 @@ impl MicroMeshBoundingHierarchy {
         dot < 0.0 && dot.abs() > (1.0 - self.normal_cone_cutoff).max(0.1)
     }
 }
+
+// -----------------------------------------------------------------------------
+// Verification Self-Test Suite
+// -----------------------------------------------------------------------------
+
+/// Comprehensive verification self-test for Direct3D 12 Dynamic Micro-Mesh
+/// Displacement & Sub-Triangle Geometry LOD Compressor.
+///
+/// Emits sentinel [KNT-GPU-MICROMESH-PASS] upon successful validation.
+pub fn test_micromesh_subsystem() -> bool {
+    // 1. Verify recursive base triangle subdivision levels and micro-triangle counts
+    if SubdivisionLevel::Level0.num_micro_triangles() != 1 || SubdivisionLevel::Level0.num_micro_vertices() != 3 {
+        crate::serial_write_str("[KNT-FAIL-MM-1] Level 0 counts mismatch\r\n");
+        return false;
+    }
+    if SubdivisionLevel::Level1.num_micro_triangles() != 4 || SubdivisionLevel::Level1.num_micro_vertices() != 6 {
+        crate::serial_write_str("[KNT-FAIL-MM-2] Level 1 counts mismatch\r\n");
+        return false;
+    }
+    if SubdivisionLevel::Level2.num_micro_triangles() != 16 || SubdivisionLevel::Level2.num_micro_vertices() != 15 {
+        crate::serial_write_str("[KNT-FAIL-MM-3] Level 2 counts mismatch\r\n");
+        return false;
+    }
+    if SubdivisionLevel::Level3.num_micro_triangles() != 64 || SubdivisionLevel::Level3.num_micro_vertices() != 45 {
+        crate::serial_write_str("[KNT-FAIL-MM-4] Level 3 counts mismatch\r\n");
+        return false;
+    }
+    if SubdivisionLevel::Level4.num_micro_triangles() != 256 || SubdivisionLevel::Level4.num_micro_vertices() != 153 {
+        crate::serial_write_str("[KNT-FAIL-MM-5] Level 4 counts mismatch\r\n");
+        return false;
+    }
+    if SubdivisionLevel::Level5.num_micro_triangles() != 1024 || SubdivisionLevel::Level5.num_micro_vertices() != 561 {
+        crate::serial_write_str("[KNT-FAIL-MM-6] Level 5 counts mismatch\r\n");
+        return false;
+    }
+
+    // Verify Level 5 table generation (1024 micro-triangles, 561 micro-vertices)
+    let (coords_l5, tris_l5) = BarycentricSubdivisionTable::generate_subdivision(SubdivisionLevel::Level5);
+    if coords_l5.len() != 561 || tris_l5.len() != 1024 {
+        crate::serial_write_str("[KNT-FAIL-MM-7] Level 5 generated table size mismatch\r\n");
+        return false;
+    }
+    for bary in coords_l5.iter() {
+        if !bary.is_valid() {
+            crate::serial_write_str("[KNT-FAIL-MM-8] Invalid barycentric coordinate generated\r\n");
+            return false;
+        }
+    }
+
+    // 2. Verify compressed displacement vector encodings (Packed 11-11-10 UNORM)
+    let test_vec = MicroMeshVec3::new(0.5, -0.25, 0.75);
+    let packed_word = DisplacementPayload::pack_11_11_10(&test_vec);
+    let payload = DisplacementPayload::from_packed_11_11_10(&[packed_word]);
+    let dummy_norm = MicroMeshVec3::new(0.0, 0.0, 1.0);
+    let decomp = payload.decompress_at(0, &dummy_norm, 1.0, 0.0, 0.0);
+
+    if (decomp.x - test_vec.x).abs() > 0.02
+        || (decomp.y - test_vec.y).abs() > 0.02
+        || (decomp.z - test_vec.z).abs() > 0.02
+    {
+        crate::serial_write_str("[KNT-FAIL-MM-9] Packed 11-11-10 vector decompression mismatch\r\n");
+        return false;
+    }
+
+    // Verify QuantizedScalar8 displacement
+    let payload_u8 = DisplacementPayload::from_quantized_u8(&[128]);
+    let decomp_u8 = payload_u8.decompress_at(0, &dummy_norm, 1.0, -10.0, 10.0);
+    if (decomp_u8.z - 0.039).abs() > 0.1 || decomp_u8.x.abs() > 1e-4 {
+        crate::serial_write_str("[KNT-FAIL-MM-10] Quantized scalar 8 decompression mismatch\r\n");
+        return false;
+    }
+
+    // 3. Verify Displaced Micro-Mesh Generation & Surface Normal Synthesis
+    let base = BaseTriangle::new(
+        [
+            MicroMeshVec3::new(0.0, 0.0, 0.0),
+            MicroMeshVec3::new(10.0, 0.0, 0.0),
+            MicroMeshVec3::new(0.0, 10.0, 0.0),
+        ],
+        [
+            MicroMeshVec3::new(0.0, 0.0, 1.0),
+            MicroMeshVec3::new(0.0, 0.0, 1.0),
+            MicroMeshVec3::new(0.0, 0.0, 1.0),
+        ],
+        [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+    );
+
+    let desc = MicroMeshDescriptor {
+        triangle_id: 101,
+        subdivision_level: SubdivisionLevel::Level3,
+        format: MicroMeshFormat::Packed11_11_10,
+        displacement_scale: 2.0,
+        min_displacement: 0.0,
+        max_displacement: 2.0,
+    };
+
+    let num_l3_verts = SubdivisionLevel::Level3.num_micro_vertices();
+    let mut packed_vectors = alloc::vec![DisplacementPayload::pack_11_11_10(&MicroMeshVec3::new(0.0, 0.0, 0.5)); num_l3_verts];
+    // Add bump at center
+    packed_vectors[num_l3_verts / 2] = DisplacementPayload::pack_11_11_10(&MicroMeshVec3::new(0.0, 0.0, 1.0));
+    let disp_payload = DisplacementPayload::from_packed_11_11_10(&packed_vectors);
+
+    let mut mesh = DisplacedMicroMesh::generate(desc, base, &disp_payload);
+    if mesh.vertex_count() != 45 || mesh.triangle_count() != 64 {
+        crate::serial_write_str("[KNT-FAIL-MM-11] Displaced mesh counts mismatch\r\n");
+        return false;
+    }
+
+    // Verify normal synthesis produced normalized vectors
+    for v in mesh.vertices.iter() {
+        let len = v.normal.length();
+        if (len - 1.0).abs() > 0.05 {
+            crate::serial_write_str("[KNT-FAIL-MM-12] Synthesized normal is not unit length\r\n");
+            return false;
+        }
+    }
+
+    // 4. Verify Crack-Free Boundary Edge Stitching against Level 2 neighbor
+    // Before stitching: vertices on Edge 0 (V0 -> V1) have 8 segments (9 vertices)
+    let edge_indices = mesh.get_edge_vertex_indices(0);
+    if edge_indices.len() != 9 {
+        crate::serial_write_str("[KNT-FAIL-MM-13] Edge 0 index count mismatch\r\n");
+        return false;
+    }
+
+    // Artificially disturb intermediate vertex 1
+    mesh.vertices[edge_indices[1]].final_position.z += 5.0;
+
+    // Stitch against neighbor at Level 2 (ratio = 2: vertices 1, 3, 5, 7 get stitched)
+    let stitched = mesh.stitch_edge(0, SubdivisionLevel::Level2);
+    if stitched != 4 {
+        crate::serial_write_str("[KNT-FAIL-MM-14] Stitched vertex count mismatch\r\n");
+        return false;
+    }
+
+    // Verify intermediate vertex 1 is now strictly collinear between vertices 0 and 2
+    let p0 = mesh.vertices[edge_indices[0]].final_position;
+    let p1 = mesh.vertices[edge_indices[1]].final_position;
+    let p2 = mesh.vertices[edge_indices[2]].final_position;
+    let expected_p1 = p0.scale(0.5).add(&p2.scale(0.5));
+    if (p1.z - expected_p1.z).abs() > 1e-4 {
+        crate::serial_write_str("[KNT-FAIL-MM-15] Edge stitching did not eliminate seam crack\r\n");
+        return false;
+    }
+
+    // 5. Verify Continuous LOD Governor and Bounding Hierarchy
+    let governor = MicroMeshLodGovernor::new([15.0, 35.0, 75.0, 150.0, 300.0]);
+    let target = MicroMeshVec3::new(5.0, 5.0, 0.0);
+
+    let (lod_close, _) = governor.evaluate_lod(&MicroMeshVec3::new(5.0, 5.0, 10.0), &target);
+    if lod_close != SubdivisionLevel::Level5 {
+        crate::serial_write_str("[KNT-FAIL-MM-16] Close distance should yield Level 5\r\n");
+        return false;
+    }
+
+    let (lod_mid, _) = governor.evaluate_lod(&MicroMeshVec3::new(5.0, 5.0, 50.0), &target);
+    if lod_mid != SubdivisionLevel::Level3 {
+        crate::serial_write_str("[KNT-FAIL-MM-17] Mid distance should yield Level 3\r\n");
+        return false;
+    }
+
+    let (lod_far, _) = governor.evaluate_lod(&MicroMeshVec3::new(5.0, 5.0, 500.0), &target);
+    if lod_far != SubdivisionLevel::Level0 {
+        crate::serial_write_str("[KNT-FAIL-MM-18] Far distance should yield Level 0\r\n");
+        return false;
+    }
+
+    // Bounding Hierarchy verification
+    let bvh = MicroMeshBoundingHierarchy::build(&mesh);
+    // Tight AABB must enclose all vertices
+    for v in mesh.vertices.iter() {
+        let p = &v.final_position;
+        if p.x < bvh.tight_aabb.min.x - 1e-3 || p.x > bvh.tight_aabb.max.x + 1e-3
+            || p.y < bvh.tight_aabb.min.y - 1e-3 || p.y > bvh.tight_aabb.max.y + 1e-3
+            || p.z < bvh.tight_aabb.min.z - 1e-3 || p.z > bvh.tight_aabb.max.z + 1e-3
+        {
+            crate::serial_write_str("[KNT-FAIL-MM-19] Tight AABB does not enclose vertex\r\n");
+            return false;
+        }
+    }
+
+    // Conservative AABB must enclose tight AABB
+    if bvh.conservative_aabb.min.x > bvh.tight_aabb.min.x
+        || bvh.conservative_aabb.max.x < bvh.tight_aabb.max.x
+    {
+        crate::serial_write_str("[KNT-FAIL-MM-20] Conservative AABB bounds error\r\n");
+        return false;
+    }
+
+    // Backfacing test: camera in front (+Z) is not backfacing, behind (-Z) is backfacing
+    let cam_front = MicroMeshVec3::new(5.0, 5.0, 50.0);
+    let cam_behind = MicroMeshVec3::new(5.0, 5.0, -50.0);
+    if bvh.is_backfacing(&cam_front) {
+        crate::serial_write_str("[KNT-FAIL-MM-21] Front camera flagged as backfacing\r\n");
+        return false;
+    }
+    if !bvh.is_backfacing(&cam_behind) {
+        crate::serial_write_str("[KNT-FAIL-MM-22] Behind camera not flagged as backfacing\r\n");
+        return false;
+    }
+
+    // 6. Emit deterministic boot sentinel
+    crate::serial_write_str("[KNT-GPU-MICROMESH-PASS] Direct3D 12 dynamic micro-mesh displacement & sub-triangle geometry LOD compressor verified\r\n");
+
+    true
+}
+
 
 
