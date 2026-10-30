@@ -834,3 +834,199 @@ pub fn test_dual_ring_channel() -> bool {
 
     true
 }
+
+// -------------------------------------------------------------------------------------------------
+// Zero-Copy Shared-Memory Packet Descriptors & Batch Ring API
+// -------------------------------------------------------------------------------------------------
+
+/// Transfer ownership flag: indicates the descriptor currently belongs to the consumer.
+pub const DESC_OWNERSHIP_CONSUMER: u32 = 1 << 0;
+/// Transfer ownership flag: indicates the descriptor currently belongs to the producer.
+pub const DESC_OWNERSHIP_PRODUCER: u32 = 0;
+/// Flag indicating end-of-packet/chain.
+pub const DESC_FLAG_EOP: u32 = 1 << 1;
+/// Flag indicating zero-copy out-of-band buffer reference (physical or shared memory offset).
+pub const DESC_FLAG_ZERO_COPY_REF: u32 = 1 << 2;
+
+/// Fixed-size 32-byte zero-copy shared-memory packet descriptor.
+///
+/// Enables descriptors to transfer buffer ownership across address spaces without
+/// copying the actual payload data.
+#[repr(C, align(32))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PacketDescriptor {
+    /// Buffer offset in shared memory region or physical address.
+    pub buffer_addr: u64,
+    /// Length of payload in bytes.
+    pub length: u32,
+    /// Ownership and transfer control flags (`DESC_OWNERSHIP_*`, `DESC_FLAG_*`).
+    pub flags: u32,
+    /// Application-defined transaction or sequence identifier.
+    pub cookie: u64,
+    /// Reserved for hardware DMA / alignment padding.
+    pub reserved: u64,
+}
+
+impl PacketDescriptor {
+    pub const fn empty() -> Self {
+        Self {
+            buffer_addr: 0,
+            length: 0,
+            flags: 0,
+            cookie: 0,
+            reserved: 0,
+        }
+    }
+
+    pub const fn new(buffer_addr: u64, length: u32, flags: u32, cookie: u64) -> Self {
+        Self {
+            buffer_addr,
+            length,
+            flags,
+            cookie,
+            reserved: 0,
+        }
+    }
+
+    #[inline(always)]
+    pub fn is_owned_by_consumer(&self) -> bool {
+        (self.flags & DESC_OWNERSHIP_CONSUMER) != 0
+    }
+
+    #[inline(always)]
+    pub fn is_owned_by_producer(&self) -> bool {
+        !self.is_owned_by_consumer()
+    }
+
+    #[inline(always)]
+    pub fn transfer_to_consumer(&mut self) {
+        self.flags |= DESC_OWNERSHIP_CONSUMER;
+    }
+
+    #[inline(always)]
+    pub fn transfer_to_producer(&mut self) {
+        self.flags &= !DESC_OWNERSHIP_CONSUMER;
+    }
+}
+
+/// Circular descriptor ring tracking zero-copy buffer handoffs.
+#[repr(C, align(64))]
+pub struct DescriptorRing<const SLOTS: usize> {
+    pub head: CachelineAlignedAtomicUsize,
+    pub tail: CachelineAlignedAtomicUsize,
+    pub descriptors: [PacketDescriptor; SLOTS],
+}
+
+impl<const SLOTS: usize> DescriptorRing<SLOTS> {
+    pub const fn new() -> Self {
+        Self {
+            head: CachelineAlignedAtomicUsize::new(0),
+            tail: CachelineAlignedAtomicUsize::new(0),
+            descriptors: [PacketDescriptor::empty(); SLOTS],
+        }
+    }
+
+    #[inline(always)]
+    pub const fn capacity(&self) -> usize {
+        SLOTS
+    }
+
+    #[inline(always)]
+    pub fn available_read(&self) -> usize {
+        let t = self.tail.value.load(Ordering::Acquire);
+        let h = self.head.value.load(Ordering::Relaxed);
+        t.wrapping_sub(h)
+    }
+
+    #[inline(always)]
+    pub fn available_write(&self) -> usize {
+        SLOTS.saturating_sub(self.available_read())
+    }
+
+    /// Enqueues a batch of zero-copy packet descriptors in a single atomic sequence.
+    pub fn enqueue_batch(&mut self, batch: &[PacketDescriptor]) -> usize {
+        let count = core::cmp::min(batch.len(), self.available_write());
+        if count == 0 {
+            return 0;
+        }
+
+        let current_tail = self.tail.value.load(Ordering::Relaxed);
+        for i in 0..count {
+            let slot = (current_tail + i) % SLOTS;
+            let mut desc = batch[i];
+            desc.transfer_to_consumer();
+            self.descriptors[slot] = desc;
+        }
+
+        self.tail
+            .value
+            .store(current_tail.wrapping_add(count), Ordering::Release);
+        count
+    }
+
+    /// Dequeues a batch of zero-copy packet descriptors into `dest_batch`.
+    pub fn dequeue_batch(&mut self, dest_batch: &mut [PacketDescriptor]) -> usize {
+        let count = core::cmp::min(dest_batch.len(), self.available_read());
+        if count == 0 {
+            return 0;
+        }
+
+        let current_head = self.head.value.load(Ordering::Relaxed);
+        for i in 0..count {
+            let slot = (current_head + i) % SLOTS;
+            let mut desc = self.descriptors[slot];
+            desc.transfer_to_producer();
+            dest_batch[i] = desc;
+        }
+
+        self.head
+            .value
+            .store(current_head.wrapping_add(count), Ordering::Release);
+        count
+    }
+}
+
+/// Unit test verifying zero-copy descriptor ownership transfer and batch operations.
+pub fn test_descriptor_ring_batch() -> bool {
+    static mut DESC_RING: DescriptorRing<16> = DescriptorRing::new();
+    let ring = unsafe { &mut *core::ptr::addr_of_mut!(DESC_RING) };
+
+    if ring.available_read() != 0 || ring.available_write() != 16 {
+        return false;
+    }
+
+    let mut send_batch = [PacketDescriptor::empty(); 4];
+    for i in 0..4 {
+        send_batch[i] = PacketDescriptor::new(
+            0x0000_7FFF_1000_0000 + (i as u64) * 4096,
+            4096,
+            DESC_FLAG_ZERO_COPY_REF | DESC_FLAG_EOP,
+            100 + (i as u64),
+        );
+    }
+
+    let enqueued = ring.enqueue_batch(&send_batch);
+    if enqueued != 4 || ring.available_read() != 4 || ring.available_write() != 12 {
+        return false;
+    }
+
+    let mut recv_batch = [PacketDescriptor::empty(); 4];
+    let dequeued = ring.dequeue_batch(&mut recv_batch);
+    if dequeued != 4 || ring.available_read() != 0 || ring.available_write() != 16 {
+        return false;
+    }
+
+    for i in 0..4 {
+        if recv_batch[i].buffer_addr != send_batch[i].buffer_addr {
+            return false;
+        }
+        if recv_batch[i].cookie != send_batch[i].cookie {
+            return false;
+        }
+        if !recv_batch[i].is_owned_by_producer() {
+            return false;
+        }
+    }
+
+    true
+}

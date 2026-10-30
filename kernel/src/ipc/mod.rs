@@ -17,6 +17,8 @@ pub use ring::{
     SpscRingBuffer, CACHELINE_SIZE, PACKET_HEADER_SIZE, PACKET_MAGIC,
     test_dual_ring_channel, DualRingChannel, DualRingChannelHeader, DualRingEndpoint,
     DualRingPointers, DUAL_RING_MAGIC, DUAL_RING_VERSION,
+    test_descriptor_ring_batch, DescriptorRing, PacketDescriptor,
+    DESC_FLAG_EOP, DESC_FLAG_ZERO_COPY_REF, DESC_OWNERSHIP_CONSUMER, DESC_OWNERSHIP_PRODUCER,
 };
 pub use section::{SectionManager, SharedSection, SECTION_MANAGER};
 pub use umwait::{
