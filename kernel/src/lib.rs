@@ -21,6 +21,7 @@ pub mod gfx;
 pub mod terminal;
 pub mod power;
 pub mod mm;
+pub mod mem;
 pub mod trace;
 pub mod bpf;
 pub mod audio;
