@@ -375,6 +375,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Fast input ring and micro-jitter smoothing self-test failed!\r\n");
     }
 
+    // Initialize and verify Handheld PC Gyro Aiming & Motion Assist Dynamic Angle Governor
+    if !drivers::input::test_gyro_aiming_and_motion_assist_subsystem() {
+        serial_write_str("[KNT-PANIC] Gyro aiming and motion assist governor self-test failed!\r\n");
+    }
+
     // Initialize and verify Handheld Ambient Light Sensor (ALS) & HDR Auto-Brightness Governor
     if !drivers::sensor::test_als_and_brightness_subsystem() {
         serial_write_str("[KNT-PANIC] Handheld ALS and auto-brightness governor self-test failed!\r\n");
