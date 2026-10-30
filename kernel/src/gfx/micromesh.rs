@@ -635,5 +635,271 @@ impl DisplacedMicroMesh {
     pub fn triangle_count(&self) -> usize {
         self.triangles.len()
     }
+
+    /// Resolves linear vertex indices along one of the three base triangle boundary edges:
+    /// - Edge 0: $V_0 \to V_1$ ($v = 0$, row $i = 0$, $j = 0..N$)
+    /// - Edge 1: $V_1 \to V_2$ ($w = 0$, $i + j = N$, $i = 0..N$, $j = N - i$)
+    /// - Edge 2: $V_0 \to V_2$ ($u = 0$, col $j = 0$, $i = 0..N$)
+    pub fn get_edge_vertex_indices(&self, edge_idx: usize) -> Vec<usize> {
+        let n = self.desc.subdivision_level.segments_per_edge();
+        let mut indices = Vec::with_capacity((n + 1) as usize);
+
+        match edge_idx {
+            0 => {
+                // Edge 0: row i = 0, col j from 0 to n
+                for j in 0..=n {
+                    indices.push(BarycentricSubdivisionTable::linear_vertex_index(n, 0, j));
+                }
+            }
+            1 => {
+                // Edge 1: from V1 (i=0, j=n) to V2 (i=n, j=0)
+                for i in 0..=n {
+                    let j = n - i;
+                    indices.push(BarycentricSubdivisionTable::linear_vertex_index(n, i, j));
+                }
+            }
+            2 => {
+                // Edge 2: col j = 0, row i from 0 to n (V0 to V2)
+                for i in 0..=n {
+                    indices.push(BarycentricSubdivisionTable::linear_vertex_index(n, i, 0));
+                }
+            }
+            _ => {}
+        }
+
+        indices
+    }
+
+    /// Performs crack-free edge stitching against an adjoining neighbor base triangle
+    /// evaluated at `neighbor_level`.
+    ///
+    /// If `neighbor_level < self.desc.subdivision_level`, intermediate micro-vertices along
+    /// the shared boundary edge are linearly snapped to the coarser edge segments of the neighbor,
+    /// guaranteeing bit-exact geometric coincidence and eliminating cracks/tearing.
+    pub fn stitch_edge(&mut self, edge_idx: usize, neighbor_level: SubdivisionLevel) -> usize {
+        let self_level = self.desc.subdivision_level.to_u8();
+        let neigh_level = neighbor_level.to_u8();
+
+        if neigh_level >= self_level {
+            return 0;
+        }
+
+        let ratio = 1usize << (self_level - neigh_level);
+        let edge_indices = self.get_edge_vertex_indices(edge_idx);
+        let count = edge_indices.len();
+        if count == 0 {
+            return 0;
+        }
+
+        let mut stitched_count = 0;
+
+        for k in 0..count {
+            if k % ratio != 0 {
+                let k0 = (k / ratio) * ratio;
+                let k1 = (k0 + ratio).min(count - 1);
+
+                let p0 = self.vertices[edge_indices[k0]].final_position;
+                let p1 = self.vertices[edge_indices[k1]].final_position;
+
+                let alpha = ((k - k0) as f32) / ((k1 - k0) as f32);
+                let interp_pos = p0.scale(1.0 - alpha).add(&p1.scale(alpha));
+
+                self.vertices[edge_indices[k]].final_position = interp_pos;
+                stitched_count += 1;
+            }
+        }
+
+        if stitched_count > 0 {
+            self.synthesize_surface_normals();
+        }
+
+        stitched_count
+    }
 }
+
+// -----------------------------------------------------------------------------
+// Continuous Sub-Triangle LOD Governor & Distance Evaluator
+// -----------------------------------------------------------------------------
+
+/// Continuous LOD Governor that determines the optimal micro-mesh subdivision level
+/// based on camera distance and screen-space geometric fidelity thresholds.
+#[derive(Debug, Clone)]
+pub struct MicroMeshLodGovernor {
+    /// Distance thresholds `[d0, d1, d2, d3, d4]` for transitions:
+    /// - `dist < d0`: Level 5 (1024 micro-triangles)
+    /// - `dist < d1`: Level 4 (256 micro-triangles)
+    /// - `dist < d2`: Level 3 (64 micro-triangles)
+    /// - `dist < d3`: Level 2 (16 micro-triangles)
+    /// - `dist < d4`: Level 1 (4 micro-triangles)
+    /// - `dist >= d4`: Level 0 (1 base triangle)
+    pub distance_thresholds: [f32; 5],
+}
+
+impl MicroMeshLodGovernor {
+    /// Creates a new LOD governor with explicit distance thresholds.
+    pub const fn new(distance_thresholds: [f32; 5]) -> Self {
+        Self { distance_thresholds }
+    }
+
+    /// Evaluates the discrete subdivision level and continuous morph parameter `t in [0.0, 1.0]`.
+    pub fn evaluate_lod(&self, camera_pos: &Vec3, target_pos: &Vec3) -> (SubdivisionLevel, f32) {
+        let dist = camera_pos.sub(target_pos).length();
+
+        if dist < self.distance_thresholds[0] {
+            let t = dist / self.distance_thresholds[0];
+            (SubdivisionLevel::Level5, t)
+        } else if dist < self.distance_thresholds[1] {
+            let t = (dist - self.distance_thresholds[0])
+                / (self.distance_thresholds[1] - self.distance_thresholds[0]);
+            (SubdivisionLevel::Level4, t)
+        } else if dist < self.distance_thresholds[2] {
+            let t = (dist - self.distance_thresholds[1])
+                / (self.distance_thresholds[2] - self.distance_thresholds[1]);
+            (SubdivisionLevel::Level3, t)
+        } else if dist < self.distance_thresholds[3] {
+            let t = (dist - self.distance_thresholds[2])
+                / (self.distance_thresholds[3] - self.distance_thresholds[2]);
+            (SubdivisionLevel::Level2, t)
+        } else if dist < self.distance_thresholds[4] {
+            let t = (dist - self.distance_thresholds[3])
+                / (self.distance_thresholds[4] - self.distance_thresholds[3]);
+            (SubdivisionLevel::Level1, t)
+        } else {
+            (SubdivisionLevel::Level0, 0.0)
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// 3D Axis-Aligned Bounding Box (AABB) & Micro-Mesh Bounding Hierarchy
+// -----------------------------------------------------------------------------
+
+/// 3D Axis-Aligned Bounding Box for spatial culling and BVH acceleration.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Aabb3D {
+    /// Minimum corner of the bounding box.
+    pub min: Vec3,
+    /// Maximum corner of the bounding box.
+    pub max: Vec3,
+}
+
+impl Aabb3D {
+    /// Creates an empty/inverted AABB ready for point expansion.
+    pub const fn empty() -> Self {
+        Self {
+            min: Vec3::new(f32::MAX, f32::MAX, f32::MAX),
+            max: Vec3::new(-f32::MAX, -f32::MAX, -f32::MAX),
+        }
+    }
+
+    /// Creates an AABB enclosing a single initial point.
+    pub const fn from_point(p: &Vec3) -> Self {
+        Self { min: *p, max: *p }
+    }
+
+    /// Expands the AABB to enclose the point `p`.
+    pub fn expand_by_point(&mut self, p: &Vec3) {
+        if p.x < self.min.x { self.min.x = p.x; }
+        if p.y < self.min.y { self.min.y = p.y; }
+        if p.z < self.min.z { self.min.z = p.z; }
+
+        if p.x > self.max.x { self.max.x = p.x; }
+        if p.y > self.max.y { self.max.y = p.y; }
+        if p.z > self.max.z { self.max.z = p.z; }
+    }
+
+    /// Expands all dimensions by a scalar margin.
+    pub fn expand_by_margin(&mut self, margin: f32) {
+        self.min.x -= margin;
+        self.min.y -= margin;
+        self.min.z -= margin;
+
+        self.max.x += margin;
+        self.max.y += margin;
+        self.max.z += margin;
+    }
+
+    /// Center position of the bounding box.
+    pub fn center(&self) -> Vec3 {
+        self.min.add(&self.max).scale(0.5)
+    }
+
+    /// Extents (half-dimensions) of the bounding box.
+    pub fn extents(&self) -> Vec3 {
+        self.max.sub(&self.min).scale(0.5)
+    }
+
+    /// Tests for intersection between this AABB and another AABB.
+    pub fn intersects(&self, other: &Self) -> bool {
+        self.min.x <= other.max.x && self.max.x >= other.min.x
+            && self.min.y <= other.max.y && self.max.y >= other.min.y
+            && self.min.z <= other.max.z && self.max.z >= other.min.z
+    }
+}
+
+/// Tight Bounding Volume and Culling Hierarchy for a Displaced Micro-Mesh.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MicroMeshBoundingHierarchy {
+    /// Exact tight AABB computed directly from all displaced micro-vertices.
+    pub tight_aabb: Aabb3D,
+    /// Conservative AABB computed from base triangle bounds expanded by maximum displacement.
+    pub conservative_aabb: Aabb3D,
+    /// Average surface normal across all micro-vertices.
+    pub average_normal: Vec3,
+    /// Minimum dot product between any micro-triangle facet normal and the average normal.
+    pub normal_cone_cutoff: f32,
+}
+
+impl MicroMeshBoundingHierarchy {
+    /// Constructs the bounding hierarchy by analyzing displaced vertices and normals.
+    pub fn build(mesh: &DisplacedMicroMesh) -> Self {
+        let mut tight = Aabb3D::empty();
+        let mut normal_sum = Vec3::zero();
+
+        for v in mesh.vertices.iter() {
+            tight.expand_by_point(&v.final_position);
+            normal_sum = normal_sum.add(&v.normal);
+        }
+
+        let avg_normal = normal_sum.normalize();
+
+        // Compute conservative AABB from base triangle positions
+        let mut cons = Aabb3D::empty();
+        for pos in mesh.base_triangle.positions.iter() {
+            cons.expand_by_point(pos);
+        }
+        let max_disp = mesh.desc.max_displacement.abs().max(mesh.desc.min_displacement.abs())
+            * mesh.desc.displacement_scale;
+        cons.expand_by_margin(max_disp);
+
+        // Find minimum normal cone cutoff
+        let mut min_dot = 1.0f32;
+        for v in mesh.vertices.iter() {
+            let dot = v.normal.dot(&avg_normal);
+            if dot < min_dot {
+                min_dot = dot;
+            }
+        }
+
+        Self {
+            tight_aabb: tight,
+            conservative_aabb: cons,
+            average_normal: avg_normal,
+            normal_cone_cutoff: min_dot,
+        }
+    }
+
+    /// Evaluates whether the entire micro-mesh is backfacing relative to the camera position.
+    pub fn is_backfacing(&self, camera_pos: &Vec3) -> bool {
+        let center = self.tight_aabb.center();
+        let view_vec = camera_pos.sub(&center).normalize();
+
+        // Dot product with average normal
+        let dot = view_vec.dot(&self.average_normal);
+
+        // If the view vector points away from the surface beyond the normal spread cone, it is backfacing
+        dot < 0.0 && dot.abs() > (1.0 - self.normal_cone_cutoff).max(0.1)
+    }
+}
+
 
