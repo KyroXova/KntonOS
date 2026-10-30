@@ -973,3 +973,276 @@ pub fn unix_recvfrom(
 ) -> Result<(usize, Option<UnixSocketAddress>, Option<ucred>), UnixSocketError> {
     UNIX_SOCKET_TABLE.lock().recvfrom(handle, buf)
 }
+
+/// Comprehensive test suite for Unix Domain Sockets (AF_UNIX) local IPC.
+pub fn test_unix_domain_sockets() -> bool {
+    crate::serial_write_str("[KNT-NET-UNIX] Running AF_UNIX stream, datagram, and IPC test suite...\r\n");
+
+    // 1. Socketpair Bidirectional Stream Communication
+    {
+        let (p1, p2) = match unix_socketpair(SocketType::SockStream) {
+            Ok(pair) => pair,
+            Err(_) => {
+                crate::serial_write_str("[KNT-PANIC] Failed to create AF_UNIX socketpair!\r\n");
+                return false;
+            }
+        };
+
+        let msg_from_1 = b"HELLO_PEER_2_FROM_P1";
+        if unix_send(p1, msg_from_1).unwrap_or(0) != msg_from_1.len() {
+            crate::serial_write_str("[KNT-PANIC] Socketpair p1 -> p2 send failed!\r\n");
+            return false;
+        }
+
+        let mut rx_buf = [0u8; 64];
+        let n = unix_recv(p2, &mut rx_buf).unwrap_or(0);
+        if n != msg_from_1.len() || &rx_buf[..n] != msg_from_1 {
+            crate::serial_write_str("[KNT-PANIC] Socketpair p2 recv payload mismatch!\r\n");
+            return false;
+        }
+
+        let msg_from_2 = b"REPLY_PEER_1_FROM_P2";
+        if unix_send(p2, msg_from_2).unwrap_or(0) != msg_from_2.len() {
+            crate::serial_write_str("[KNT-PANIC] Socketpair p2 -> p1 send failed!\r\n");
+            return false;
+        }
+
+        let mut rx_buf2 = [0u8; 64];
+        let n2 = unix_recv(p1, &mut rx_buf2).unwrap_or(0);
+        if n2 != msg_from_2.len() || &rx_buf2[..n2] != msg_from_2 {
+            crate::serial_write_str("[KNT-PANIC] Socketpair p1 recv payload mismatch!\r\n");
+            return false;
+        }
+
+        // Test BrokenPipe on write to closed peer
+        let _ = unix_close(p2);
+        if unix_send(p1, b"TEST_FAIL_AFTER_CLOSE") != Err(UnixSocketError::BrokenPipe) {
+            crate::serial_write_str("[KNT-PANIC] Expected BrokenPipe on write to closed socketpair peer!\r\n");
+            return false;
+        }
+        let _ = unix_close(p1);
+        crate::serial_write_str("  * Socketpair bidirectional streaming & BrokenPipe detection verified\r\n");
+    }
+
+    // 2. Stream Server & Client with Peer Credentials Passing (SO_PEERCRED)
+    {
+        let server_path = "/tmp/echo_service.sock";
+        let server_sun = match sockaddr_un::from_path(server_path) {
+            Ok(s) => s,
+            Err(_) => {
+                crate::serial_write_str("[KNT-PANIC] Invalid sockaddr_un for echo server!\r\n");
+                return false;
+            }
+        };
+
+        let server_h = match unix_socket(SocketType::SockStream) {
+            Ok(h) => h,
+            Err(_) => {
+                crate::serial_write_str("[KNT-PANIC] Failed to create server socket!\r\n");
+                return false;
+            }
+        };
+
+        let server_cred = ucred::new(100, 1000, 1000);
+        let _ = unix_set_credentials(server_h, server_cred);
+
+        if unix_bind(server_h, &server_sun).is_err() {
+            crate::serial_write_str("[KNT-PANIC] Server bind failed on /tmp/echo_service.sock!\r\n");
+            return false;
+        }
+
+        // Verify VFS node exists with FileType::Socket
+        {
+            let vfs = crate::fs::VFS.lock();
+            let inode = match vfs.open(server_path) {
+                Ok(ino) => ino,
+                Err(_) => {
+                    crate::serial_write_str("[KNT-PANIC] Bound socket file not found in VFS!\r\n");
+                    return false;
+                }
+            };
+            if inode.metadata().file_type != crate::fs::FileType::Socket {
+                crate::serial_write_str("[KNT-PANIC] VFS socket file does not have FileType::Socket!\r\n");
+                return false;
+            }
+        }
+
+        if unix_listen(server_h, 10).is_err() {
+            crate::serial_write_str("[KNT-PANIC] Server listen failed!\r\n");
+            return false;
+        }
+
+        // Client connects
+        let client_h = match unix_socket(SocketType::SockStream) {
+            Ok(h) => h,
+            Err(_) => {
+                crate::serial_write_str("[KNT-PANIC] Failed to create client socket!\r\n");
+                return false;
+            }
+        };
+
+        let client_cred = ucred::new(200, 2000, 2000);
+        let _ = unix_set_credentials(client_h, client_cred);
+
+        if unix_connect(client_h, &server_sun).is_err() {
+            crate::serial_write_str("[KNT-PANIC] Client connect failed to /tmp/echo_service.sock!\r\n");
+            return false;
+        }
+
+        // Server accepts
+        let (conn_h, accepted_peer_cred) = match unix_accept(server_h) {
+            Ok(res) => res,
+            Err(_) => {
+                crate::serial_write_str("[KNT-PANIC] Server accept failed!\r\n");
+                return false;
+            }
+        };
+
+        // Verify mutual credentials
+        if accepted_peer_cred != Some(client_cred) {
+            crate::serial_write_str("[KNT-PANIC] Server accepted client credential mismatch!\r\n");
+            return false;
+        }
+        if unix_getpeercred(client_h) != Ok(server_cred) {
+            crate::serial_write_str("[KNT-PANIC] Client getpeercred mismatch with server credentials!\r\n");
+            return false;
+        }
+        if unix_getpeercred(conn_h) != Ok(client_cred) {
+            crate::serial_write_str("[KNT-PANIC] Server conn getpeercred mismatch with client credentials!\r\n");
+            return false;
+        }
+
+        // Client sends payload -> Server echoes back
+        let request = b"GET /ipc/ping HTTP/1.0\r\n\r\n";
+        if unix_send(client_h, request).unwrap_or(0) != request.len() {
+            crate::serial_write_str("[KNT-PANIC] Client send failed!\r\n");
+            return false;
+        }
+
+        let mut srv_buf = [0u8; 128];
+        let req_len = unix_recv(conn_h, &mut srv_buf).unwrap_or(0);
+        if req_len != request.len() || &srv_buf[..req_len] != request {
+            crate::serial_write_str("[KNT-PANIC] Server received payload mismatch!\r\n");
+            return false;
+        }
+
+        let response = b"HTTP/1.0 200 OK\r\nContent-Length: 4\r\n\r\nPONG";
+        if unix_send(conn_h, response).unwrap_or(0) != response.len() {
+            crate::serial_write_str("[KNT-PANIC] Server echo response send failed!\r\n");
+            return false;
+        }
+
+        let mut cli_buf = [0u8; 128];
+        let resp_len = unix_recv(client_h, &mut cli_buf).unwrap_or(0);
+        if resp_len != response.len() || &cli_buf[..resp_len] != response {
+            crate::serial_write_str("[KNT-PANIC] Client received response mismatch!\r\n");
+            return false;
+        }
+
+        // Client closes -> Server receives EOF (0 bytes)
+        let _ = unix_close(client_h);
+        let mut eof_buf = [0u8; 32];
+        let eof_bytes = unix_recv(conn_h, &mut eof_buf).unwrap_or(usize::MAX);
+        if eof_bytes != 0 {
+            crate::serial_write_str("[KNT-PANIC] Expected EOF (0 bytes) on peer close!\r\n");
+            return false;
+        }
+
+        let _ = unix_close(conn_h);
+        let _ = unix_close(server_h);
+
+        // Verify VFS unlinking
+        if crate::fs::unlink(server_path).is_err() {
+            crate::serial_write_str("[KNT-PANIC] Failed to unlink socket file /tmp/echo_service.sock!\r\n");
+            return false;
+        }
+        if crate::fs::VFS.lock().open(server_path).is_ok() {
+            crate::serial_write_str("[KNT-PANIC] Unlinked socket file still accessible in VFS!\r\n");
+            return false;
+        }
+        crate::serial_write_str("  * Stream server/client echo, mutual ucred passing, EOF, and VFS unlinking verified\r\n");
+    }
+
+    // 3. Datagram Boundaries & Abstract Namespace
+    {
+        let abstract_name = b"knton_dgram_service";
+        let dgram_sun = match sockaddr_un::from_abstract(abstract_name) {
+            Ok(s) => s,
+            Err(_) => {
+                crate::serial_write_str("[KNT-PANIC] Invalid abstract sockaddr_un!\r\n");
+                return false;
+            }
+        };
+
+        let server_dgram = match unix_socket(SocketType::SockDgram) {
+            Ok(h) => h,
+            Err(_) => {
+                crate::serial_write_str("[KNT-PANIC] Failed to create dgram server socket!\r\n");
+                return false;
+            }
+        };
+
+        if unix_bind(server_dgram, &dgram_sun).is_err() {
+            crate::serial_write_str("[KNT-PANIC] Dgram server bind to abstract name failed!\r\n");
+            return false;
+        }
+
+        let client_dgram = match unix_socket(SocketType::SockDgram) {
+            Ok(h) => h,
+            Err(_) => {
+                crate::serial_write_str("[KNT-PANIC] Failed to create dgram client socket!\r\n");
+                return false;
+            }
+        };
+
+        let pkt1 = b"PACKET_ALPHA_1234";
+        let pkt2 = b"PACKET_BETA_56789";
+
+        // Send two discrete packets
+        if unix_sendto(client_dgram, pkt1, Some(&dgram_sun)).unwrap_or(0) != pkt1.len() {
+            crate::serial_write_str("[KNT-PANIC] sendto packet 1 failed!\r\n");
+            return false;
+        }
+        if unix_sendto(client_dgram, pkt2, Some(&dgram_sun)).unwrap_or(0) != pkt2.len() {
+            crate::serial_write_str("[KNT-PANIC] sendto packet 2 failed!\r\n");
+            return false;
+        }
+
+        // Receive packet 1: check boundary preservation (should only read pkt1, not pkt1+pkt2)
+        let mut dgram_buf1 = [0u8; 128];
+        let (n1, _sender_addr, _) = match unix_recvfrom(server_dgram, &mut dgram_buf1) {
+            Ok(res) => res,
+            Err(_) => {
+                crate::serial_write_str("[KNT-PANIC] recvfrom packet 1 failed!\r\n");
+                return false;
+            }
+        };
+
+        if n1 != pkt1.len() || &dgram_buf1[..n1] != pkt1 {
+            crate::serial_write_str("[KNT-PANIC] Datagram packet 1 boundary or content mismatch!\r\n");
+            return false;
+        }
+
+        // Receive packet 2
+        let mut dgram_buf2 = [0u8; 128];
+        let (n2, _, _) = match unix_recvfrom(server_dgram, &mut dgram_buf2) {
+            Ok(res) => res,
+            Err(_) => {
+                crate::serial_write_str("[KNT-PANIC] recvfrom packet 2 failed!\r\n");
+                return false;
+            }
+        };
+
+        if n2 != pkt2.len() || &dgram_buf2[..n2] != pkt2 {
+            crate::serial_write_str("[KNT-PANIC] Datagram packet 2 boundary or content mismatch!\r\n");
+            return false;
+        }
+
+        let _ = unix_close(client_dgram);
+        let _ = unix_close(server_dgram);
+        crate::serial_write_str("  * Datagram discrete packet boundary preservation & abstract namespace verified\r\n");
+    }
+
+    crate::serial_write_str("[KNT-NET-UNIX-PASS] Unix domain sockets (AF_UNIX) stream and datagram IPC verified\r\n");
+    true
+}

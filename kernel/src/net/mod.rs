@@ -24,7 +24,7 @@ pub mod udp;
 pub use af_unix::{
     sockaddr_un, ucred, UnixDatagramPacket, UnixDatagramQueue, UnixSocketAddress, UnixSocketError,
     UnixStreamRingBuffer, AF_UNIX, DEFAULT_DATAGRAM_MAX_BYTES, DEFAULT_DATAGRAM_MAX_PACKETS,
-    DEFAULT_STREAM_BUFFER_CAPACITY, UNIX_PATH_MAX,
+    DEFAULT_STREAM_BUFFER_CAPACITY, UNIX_PATH_MAX, test_unix_domain_sockets,
     unix_accept, unix_bind, unix_close, unix_connect, unix_getpeercred, unix_listen,
     unix_recv, unix_recvfrom, unix_send, unix_sendto, unix_set_credentials,
     unix_set_nonblocking, unix_socket, unix_socketpair, UnixSocket, UnixSocketTable,
