@@ -10,6 +10,7 @@ pub mod eq;
 pub mod bass_boost;
 pub mod client_ring;
 pub mod simd_mix;
+pub mod voice_dsp;
 
 pub use hrtf::*;
 pub use spatializer::*;
@@ -17,6 +18,7 @@ pub use eq::*;
 pub use bass_boost::*;
 pub use client_ring::*;
 pub use simd_mix::*;
+pub use voice_dsp::*;
 
 /// Verification self-test suite for Real-Time 3D Audio Spatializer & Binaural HRTF DSP Pipeline.
 pub fn test_audio_spatializer_subsystem() -> bool {
