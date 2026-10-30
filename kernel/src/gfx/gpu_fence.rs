@@ -1,10 +1,5 @@
 //! 64-Bit GPU Timeline Fence Engine & Multi-Queue Synchronization Subsystem.
-//!
 //! Implements modern Vulkan / Direct3D 12 timeline synchronization primitives:
-//! - 64-bit monotonic GPU execution timeline fences (`GpuTimelineFence`)
-//! - Lock-free atomic signaling and non-blocking completion polling
-//! - CPU-side spin-wait timeouts with hardware spin-loop hints
-//! - Cross-queue synchronization hub resolving dependencies between Graphics, Compute, and Copy engines
 
 #![allow(dead_code)]
 
@@ -13,9 +8,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::hint::spin_loop;
 
-// -----------------------------------------------------------------------------
 // Queue Synchronization Types
-// -----------------------------------------------------------------------------
 
 /// GPU execution queue categories for cross-queue synchronization.
 #[repr(u32)]
@@ -26,9 +19,7 @@ pub enum QueueSyncType {
     Copy = 2,
 }
 
-// -----------------------------------------------------------------------------
 // 64-Bit GPU Timeline Fence
-// -----------------------------------------------------------------------------
 
 /// Modern 64-bit timeline fence supporting monotonic signaling and lock-free polling.
 #[derive(Debug)]
@@ -123,9 +114,7 @@ impl GpuTimelineFence {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Cross-Queue Timeline Synchronization Hub
-// -----------------------------------------------------------------------------
 
 /// Inter-queue synchronization dependency.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

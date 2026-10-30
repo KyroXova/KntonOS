@@ -1,12 +1,5 @@
 //! Direct3D 12 Low-Latency Frame Pacing & Latency Marker Engine.
-//!
 //! Implements Reflex / Anti-Lag 2 style proactive CPU sleep regulation, fine-grained
-//! latency markers, GPU timeline fence synchronization, and end-to-end latency profiling:
-//! - Latency Markers: SimulationStart, SimulationEnd, RenderSubmitStart, RenderSubmitEnd,
-//!   PresentStart, PresentEnd, DriverSubmit, GpuRenderStart, GpuRenderEnd
-//! - Proactive CPU sleep pacing: eliminates GPU queue backlog, locking queue depth to 0..1
-//! - GPU timeline fence-aligned PresentWait synchronization
-//! - Real-time end-to-end latency metric profiler & moving average estimator
 
 #![allow(dead_code)]
 
@@ -251,9 +244,7 @@ impl FrameTimelineRing {
 }
 
 
-// -----------------------------------------------------------------------------
 // Dynamic Frame Pacing Regulator & Proactive CPU Sleep Engine
-// -----------------------------------------------------------------------------
 
 /// Frame pacing regulation modes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -328,10 +319,7 @@ impl FramePacingRegulator {
     }
 
     /// Computes the optimal proactive CPU sleep duration prior to initiating the next frame's simulation.
-    ///
     /// Goal: Delay CPU simulation start such that the CPU finishes command recording and submits
-    /// precisely when the GPU finishes executing the previous frame. This minimizes the time
-    /// input sits in the queue, cutting input-to-display latency drastically.
     pub fn compute_proactive_sleep(
         &mut self,
         current_time_ns: u64,
@@ -384,9 +372,7 @@ impl FramePacingRegulator {
 }
 
 
-// -----------------------------------------------------------------------------
 // GPU Fence-Aligned PresentWait & Latency Metric Profiler
-// -----------------------------------------------------------------------------
 
 /// Real-time statistical profiler tracking end-to-end latency and queue metrics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -435,9 +421,7 @@ impl LatencyMetricProfiler {
 }
 
 /// Direct3D 12 Low-Latency Frame Pacing & Latency Marker Engine.
-///
 /// Unifies latency markers, proactive sleep regulation, GPU fence timeline synchronization,
-/// and end-to-end latency profiling.
 #[derive(Debug, Clone)]
 pub struct LowLatencyPacingEngine {
     pub ring: FrameTimelineRing,
@@ -472,7 +456,6 @@ impl LowLatencyPacingEngine {
 
     /// Begins a new frame cycle:
     /// Computes proactive sleep duration, sleeps if necessary, allocates frame ID,
-    /// and records `SimulationStart`.
     pub fn begin_frame(&mut self) -> Result<(u64, u64), FramePacingError> {
         let sleep_ns = self.regulator.compute_proactive_sleep(
             self.simulated_clock_ns,
@@ -570,12 +553,9 @@ impl LowLatencyPacingEngine {
 }
 
 
-// -----------------------------------------------------------------------------
 // Verification Self-Test Suite
-// -----------------------------------------------------------------------------
 
 /// Comprehensive verification self-test for Direct3D 12 Low-Latency Frame Pacing Engine.
-///
 /// Emits sentinel [KNT-GPU-FRAME-PACING-PASS] upon successful verification.
 pub fn test_frame_pacing_subsystem() -> bool {
     // 1. Verify latency marker recording and frame duration breakdown
