@@ -23,6 +23,7 @@ pub mod power;
 pub mod mm;
 pub mod trace;
 pub mod bpf;
+pub mod audio;
 
 pub use memory::ALLOCATOR;
 
@@ -372,6 +373,11 @@ pub extern "C" fn kmain() -> ! {
     // Verify Zero-Latency DMA Audio Ring Buffer & Multi-Stream Real-Time Mixer Engine
     if !drivers::audio::test_realtime_audio_mixer_subsystem() {
         serial_write_str("[KNT-PANIC] Real-time DMA audio mixer subsystem self-test failed!\r\n");
+    }
+
+    // Initialize and verify Real-Time 3D Audio Spatializer & Binaural HRTF DSP Pipeline
+    if !audio::test_audio_spatializer_subsystem() {
+        serial_write_str("[KNT-PANIC] 3D audio spatializer self-test failed!\r\n");
     }
 
     // Initialize and verify Hardware RNG & ChaCha20 Cryptographic Entropy Pool
