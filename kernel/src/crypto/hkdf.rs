@@ -1,13 +1,10 @@
 //! HMAC-based Extract-and-Expand Key Derivation Function (HKDF) (RFC 5869).
-//!
 //! Implements HKDF-Extract and HKDF-Expand primitives utilizing SHA-256 for
-//! secure key derivation in TLS 1.3 cryptographic handshakes.
 
 use super::sha256::{hmac_sha256, SHA256_DIGEST_SIZE};
 use alloc::vec::Vec;
 
 /// HKDF-Extract(salt, IKM) -> PRK (Pseudorandom Key).
-///
 /// If `salt` is empty, a string of 32 zero bytes is used per RFC 5869 Section 2.2.
 pub fn hkdf_extract(salt: &[u8], ikm: &[u8]) -> [u8; SHA256_DIGEST_SIZE] {
     let default_salt = [0u8; SHA256_DIGEST_SIZE];
@@ -21,7 +18,6 @@ pub fn hkdf_extract(salt: &[u8], ikm: &[u8]) -> [u8; SHA256_DIGEST_SIZE] {
 }
 
 /// HKDF-Expand(PRK, info, L) -> OKM (Output Keying Material).
-///
 /// Fills `okm` with cryptographically derived bytes of length `L = okm.len()`.
 pub fn hkdf_expand(prk: &[u8; SHA256_DIGEST_SIZE], info: &[u8], okm: &mut [u8]) -> Result<(), &'static str> {
     let l = okm.len();
