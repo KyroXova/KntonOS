@@ -724,3 +724,29 @@ pub fn test_trigger_motor_subsystem() -> bool {
     serial_write_str("[KNT-INPUT-TRIGGER-MOTOR-PASS] Multi-zone haptic force-feedback trigger motor governor verified\r\n");
     true
 }
+
+/// Verification self-test suite for Handheld PC Capacitive Touchpad & Multi-Finger Haptic Gesture Filter Engine.
+pub fn test_touchpad_gesture_filter_subsystem() -> bool {
+    serial_write_str("[KNT-INPUT] Testing capacitive touchpad & multi-finger haptic gesture filter engine...\r\n");
+
+    // 1. Verify Capacitive Contact Structures & Multi-Touch Report Packet Decoders
+    if !verify_touchpad_contact_structures_and_decoders() {
+        serial_write_str("[KNT-PANIC] Touchpad contact structures and decoder verification failed!\r\n");
+        return false;
+    }
+
+    // 2. Verify Adaptive Jitter Filtering, Sub-Pixel Deadzone & Contact Tracking
+    if !verify_jitter_filter_and_contact_tracking() {
+        serial_write_str("[KNT-PANIC] Touchpad jitter filter and contact tracking verification failed!\r\n");
+        return false;
+    }
+
+    // 3. Verify Multi-Finger Gestures (Tap, Scroll, Pinch, Swipe) & Haptic Pulses
+    if !verify_multi_finger_gestures_and_haptics() {
+        serial_write_str("[KNT-PANIC] Multi-finger gestures and haptic pulse verification failed!\r\n");
+        return false;
+    }
+
+    serial_write_str("[KNT-INPUT-TOUCHPAD-GESTURE-PASS] Capacitive touchpad and multi-finger haptic gesture filter engine verified\r\n");
+    true
+}
