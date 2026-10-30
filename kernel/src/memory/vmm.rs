@@ -276,6 +276,56 @@ impl PageTableManager {
     }
 
     /// Translates a virtual address to its mapped physical address if present.
+    /// Retrieves a mutable reference to the PageTableEntry for the given virtual address if mapped.
+    pub unsafe fn get_pte_mut(&mut self, virt: VirtAddr) -> Option<&mut PageTableEntry> {
+        let pml4 = &mut *self.root_pml4;
+        let pml4_entry = &mut pml4.entries[virt.pml4_index()];
+        if !pml4_entry.is_present() {
+            return None;
+        }
+
+        let pdpt = pml4_entry.addr().0 as *mut PageTable;
+        let pdpt_entry = &mut (*pdpt).entries[virt.pdpt_index()];
+        if !pdpt_entry.is_present() {
+            return None;
+        }
+
+        let pd = pdpt_entry.addr().0 as *mut PageTable;
+        let pd_entry = &mut (*pd).entries[virt.pd_index()];
+        if !pd_entry.is_present() || (pd_entry.flags() & PageTableFlags::HUGE_PAGE) != 0 {
+            return None;
+        }
+
+        let pt = pd_entry.addr().0 as *mut PageTable;
+        let pte = &mut (*pt).entries[virt.pt_index()];
+        Some(pte)
+    }
+
+    /// Retrieves an immutable reference to the PageTableEntry for the given virtual address if mapped.
+    pub unsafe fn get_pte(&self, virt: VirtAddr) -> Option<&PageTableEntry> {
+        let pml4 = &*self.root_pml4;
+        let pml4_entry = &pml4.entries[virt.pml4_index()];
+        if !pml4_entry.is_present() {
+            return None;
+        }
+
+        let pdpt = pml4_entry.addr().0 as *const PageTable;
+        let pdpt_entry = &(*pdpt).entries[virt.pdpt_index()];
+        if !pdpt_entry.is_present() {
+            return None;
+        }
+
+        let pd = pdpt_entry.addr().0 as *const PageTable;
+        let pd_entry = &(*pd).entries[virt.pd_index()];
+        if !pd_entry.is_present() || (pd_entry.flags() & PageTableFlags::HUGE_PAGE) != 0 {
+            return None;
+        }
+
+        let pt = pd_entry.addr().0 as *const PageTable;
+        let pte = &(*pt).entries[virt.pt_index()];
+        Some(pte)
+    }
+
     pub unsafe fn translate(&self, virt: VirtAddr) -> Option<PhysAddr> {
         let pml4 = &*self.root_pml4;
         let pml4_entry = &pml4.entries[virt.pml4_index()];

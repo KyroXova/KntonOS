@@ -4,9 +4,12 @@
 //! - `PageFaultErrorCode`: x86-64 architectural exception error code bit decoder.
 //! - `VmFlags`: Memory protection, allocation, and Copy-on-Write bitmask flags.
 //! - `VmArea`: Descriptor for contiguous virtual address ranges.
+//! - `AddressSpace`: Process virtual address space containing VMAs and root PML4.
+//! - `handle_page_fault`: Core demand paging allocation and page fault resolution engine.
 
-use super::pmm::PAGE_SIZE;
-use super::vmm::{VirtAddr, PageTableFlags};
+use super::pmm::{FrameAllocator, PhysAddr, PAGE_SIZE};
+use super::vmm::{invlpg, PageTable, PageTableFlags, PageTableManager, VirtAddr};
+use alloc::vec::Vec;
 
 /// x86-64 Architectural Page Fault Exception Error Code (CR2 contains faulting linear address).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -171,6 +174,172 @@ impl VmArea {
     }
 }
 
+/// Represents an isolated process virtual address space with a root PML4 table and set of VMAs.
+pub struct AddressSpace {
+    pub root_pml4: *mut PageTable,
+    pub vmas: Vec<VmArea>,
+}
+
+impl AddressSpace {
+    /// Creates a new AddressSpace bound to a root PML4 table.
+    pub fn new(root_pml4: *mut PageTable) -> Self {
+        Self {
+            root_pml4,
+            vmas: Vec::new(),
+        }
+    }
+
+    /// Adds a Virtual Memory Area to the address space if it does not overlap with existing VMAs.
+    pub fn add_vma(&mut self, new_vma: VmArea) -> bool {
+        if new_vma.len() == 0 {
+            return false;
+        }
+
+        // Check for overlaps
+        for vma in &self.vmas {
+            if !(new_vma.end.0 <= vma.start.0 || new_vma.start.0 >= vma.end.0) {
+                return false; // Overlap detected
+            }
+        }
+
+        self.vmas.push(new_vma);
+        true
+    }
+
+    /// Finds the VMA containing the target virtual address.
+    pub fn find_vma(&self, addr: VirtAddr) -> Option<&VmArea> {
+        self.vmas.iter().find(|vma| vma.contains(addr))
+    }
+
+    /// Finds a mutable reference to the VMA containing the target virtual address.
+    pub fn find_vma_mut(&mut self, addr: VirtAddr) -> Option<&mut VmArea> {
+        self.vmas.iter_mut().find(|vma| vma.contains(addr))
+    }
+
+    /// Returns a PageTableManager bound to this address space's root PML4 table.
+    pub unsafe fn page_table_manager(&mut self) -> PageTableManager {
+        PageTableManager::new(self.root_pml4)
+    }
+}
+
+/// Result of evaluating and attempting to resolve a page fault.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageFaultResolution {
+    /// Non-present anonymous page was demand allocated and zero-filled.
+    ResolvedDemandPage {
+        virt: VirtAddr,
+        phys: PhysAddr,
+    },
+    /// Writable access to Copy-on-Write page was resolved via page duplication or unsharing.
+    ResolvedCow {
+        virt: VirtAddr,
+        new_phys: PhysAddr,
+    },
+    /// Address does not fall within any registered Virtual Memory Area (SIGSEGV).
+    SegmentationFault {
+        addr: VirtAddr,
+        code: PageFaultErrorCode,
+    },
+    /// Access violated VMA permissions (e.g. write to read-only non-COW, or execute on non-executable).
+    ProtectionViolation {
+        addr: VirtAddr,
+        code: PageFaultErrorCode,
+    },
+    /// Out of physical memory to satisfy demand allocation or COW duplication.
+    OutOfMemory,
+}
+
+/// Core demand paging & page fault handler.
+/// Evaluates the faulting address and error code against process address space VMAs and page tables.
+pub unsafe fn handle_page_fault<A: FrameAllocator>(
+    aspace: &mut AddressSpace,
+    fault_addr: VirtAddr,
+    error_code: PageFaultErrorCode,
+    allocator: &mut A,
+) -> Result<PageFaultResolution, PageFaultResolution> {
+    // 1. Locate the Virtual Memory Area containing the faulting address
+    let vma = match aspace.find_vma(fault_addr) {
+        Some(v) => *v,
+        None => {
+            return Err(PageFaultResolution::SegmentationFault {
+                addr: fault_addr,
+                code: error_code,
+            });
+        }
+    };
+
+    // 2. Validate architectural permissions
+    if error_code.is_instruction_fetch() && !vma.is_executable() {
+        return Err(PageFaultResolution::ProtectionViolation {
+            addr: fault_addr,
+            code: error_code,
+        });
+    }
+
+    if error_code.is_user() && !vma.is_user() {
+        return Err(PageFaultResolution::ProtectionViolation {
+            addr: fault_addr,
+            code: error_code,
+        });
+    }
+
+    let page_virt = VirtAddr::new(fault_addr.0 & !0xFFF);
+
+    // 3. Handle non-present page fault (Demand Paging)
+    if !error_code.is_present() {
+        if vma.is_anonymous() {
+            // Allocate a fresh 4 KiB physical frame
+            let frame = allocator.allocate_frame().ok_or(PageFaultResolution::OutOfMemory)?;
+            let phys_addr = frame.start_address();
+
+            // Zero-fill the 4096-byte frame
+            let slice = core::slice::from_raw_parts_mut(phys_addr.0 as *mut u8, PAGE_SIZE);
+            slice.fill(0);
+
+            // Map the page in the address space with VMA permissions
+            let mut pt_mgr = aspace.page_table_manager();
+            let flags = vma.to_page_table_flags();
+
+            if let Err(_) = pt_mgr.map_page(page_virt, phys_addr, flags, allocator) {
+                return Err(PageFaultResolution::OutOfMemory);
+            }
+
+            invlpg(page_virt);
+
+            return Ok(PageFaultResolution::ResolvedDemandPage {
+                virt: page_virt,
+                phys: phys_addr,
+            });
+        } else {
+            return Err(PageFaultResolution::SegmentationFault {
+                addr: fault_addr,
+                code: error_code,
+            });
+        }
+    }
+
+    // 4. Handle protection violation on write: Check for Copy-on-Write
+    if error_code.is_write() {
+        let mut pt_mgr = aspace.page_table_manager();
+        if let Some(pte) = pt_mgr.get_pte_mut(page_virt) {
+            if pte.is_cow() && vma.is_writable() {
+                // Defer to cow::handle_cow_fault
+                return super::cow::handle_cow_fault(aspace, page_virt, pte, allocator);
+            }
+        }
+
+        return Err(PageFaultResolution::ProtectionViolation {
+            addr: fault_addr,
+            code: error_code,
+        });
+    }
+
+    Err(PageFaultResolution::ProtectionViolation {
+        addr: fault_addr,
+        code: error_code,
+    })
+}
+
 /// Unit test verifying VMA region descriptor manipulation and page fault error code decoding.
 pub fn test_vma_and_error_codes() -> bool {
     // 1. Test PageFaultErrorCode decoding
@@ -226,4 +395,77 @@ pub fn test_vma_and_error_codes() -> bool {
     assert!((pte_flags & PageTableFlags::COW) == 0);
 
     true
+}
+
+/// Unit test verifying demand paging allocation engine and anonymous zero-page fault resolution.
+pub fn test_demand_paging_engine() -> bool {
+    unsafe {
+        static mut TEST_ROOT_PML4: PageTable = PageTable::new();
+        let pml4_ptr = core::ptr::addr_of_mut!(TEST_ROOT_PML4);
+        (*pml4_ptr).zero();
+
+        let mut aspace = AddressSpace::new(pml4_ptr);
+        let mut pmm = super::PMM.lock();
+
+        let vma_start = VirtAddr::new(0x0000_7000_0000_0000);
+        let vma_end = VirtAddr::new(0x0000_7000_0002_0000); // 128 KiB
+        let vma = VmArea::new(
+            vma_start,
+            vma_end,
+            VmFlags::VM_READ | VmFlags::VM_WRITE | VmFlags::VM_ANONYMOUS | VmFlags::VM_USER,
+        );
+        assert!(aspace.add_vma(vma));
+
+        // 1. Fault at unmapped address inside anonymous VMA (offset 0x1000)
+        let fault_addr = VirtAddr::new(0x0000_7000_0000_1000);
+        let error_code = PageFaultErrorCode::new(PageFaultErrorCode::WRITE | PageFaultErrorCode::USER); // Present=0
+
+        let res = handle_page_fault(&mut aspace, fault_addr, error_code, &mut *pmm);
+        match res {
+            Ok(PageFaultResolution::ResolvedDemandPage { virt, phys }) => {
+                assert_eq!(virt, fault_addr);
+                assert!(phys.0 > 0);
+
+                // Verify the page is now mapped and translated accurately
+                let pt_mgr = aspace.page_table_manager();
+                let translated = pt_mgr.translate(fault_addr).expect("Demand page must be translated");
+                assert_eq!(translated, phys);
+
+                // Verify the physical memory is zero-filled
+                let slice = core::slice::from_raw_parts(phys.0 as *const u8, PAGE_SIZE);
+                for &byte in slice {
+                    assert_eq!(byte, 0, "Demand allocated page must be zero-filled");
+                }
+            }
+            _ => panic!("Expected ResolvedDemandPage"),
+        }
+
+        // 2. Fault at address outside any VMA must produce SegmentationFault
+        let segv_addr = VirtAddr::new(0x0000_1000_0000_0000);
+        let segv_res = handle_page_fault(&mut aspace, segv_addr, error_code, &mut *pmm);
+        match segv_res {
+            Err(PageFaultResolution::SegmentationFault { addr, .. }) => {
+                assert_eq!(addr, segv_addr);
+            }
+            _ => panic!("Expected SegmentationFault for unmapped address"),
+        }
+
+        // 3. Write fault to a Read-Only VMA must produce ProtectionViolation
+        let ro_start = VirtAddr::new(0x0000_6000_0000_0000);
+        let ro_end = VirtAddr::new(0x0000_6000_0001_0000);
+        let ro_vma = VmArea::new(ro_start, ro_end, VmFlags::VM_READ | VmFlags::VM_ANONYMOUS);
+        assert!(aspace.add_vma(ro_vma));
+
+        let ro_fault_addr = VirtAddr::new(0x0000_6000_0000_0000);
+        let ro_write_code = PageFaultErrorCode::new(PageFaultErrorCode::PRESENT | PageFaultErrorCode::WRITE);
+        let ro_res = handle_page_fault(&mut aspace, ro_fault_addr, ro_write_code, &mut *pmm);
+        match ro_res {
+            Err(PageFaultResolution::ProtectionViolation { addr, .. }) => {
+                assert_eq!(addr, ro_fault_addr);
+            }
+            _ => panic!("Expected ProtectionViolation for write to read-only VMA"),
+        }
+
+        true
+    }
 }

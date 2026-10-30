@@ -16,7 +16,10 @@ pub use heap::{KntonAllocator, DEFAULT_HEAP_SIZE};
 pub use pmm::{BitmapFrameAllocator, FrameAllocator, PhysAddr, PhysFrame, PAGE_SIZE};
 pub use spinlock::Spinlock;
 pub use vmm::{PageTable, PageTableEntry, PageTableFlags, PageTableManager, VirtAddr, VmmError};
-pub use demand_paging::{test_vma_and_error_codes, PageFaultErrorCode, VmArea, VmFlags};
+pub use demand_paging::{
+    handle_page_fault, test_demand_paging_engine, test_vma_and_error_codes, AddressSpace,
+    PageFaultErrorCode, PageFaultResolution, VmArea, VmFlags,
+};
 pub use cow::{test_cow_bitfields, MAX_TRACKED_PHYS_FRAMES, PTE_AVL_MASK, PTE_COW_BIT};
 
 /// Global Physical Memory Manager singleton.
