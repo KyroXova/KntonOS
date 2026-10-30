@@ -95,13 +95,16 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-068 | Unified Handheld PC Thermal & Fan Profile Controller (Multi-Point Curves & Acoustic Pacing) | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-068-thermal-fan.md) |
 | TASK-KNT-069 | Hardware-Accelerated Frame Capture & Direct DRM Dumb-Buffer Video Streamer Engine | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-069-frame-capture.md) |
 | TASK-KNT-070 | Multi-Queue Network Packet Transmission & Zero-Copy DMA RX/TX Ring Engine | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-070-net-multiqueue.md) |
-| TASK-KNT-071 | Direct3D / Vulkan-Style Command Buffer Recording & Kernel Hardware Queue Submission Engine | Claimed | TASK-KNT-050 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-071-gpu-cmdbuf.md) |
-| TASK-KNT-072 | Direct-to-Disk Kernel Hibernation (S4 State) Memory Dump & LZ4 Fast-Restoration Engine | Claimed | TASK-KNT-063 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-072-hibernate-s4.md) |
-| TASK-KNT-073 | Kernel Dynamic Instrumentation Probes (kprobes / ftrace Style) & Instruction Detour Engine | Claimed | TASK-KNT-064 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-073-kprobes-ftrace.md) |
+| TASK-KNT-071 | Direct3D / Vulkan-Style Command Buffer Recording & Kernel Hardware Queue Submission Engine | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-071-gpu-cmdbuf.md) |
+| TASK-KNT-072 | Direct-to-Disk Kernel Hibernation (S4 State) Memory Dump & LZ4 Fast-Restoration Engine | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-072-hibernate-s4.md) |
+| TASK-KNT-073 | Kernel Dynamic Instrumentation Probes (kprobes / ftrace Style) & Instruction Detour Engine | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-073-kprobes-ftrace.md) |
+| TASK-KNT-074 | Unified Handheld PC Ambient Light Sensor (ALS) & HDR Auto-Brightness / Contrast Governor | Claimed | TASK-KNT-050 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-074-als-hdr.md) |
+| TASK-KNT-075 | Real-Time Kernel Audio Spatializer & Binaural HRTF 3D Positional Audio DSP Pipeline | Claimed | TASK-KNT-060 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-075-audio-spatializer.md) |
+| TASK-KNT-076 | Kernel-Direct PCIe Hot-Plug Event Daemon & External eGPU Hot-Connect Controller | Claimed | TASK-KNT-056 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-076-pcie-egpu.md) |
 
 ## Active reservations
 
 - `kernel/src/pkg/`: reserved by ArdenKestrel for TASK-KNT-045.
-- `kernel/src/gfx/cmdbuf.rs`, `kernel/src/gfx/gpu_queue.rs`: reserved by Jules Martin for TASK-KNT-071.
-- `kernel/src/power/hibernate.rs`, `kernel/src/power/lz4_restore.rs`: reserved by Priya Nair for TASK-KNT-072.
-- `kernel/src/trace/kprobes.rs`, `kernel/src/trace/detour.rs`: reserved by Ada Chen for TASK-KNT-073.
+- `kernel/src/drivers/sensor/als.rs`, `kernel/src/drivers/sensor/brightness.rs`: reserved by Jules Martin for TASK-KNT-074.
+- `kernel/src/audio/hrtf.rs`, `kernel/src/audio/spatializer.rs`: reserved by Ada Chen for TASK-KNT-075.
+- `kernel/src/drivers/pci/hotplug.rs`, `kernel/src/drivers/pci/egpu.rs`: reserved by Priya Nair for TASK-KNT-076.
