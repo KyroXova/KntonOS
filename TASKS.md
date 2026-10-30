@@ -82,14 +82,15 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-055 | High-Throughput Zero-Copy Shared-Memory IPC Ring (knton-ipc-ring) & Fast UMWAIT/TPAUSE Synchronization | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-055-ipc-ring.md) |
 | TASK-KNT-056 | PCIe Function-Level Reset (FLR) & GPU Timeout Detection and Recovery (TDR) Subsystem | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-056-pci-tdr.md) |
 | TASK-KNT-057 | State-Externalized Dual-Ring Resilient Service Partitions & Sub-15ms Crash Recovery Engine | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-057-service-resilience.md) |
-| TASK-KNT-058 | Wayland Client Protocol Compositor Backend (wl_surface, wl_buffer, wl_shm) & Sub-Surface Synchronization | Claimed | TASK-KNT-055 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-058-wayland-compositor.md) |
+| TASK-KNT-058 | Wayland Client Protocol Compositor Backend (wl_surface, wl_buffer, wl_shm) & Sub-Surface Synchronization | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-058-wayland-compositor.md) |
 | TASK-KNT-059 | Dynamic Core Parking, C-State Governor, & Energy-Performance Bias (EPB / EPP) Manager | Claimed | TASK-KNT-056 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-059-core-parking.md) |
 | TASK-KNT-060 | Zero-Latency DMA Audio Ring Buffer & Multi-Stream Real-Time Mixer Engine | Claimed | TASK-KNT-057 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-060-dma-audio-mixer.md) |
+| TASK-KNT-061 | Memory-Mapped I/O (MMIO) Watchpoint & Kernel Hypervisor-Assisted Debug Trap Engine | Claimed | TASK-KNT-058 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-061-mmio-debug-traps.md) |
 
 ## Active reservations
 
 - `kernel/src/pkg/`: reserved by ArdenKestrel for TASK-KNT-045.
-- `kernel/src/drivers/pci/flr.rs`, `kernel/src/drivers/gpu/tdr.rs`: reserved by Jules Martin for TASK-KNT-056.
 - `kernel/src/compositor/wayland/`: reserved by Ada Chen for TASK-KNT-058.
 - `kernel/src/power/parking.rs`, `kernel/src/power/cstate.rs`: reserved by Jules Martin for TASK-KNT-059.
 - `kernel/src/drivers/audio/streamer.rs`, `kernel/src/drivers/audio/mixer.rs`: reserved by Priya Nair for TASK-KNT-060.
+- `kernel/src/arch/x86_64/debug_trap.rs`, `kernel/src/arch/x86_64/mmio_watch.rs`: reserved by Ada Chen for TASK-KNT-061.
