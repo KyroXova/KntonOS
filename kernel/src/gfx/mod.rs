@@ -22,6 +22,7 @@ pub mod ser;
 pub mod depth_bounds;
 pub mod frame_pacing;
 pub mod cluster_cull;
+pub mod optical_flow;
 
 pub use cmdbuf::*;
 pub use compute::*;
@@ -42,6 +43,7 @@ pub use ser::*;
 pub use depth_bounds::*;
 pub use frame_pacing::*;
 pub use cluster_cull::*;
+pub use optical_flow::*;
 
 /// Comprehensive verification self-test suite for Direct3D / Vulkan-Style Command Buffer
 /// Recording and Hardware Queue Submission Engine.
