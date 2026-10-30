@@ -12,6 +12,7 @@ pub mod ring_alloc;
 pub mod cbv_pool;
 pub mod dxr_as;
 pub mod dispatch_rays;
+pub mod vrs;
 
 pub use cmdbuf::*;
 pub use compute::*;
@@ -22,6 +23,7 @@ pub use ring_alloc::*;
 pub use cbv_pool::*;
 pub use dxr_as::*;
 pub use dispatch_rays::*;
+pub use vrs::*;
 
 /// Comprehensive verification self-test suite for Direct3D / Vulkan-Style Command Buffer
 /// Recording and Hardware Queue Submission Engine.
