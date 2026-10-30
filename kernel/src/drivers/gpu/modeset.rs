@@ -870,3 +870,33 @@ pub fn verify_atomic_commit_engine() -> bool {
 
     true
 }
+
+
+/// Comprehensive verification of the DRM/KMS modesetting and multi-plane scanout presentation layer.
+///
+/// Tests:
+/// 1. DRM object abstractions, video mode timings, and device topology.
+/// 2. Atomic commit property table engine, test-only validation, and atomic state updates.
+/// 3. Direct-to-display multi-plane overlay presentation (primary surface, video overlay plane, cursor plane)
+///    with scaling, rotation, alpha blending, and dirty rectangle tracking.
+pub fn test_drm_kms_subsystem() -> bool {
+    // 1. Verify DRM object definitions, CRTC, plane, connector, and encoder abstractions
+    if !super::drm::verify_drm_abstractions() {
+        return false;
+    }
+
+    // 2. Verify atomic commit property table transactions and dry-run validation
+    if !verify_atomic_commit_engine() {
+        return false;
+    }
+
+    // 3. Verify direct-to-display multi-plane overlay presentation and compositor
+    if !verify_multi_plane_overlay() {
+        return false;
+    }
+
+    // 4. Emit deterministic boot sentinel
+    crate::serial_write_str("[KNT-GFX-DRM-PASS] DRM/KMS atomic modesetting, CRTC scanout, and multi-plane overlay verified\r\n");
+
+    true
+}
