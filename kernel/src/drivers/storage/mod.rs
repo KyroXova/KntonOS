@@ -7,7 +7,9 @@ pub mod ahci;
 pub mod nvme;
 
 pub use nvme::{
-    make_aqa, nvme_cq_doorbell, nvme_sq_doorbell, verify_nvme_queue_engine, verify_nvme_structures, NvmeCapabilities, NvmeError, NvmeQueuePair, NVME_MAX_QUEUE_SIZE,
+    make_aqa, nvme_cq_doorbell, nvme_sq_doorbell, build_identify_controller, build_identify_namespace, build_nvm_read, build_nvm_write,
+    build_prp, verify_nvme_identify_and_prp, verify_nvme_queue_engine, verify_nvme_structures,
+    NvmeBlockDevice, NvmeIdentifyController, NvmeIdentifyNamespace, NvmeLbaFormat, NvmePowerStateDesc, NvmeCapabilities, NvmeError, NvmeQueuePair, NVME_MAX_QUEUE_SIZE,
     NvmeCompletionEntry, NvmeSubmissionEntry, CAP_AMS_VENDOR, CAP_AMS_WRR, CAP_BPS, CAP_CQS,
     CAP_CSS_NVM, CAP_DSTRD_MASK, CAP_DSTRD_SHIFT, CAP_MPSMAX_MASK, CAP_MPSMAX_SHIFT,
     CAP_MPSMIN_MASK, CAP_MPSMIN_SHIFT, CAP_MQES_MASK, CAP_NSSRS, CAP_TO_MASK, CAP_TO_SHIFT,

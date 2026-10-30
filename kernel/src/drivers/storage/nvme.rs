@@ -483,3 +483,327 @@ pub fn verify_nvme_queue_engine() -> bool {
 
     true
 }
+
+
+// --- Admin IDENTIFY Data Structures (4096 bytes each) ---
+
+/// Power State Descriptor (32 bytes).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NvmePowerStateDesc {
+    pub max_power: u16,
+    pub rsvd2: u8,
+    pub flags: u8,
+    pub entry_lat: u32,
+    pub exit_lat: u32,
+    pub read_tput: u8,
+    pub read_lat: u8,
+    pub write_tput: u8,
+    pub write_lat: u8,
+    pub idle_power: u16,
+    pub idle_scale: u8,
+    pub rsvd19: u8,
+    pub active_power: u16,
+    pub active_work_scale: u8,
+    pub rsvd23: [u8; 9],
+}
+
+/// 4096-byte IDENTIFY CONTROLLER Data Structure according to NVMe 1.4 spec.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct NvmeIdentifyController {
+    pub vid: u16,
+    pub ssvid: u16,
+    pub sn: [u8; 20],        // Serial Number (ASCII)
+    pub mn: [u8; 40],        // Model Number (ASCII)
+    pub fr: [u8; 8],         // Firmware Revision (ASCII)
+    pub rab: u8,
+    pub ieee: [u8; 3],
+    pub mic: u8,
+    pub mdts: u8,
+    pub cntlid: u16,
+    pub ver: u32,
+    pub rtr: u32,
+    pub rgr: [u8; 16],
+    pub oaes: u32,
+    pub ctratt: u32,
+    pub rsvd112: [u8; 144],
+    pub oacs: u16,
+    pub acl: u8,
+    pub aerl: u8,
+    pub frmw: u8,
+    pub lpa: u8,
+    pub elpe: u8,
+    pub npss: u8,
+    pub avscc: u8,
+    pub apsta: u8,
+    pub wctemp: u16,
+    pub cctemp: u16,
+    pub mtfa: u16,
+    pub hmpre: u32,
+    pub hmmin: u32,
+    pub tnvmcap: [u8; 16],
+    pub unvmcap: [u8; 16],
+    pub rsvd320: [u8; 192],
+    pub sqes: u8,
+    pub cqes: u8,
+    pub maxcmd: u16,
+    pub nn: u32,             // Number of Namespaces
+    pub oncs: u16,
+    pub fuses: u16,
+    pub fna: u8,
+    pub vwc: u8,
+    pub awun: u16,
+    pub awupf: u16,
+    pub nvscc: u8,
+    pub nwpc: u8,
+    pub acwu: u16,
+    pub rsvd534: [u8; 2],
+    pub sgls: u32,
+    pub rsvd540: [u8; 164],
+    pub rsvd704: [u8; 1344],
+    pub psd: [NvmePowerStateDesc; 32], // 32 * 32 = 1024 bytes
+    pub vs: [u8; 1024],
+}
+
+/// LBA Format Descriptor (4 bytes).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct NvmeLbaFormat {
+    pub ms: u16,             // Metadata Size
+    pub lbads: u8,           // LBA Data Size (2 ^ LBADS, e.g. 9 = 512, 12 = 4096)
+    pub rp: u8,              // Relative Performance
+}
+
+/// 4096-byte IDENTIFY NAMESPACE Data Structure according to NVMe 1.4 spec.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct NvmeIdentifyNamespace {
+    pub nsze: u64,           // Namespace Size in logical blocks
+    pub ncap: u64,           // Namespace Capacity in logical blocks
+    pub nuse: u64,           // Namespace Utilization in logical blocks
+    pub nsfeat: u8,
+    pub nlbaf: u8,           // Number of LBA Formats (0-based)
+    pub flbas: u8,           // Formatted LBA Size (bits 3:0 = format index)
+    pub mc: u8,
+    pub dpc: u8,
+    pub dps: u8,
+    pub nmic: u8,
+    pub rescap: u8,
+    pub fpi: u8,
+    pub dlfeat: u8,
+    pub nawun: u16,
+    pub nawupf: u16,
+    pub nacwu: u16,
+    pub nabsn: u16,
+    pub nabo: u16,
+    pub nabspf: u16,
+    pub noiob: u16,
+    pub nvmcap: [u8; 16],
+    pub rsvd64: [u8; 40],
+    pub nguid: [u8; 16],
+    pub eui64: u64,
+    pub lbaf: [NvmeLbaFormat; 16], // 16 * 4 = 64 bytes
+    pub rsvd192: [u8; 192],
+    pub vs: [u8; 3712],
+}
+
+impl NvmeIdentifyNamespace {
+    /// Returns the formatted sector size in bytes (e.g. 512 or 4096).
+    pub fn sector_size(&self) -> usize {
+        let fmt_idx = (self.flbas & 0x0F) as usize;
+        let ds = if fmt_idx < 16 {
+            self.lbaf[fmt_idx].lbads
+        } else {
+            9
+        };
+        if ds == 0 {
+            512
+        } else {
+            1 << ds
+        }
+    }
+}
+
+// --- Admin & NVM Command Builders ---
+
+/// Builds an Admin IDENTIFY CONTROLLER (CNS = 1) command.
+pub fn build_identify_controller(prp1: u64) -> NvmeSubmissionEntry {
+    let mut sqe = NvmeSubmissionEntry::new(NVME_ADMIN_IDENTIFY, 0, 0);
+    sqe.prp1 = prp1;
+    sqe.cdw10 = 0x01; // CNS = 1 (Identify Controller)
+    sqe
+}
+
+/// Builds an Admin IDENTIFY NAMESPACE (CNS = 0) command.
+pub fn build_identify_namespace(nsid: u32, prp1: u64) -> NvmeSubmissionEntry {
+    let mut sqe = NvmeSubmissionEntry::new(NVME_ADMIN_IDENTIFY, 0, nsid);
+    sqe.prp1 = prp1;
+    sqe.cdw10 = 0x00; // CNS = 0 (Identify Namespace)
+    sqe
+}
+
+/// Builds an NVM 64-bit LBA READ command.
+pub fn build_nvm_read(nsid: u32, slba: u64, blocks: u16, prp1: u64, prp2: u64) -> NvmeSubmissionEntry {
+    let mut sqe = NvmeSubmissionEntry::new(NVME_NVM_READ, 0, nsid);
+    sqe.prp1 = prp1;
+    sqe.prp2 = prp2;
+    sqe.cdw10 = (slba & 0xFFFF_FFFF) as u32;
+    sqe.cdw11 = ((slba >> 32) & 0xFFFF_FFFF) as u32;
+    sqe.cdw12 = (blocks.saturating_sub(1)) as u32; // 0-based block count
+    sqe
+}
+
+/// Builds an NVM 64-bit LBA WRITE command.
+pub fn build_nvm_write(nsid: u32, slba: u64, blocks: u16, prp1: u64, prp2: u64) -> NvmeSubmissionEntry {
+    let mut sqe = NvmeSubmissionEntry::new(NVME_NVM_WRITE, 0, nsid);
+    sqe.prp1 = prp1;
+    sqe.prp2 = prp2;
+    sqe.cdw10 = (slba & 0xFFFF_FFFF) as u32;
+    sqe.cdw11 = ((slba >> 32) & 0xFFFF_FFFF) as u32;
+    sqe.cdw12 = (blocks.saturating_sub(1)) as u32; // 0-based block count
+    sqe
+}
+
+/// Constructs PRP1 and PRP2 for DMA buffer transfers according to NVMe page boundaries.
+///
+/// If buffer spans <= 4096 bytes: PRP1 = buf, PRP2 = 0.
+/// If buffer spans <= 8192 bytes: PRP1 = buf, PRP2 = buf + 4096.
+/// If buffer spans > 8192 bytes: PRP1 = buf, PRP2 = prp_list_phys (with list filled).
+pub fn build_prp(
+    buffer_phys: u64,
+    byte_len: usize,
+    prp_list_phys: u64,
+    prp_list_slice: &mut [u64],
+) -> (u64, u64) {
+    let prp1 = buffer_phys;
+    if byte_len <= 4096 {
+        (prp1, 0)
+    } else if byte_len <= 8192 {
+        (prp1, buffer_phys + 4096)
+    } else {
+        // Populate PRP List for remaining pages
+        let remaining_bytes = byte_len - 4096;
+        let num_pages = (remaining_bytes + 4095) / 4096;
+        let fill_count = num_pages.min(prp_list_slice.len());
+
+        for i in 0..fill_count {
+            prp_list_slice[i] = buffer_phys + ((i as u64 + 1) * 4096);
+        }
+
+        (prp1, prp_list_phys)
+    }
+}
+
+/// High-level NVMe Block Device descriptor exposing VFS /dev/nvme0n1.
+#[derive(Debug, Clone)]
+pub struct NvmeBlockDevice {
+    pub nsid: u32,
+    pub sector_size: usize,
+    pub total_sectors: u64,
+    pub model: [u8; 40],
+    pub serial: [u8; 20],
+}
+
+impl NvmeBlockDevice {
+    pub const fn new(
+        nsid: u32,
+        sector_size: usize,
+        total_sectors: u64,
+        model: [u8; 40],
+        serial: [u8; 20],
+    ) -> Self {
+        Self {
+            nsid,
+            sector_size,
+            total_sectors,
+            model,
+            serial,
+        }
+    }
+
+    pub fn device_name(&self) -> &'static str {
+        "/dev/nvme0n1"
+    }
+
+    pub fn capacity_bytes(&self) -> u64 {
+        self.total_sectors * (self.sector_size as u64)
+    }
+
+    pub fn build_read_command(&self, slba: u64, count: u16, prp1: u64, prp2: u64) -> NvmeSubmissionEntry {
+        build_nvm_read(self.nsid, slba, count, prp1, prp2)
+    }
+
+    pub fn build_write_command(&self, slba: u64, count: u16, prp1: u64, prp2: u64) -> NvmeSubmissionEntry {
+        build_nvm_write(self.nsid, slba, count, prp1, prp2)
+    }
+}
+
+/// Unit test verifying NVMe IDENTIFY structures, PRP scatter-gather generation, and command builders.
+pub fn verify_nvme_identify_and_prp() -> bool {
+    // 1. Verify exact 4096-byte sizing of IDENTIFY structures
+    assert_eq!(core::mem::size_of::<NvmeIdentifyController>(), 4096);
+    assert_eq!(core::mem::size_of::<NvmeIdentifyNamespace>(), 4096);
+    assert_eq!(core::mem::size_of::<NvmePowerStateDesc>(), 32);
+    assert_eq!(core::mem::size_of::<NvmeLbaFormat>(), 4);
+
+    // 2. Test PRP builder
+    // Single-page transfer (512 bytes): PRP1 = addr, PRP2 = 0
+    let (p1, p2) = build_prp(0x1000, 512, 0, &mut []);
+    assert_eq!(p1, 0x1000);
+    assert_eq!(p2, 0);
+
+    // Two-page transfer (8192 bytes): PRP1 = 0x1000, PRP2 = 0x2000
+    let (p1_2, p2_2) = build_prp(0x1000, 8192, 0, &mut []);
+    assert_eq!(p1_2, 0x1000);
+    assert_eq!(p2_2, 0x2000);
+
+    // Multi-page transfer (16384 bytes = 4 pages): PRP1 = 0x1000, PRP2 = list_phys
+    let mut prp_list = [0u64; 8];
+    let (p1_m, p2_m) = build_prp(0x1000, 16384, 0x5000, &mut prp_list);
+    assert_eq!(p1_m, 0x1000);
+    assert_eq!(p2_m, 0x5000);
+    assert_eq!(prp_list[0], 0x2000);
+    assert_eq!(prp_list[1], 0x3000);
+    assert_eq!(prp_list[2], 0x4000);
+
+    // 3. Test Command Builders
+    let id_ctrl = build_identify_controller(0x8000);
+    assert_eq!(id_ctrl.opcode(), NVME_ADMIN_IDENTIFY);
+    assert_eq!(id_ctrl.prp1, 0x8000);
+    assert_eq!(id_ctrl.cdw10, 0x01); // CNS = 1
+
+    let id_ns = build_identify_namespace(1, 0x9000);
+    assert_eq!(id_ns.opcode(), NVME_ADMIN_IDENTIFY);
+    assert_eq!(id_ns.nsid, 1);
+    assert_eq!(id_ns.prp1, 0x9000);
+    assert_eq!(id_ns.cdw10, 0x00); // CNS = 0
+
+    let read_cmd = build_nvm_read(1, 0x0001_0000_1234, 8, 0xA000, 0);
+    assert_eq!(read_cmd.opcode(), NVME_NVM_READ);
+    assert_eq!(read_cmd.nsid, 1);
+    assert_eq!(read_cmd.cdw10, 0x0000_1234);
+    assert_eq!(read_cmd.cdw11, 0x0001);
+    assert_eq!(read_cmd.cdw12, 7); // 8 blocks - 1 = 7
+
+    let write_cmd = build_nvm_write(1, 0x0002_0000_5678, 1, 0xB000, 0);
+    assert_eq!(write_cmd.opcode(), NVME_NVM_WRITE);
+    assert_eq!(write_cmd.nsid, 1);
+    assert_eq!(write_cmd.cdw10, 0x0000_5678);
+    assert_eq!(write_cmd.cdw11, 0x0002);
+    assert_eq!(write_cmd.cdw12, 0); // 1 block - 1 = 0
+
+    // 4. Test Namespace sector size resolution
+    let mut ns_mock: NvmeIdentifyNamespace = unsafe { core::mem::zeroed() };
+    ns_mock.nsze = 2097152; // 1 GiB in 512-byte sectors
+    ns_mock.ncap = 2097152;
+    ns_mock.flbas = 0; // format 0
+    ns_mock.lbaf[0].lbads = 9; // 2^9 = 512 bytes
+    assert_eq!(ns_mock.sector_size(), 512);
+
+    let dev = NvmeBlockDevice::new(1, ns_mock.sector_size(), ns_mock.nsze, [b' '; 40], [b' '; 20]);
+    assert_eq!(dev.device_name(), "/dev/nvme0n1");
+    assert_eq!(dev.capacity_bytes(), 2097152 * 512);
+
+    true
+}
