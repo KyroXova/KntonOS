@@ -1,9 +1,5 @@
 //! TLS 1.3 Cryptographic Handshake & Protected Record Layer (RFC 8446).
-//!
 //! Provides a zero-dependency, pure-Rust implementation of:
-//! - TLS 1.3 Record Layer (plaintext and AES-128-GCM protected records)
-//! - ClientHello and ServerHello handshake message formatting and parsing
-//! - RFC 8446 Section 7.1 Key Schedule using HKDF-SHA256 and Derive-Secret
 
 use crate::crypto::{
     hkdf_expand, hkdf_extract, Aes128Gcm, Sha256, AES128_KEY_SIZE, GCM_NONCE_SIZE, GCM_TAG_SIZE,

@@ -1,9 +1,5 @@
 //! BSD / WinSock Sockets Abstraction Layer & State Descriptors.
-//!
 //! Provides standard POSIX / WinSock socket primitives, domain/type/protocol enumeration,
-//! per-process thread-safe socket handle allocation tables, and socket lifecycle tracking:
-//! - socket, bind, listen, accept, connect, send, recv, sendto, recvfrom, close
-//! - Non-blocking I/O mode (O_NONBLOCK) support with SocketError::WouldBlock
 
 use crate::memory::Spinlock;
 use crate::net::udp::UdpDatagram;
