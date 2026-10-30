@@ -15,3 +15,9 @@ pub use insn::{
     BPF_MODE_MEM, BPF_REG_COUNT, BPF_REG_FP, BPF_SIZE_B, BPF_SIZE_DW, BPF_SIZE_H, BPF_SIZE_W,
     BPF_SRC_K, BPF_SRC_X,
 };
+
+pub mod verifier;
+
+pub use verifier::{
+    test_bpf_verifier, BpfVerifier, RegisterState, VerifierError, BPF_MAX_INSNS, BPF_STACK_SIZE,
+};
