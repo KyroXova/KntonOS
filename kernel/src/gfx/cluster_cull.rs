@@ -214,3 +214,191 @@ impl ViewFrustumDesc {
         (world_error * self.projection_scale()) / dist
     }
 }
+
+
+// -----------------------------------------------------------------------------
+// GPU Sub-Pixel Cluster Culling, Normal Cone & Hierarchical Occlusion Bit-Grid
+// -----------------------------------------------------------------------------
+
+/// 2D Screen-space axis-aligned bounding box [min_x, min_y, max_x, max_y].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScreenRect {
+    pub min_x: f32,
+    pub min_y: f32,
+    pub max_x: f32,
+    pub max_y: f32,
+}
+
+impl ScreenRect {
+    pub const fn new(min_x: f32, min_y: f32, max_x: f32, max_y: f32) -> Self {
+        Self { min_x, min_y, max_x, max_y }
+    }
+
+    #[inline(always)]
+    pub fn width(&self) -> f32 {
+        (self.max_x - self.min_x).max(0.0)
+    }
+
+    #[inline(always)]
+    pub fn height(&self) -> f32 {
+        (self.max_y - self.min_y).max(0.0)
+    }
+
+    #[inline(always)]
+    pub fn area(&self) -> f32 {
+        self.width() * self.height()
+    }
+}
+
+/// Coarse 2D Hierarchical Occlusion Bit-Grid representing downsampled Hi-Z buffer tiles.
+#[derive(Debug, Clone)]
+pub struct OcclusionBitGrid {
+    pub width: u32,
+    pub height: u32,
+    pub depths: Vec<f32>,
+}
+
+impl Default for OcclusionBitGrid {
+    fn default() -> Self {
+        Self::new(64, 64, 1.0)
+    }
+}
+
+impl OcclusionBitGrid {
+    pub fn new(width: u32, height: u32, clear_depth: f32) -> Self {
+        let w = width.max(1);
+        let h = height.max(1);
+        let total = (w * h) as usize;
+        Self {
+            width: w,
+            height: h,
+            depths: alloc::vec![clear_depth; total],
+        }
+    }
+
+    #[inline(always)]
+    pub fn set_tile_depth(&mut self, tx: u32, ty: u32, depth: f32) {
+        if tx < self.width && ty < self.height {
+            let idx = (ty * self.width + tx) as usize;
+            self.depths[idx] = depth;
+        }
+    }
+
+    #[inline(always)]
+    pub fn get_tile_depth(&self, tx: u32, ty: u32) -> f32 {
+        if tx < self.width && ty < self.height {
+            let idx = (ty * self.width + tx) as usize;
+            self.depths[idx]
+        } else {
+            1.0
+        }
+    }
+
+    /// Tests if a screen-space rectangle at nearest depth `cluster_nearest_z` is fully occluded.
+    /// Returns true if occluded (can be safely culled).
+    pub fn is_rect_occluded(&self, rect: &ScreenRect, cluster_nearest_z: f32, viewport_w: f32, viewport_h: f32) -> bool {
+        if viewport_w <= 0.0 || viewport_h <= 0.0 {
+            return false;
+        }
+
+        // Map normalized screen coordinates to occlusion grid tiles
+        let start_tx = ((rect.min_x / viewport_w) * self.width as f32).max(0.0) as u32;
+        let end_tx = (((rect.max_x / viewport_w) * self.width as f32) as u32 + 1).min(self.width);
+        let start_ty = ((rect.min_y / viewport_h) * self.height as f32).max(0.0) as u32;
+        let end_ty = (((rect.max_y / viewport_h) * self.height as f32) as u32 + 1).min(self.height);
+
+        if start_tx >= end_tx || start_ty >= end_ty {
+            return false;
+        }
+
+        // Check if all tiles overlapping the cluster have buffer depth strictly closer than the cluster
+        for ty in start_ty..end_ty {
+            for tx in start_tx..end_tx {
+                let tile_z = self.get_tile_depth(tx, ty);
+                if cluster_nearest_z <= tile_z {
+                    // Cluster is in front of at least one tile: NOT occluded
+                    return false;
+                }
+            }
+        }
+
+        // Cluster is strictly behind all covered tiles: occluded!
+        true
+    }
+}
+
+/// Statistics tracking GPU cluster culling results.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ClusterCullStats {
+    pub total_tested: u64,
+    pub culled_subpixel: u64,
+    pub culled_normal_cone: u64,
+    pub culled_frustum: u64,
+    pub culled_occlusion: u64,
+    pub clusters_passed: u64,
+}
+
+/// Consolidated GPU Dynamic Primitive Cluster Culling Engine.
+#[derive(Debug, Clone, Default)]
+pub struct GpuClusterCuller {
+    pub subpixel_threshold_px: f32, // e.g. 0.5 pixels
+    pub stats: ClusterCullStats,
+}
+
+impl GpuClusterCuller {
+    pub fn new(subpixel_threshold_px: f32) -> Self {
+        Self {
+            subpixel_threshold_px: subpixel_threshold_px.max(0.0),
+            stats: ClusterCullStats::default(),
+        }
+    }
+
+    /// Evaluates all GPU cluster culling stages:
+    /// 1. Distance & Sub-pixel bounding sphere projection test
+    /// 2. Front-facing normal cone test (backface cluster culling)
+    /// 3. Hierarchical occlusion bit-grid test
+    ///
+    /// Returns true if the cluster passes all culling tests and must be rendered.
+    pub fn evaluate_cluster(
+        &mut self,
+        cluster: &MeshClusterDesc,
+        frustum: &ViewFrustumDesc,
+        occlusion: &OcclusionBitGrid,
+    ) -> bool {
+        self.stats.total_tested += 1;
+
+        let dist = cluster.bounding_sphere.distance_to(frustum.camera_pos);
+
+        // 1. Sub-pixel Culling: If projected bounding radius < threshold, cull as subpixel
+        let projected_radius_px = (cluster.bounding_sphere.radius * frustum.projection_scale()) / dist.max(0.1);
+        if projected_radius_px < self.subpixel_threshold_px {
+            self.stats.culled_subpixel += 1;
+            return false;
+        }
+
+        // 2. Normal Cone Backface Culling: If cone faces entirely away from camera, cull
+        if cluster.normal_cone.is_backfacing(frustum.camera_pos) {
+            self.stats.culled_normal_cone += 1;
+            return false;
+        }
+
+        // 3. Screen Rect & Occlusion Bit-Grid Culling
+        let center_x = frustum.viewport_width_px * 0.5;
+        let center_y = frustum.viewport_height_px * 0.5;
+        let screen_rect = ScreenRect::new(
+            (center_x - projected_radius_px).max(0.0),
+            (center_y - projected_radius_px).max(0.0),
+            (center_x + projected_radius_px).min(frustum.viewport_width_px),
+            (center_y + projected_radius_px).min(frustum.viewport_height_px),
+        );
+
+        let nearest_z = (dist - cluster.bounding_sphere.radius).max(0.0) / 100.0; // normalized depth
+        if occlusion.is_rect_occluded(&screen_rect, nearest_z, frustum.viewport_width_px, frustum.viewport_height_px) {
+            self.stats.culled_occlusion += 1;
+            return false;
+        }
+
+        self.stats.clusters_passed += 1;
+        true
+    }
+}
