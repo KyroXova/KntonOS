@@ -9,6 +9,7 @@ pub mod smp;
 pub mod power;
 pub mod hpet;
 pub mod debug_trap;
+pub mod mmio_watch;
 
 pub use hpet::{
     calibrate_tsc, calibrate_tsc_with_samples, monotonic_sleep_ns, monotonic_time_ms,
@@ -27,6 +28,10 @@ pub use smp::{test_smp_and_timer_subsystem, SMP};
 pub use debug_trap::{
     test_hardware_watchpoint_registers, DebugControlRegister, DebugRegisterIndex,
     DebugStatusRegister, HardwareWatchpointController, WatchpointCondition, WatchpointLength,
+};
+pub use mmio_watch::{
+    test_mmio_range_interceptor, MmioAccessType, MmioInterceptEvent, MmioRangeInterceptor,
+    MmioWatchRange,
 };
 pub use power::{
     cpu_idle, cpu_relax, get_cpu_throttling, inw, outw, parse_dsdt_sleep_state,
