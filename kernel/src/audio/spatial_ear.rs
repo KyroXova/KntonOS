@@ -1061,6 +1061,131 @@ impl SpatialAudioVirtualizerEngine {
     }
 }
 
+// =============================================================================
+// 5. Subsystem Verification Suite & Boot Sentinel
+// =============================================================================
+
+/// Verification self-test suite for Kernel-Direct Low-Latency Spatial Audio Virtualizer & Ear-Canal Impedance Compensator Engine (TASK-KNT-118).
+pub fn test_spatial_audio_virtualizer_subsystem() -> bool {
+    crate::serial_write_str("[KNT-AUDIO-SPATIAL-EAR-TEST] Running Low-Latency Spatial Audio Virtualizer & Ear-Canal Impedance Compensator verification suite...\r\n");
+
+    // 1. 3D spatial vector geometry, Woodworth ITD delay, and ILD head-shadow
+    let listener = SpatialListener::new(SpatialVector3::zero());
+    let emitter = SpatialEmitter::new(SpatialVector3::new(2.0, 0.0, 0.0)); // 2m to the right (+X)
+    let binaural = BinauralParameters::calculate(&listener, &emitter);
+
+    if binaural.distance < 1.9 || binaural.distance > 2.1 {
+        return false;
+    }
+    if binaural.azimuth_rad < 1.4 || binaural.azimuth_rad > 1.7 {
+        return false;
+    }
+    // Emitter on right: left ear is contralateral (delayed & shadowed), right ear is direct
+    if binaural.right_delay_samples != 0.0 || binaural.left_delay_samples < 15.0 || binaural.left_delay_samples > 35.0 {
+        return false;
+    }
+    if binaural.right_gain <= binaural.left_gain {
+        return false;
+    }
+    crate::serial_write_str("  * 3D spatial vector geometry, Woodworth ITD delay, and ILD head-shadow verified\r\n");
+
+    // 2. Sub-millisecond fractional delay (Hermite/Lagrange) and spherical head diffraction
+    let mut delay = SubMillisecondDelayLine::new();
+    for i in 0..64 {
+        delay.write_sample(i as f32);
+    }
+    let val_hermite = delay.read_hermite(4.5);
+    let val_lagrange = delay.read_lagrange(4.5);
+    // 63 - 4.5 = 58.5
+    if (val_hermite - 58.5).abs() > 0.1 || (val_lagrange - 58.5).abs() > 0.1 {
+        return false;
+    }
+
+    let mut shadow = HeadShadowSphericalFilter::new();
+    shadow.update_angle(0.0);
+    let mag_front = shadow.magnitude_response(4000.0);
+    if (mag_front - 1.0).abs() > 0.08 {
+        return false;
+    }
+    shadow.update_angle(HALF_PI);
+    let mag_ipsi = shadow.magnitude_response(4000.0);
+    if mag_ipsi < 1.15 {
+        return false;
+    }
+    shadow.update_angle(-HALF_PI);
+    let mag_contra = shadow.magnitude_response(4000.0);
+    if mag_contra > 0.45 {
+        return false;
+    }
+    crate::serial_write_str("  * Sub-millisecond fractional delay (Hermite/Lagrange) and spherical head diffraction verified\r\n");
+
+    // 3. Cross-talk cancellation (XTC) handheld speaker matrix and isolation
+    let mut xtc = CrossTalkCancellationVirtualizer::new_handheld_defaults();
+    if xtc.cross_delay_samples < 4.0 || xtc.cross_delay_samples > 10.0 {
+        return false;
+    }
+    let (l_direct, r_leak) = xtc.process_stereo(1.0, 0.0);
+    if l_direct != 1.0 || r_leak != 0.0 {
+        return false;
+    }
+    // Verify subsequent canceling pulse appears on contralateral channel
+    let mut canceling_found = false;
+    let max_steps = (xtc.cross_delay_samples as usize) + 4;
+    for _ in 0..max_steps {
+        let (_l, r) = xtc.process_stereo(0.0, 0.0);
+        if r < -0.2 {
+            canceling_found = true;
+            break;
+        }
+    }
+    if !canceling_found {
+        return false;
+    }
+    crate::serial_write_str("  * Cross-talk cancellation (XTC) handheld speaker matrix and isolation verified\r\n");
+
+    // 4. Ear-canal acoustic resonance model and 3kHz impedance equalizer
+    let ear_model = EarCanalModel::default_human();
+    let res_freq = ear_model.calculate_resonance_frequency();
+    if res_freq < 3000.0 || res_freq > 3300.0 {
+        return false;
+    }
+    let eq = AcousticImpedanceEqualizer::new(CompensationProfile::InEarMonitorIEM);
+    let mag_at_res = eq.left_channel.tf.magnitude_response(res_freq);
+    if mag_at_res > 0.65 {
+        return false;
+    }
+    let mag_at_bass = eq.left_channel.tf.magnitude_response(100.0);
+    if (mag_at_bass - 1.0).abs() > 0.05 {
+        return false;
+    }
+    crate::serial_write_str("  * Ear-canal acoustic resonance model and 3kHz impedance equalizer verified\r\n");
+
+    // 5. End-to-end binaural 3D spatializer and handheld acoustic compensation pipeline
+    let mut engine = SpatialAudioVirtualizerEngine::new(listener, CompensationProfile::HandheldStereoSpeakersXTC);
+    let emitter_3d = SpatialEmitter::new(SpatialVector3::new(1.5, 2.0, 0.5));
+    let mut in_mono = [0.0f32; 64];
+    for (i, sample) in in_mono.iter_mut().enumerate() {
+        *sample = sin_f32((i as f32) * 0.1);
+    }
+    let mut out_left = [0.0f32; 64];
+    let mut out_right = [0.0f32; 64];
+    engine.process_frame(&in_mono, &mut out_left, &mut out_right, &emitter_3d);
+
+    let mut energy_l = 0.0f32;
+    let mut energy_r = 0.0f32;
+    for i in 0..64 {
+        energy_l += out_left[i] * out_left[i];
+        energy_r += out_right[i] * out_right[i];
+    }
+    if energy_l <= 0.0 || energy_r <= 0.0 {
+        return false;
+    }
+    crate::serial_write_str("  * End-to-end binaural 3D spatializer and handheld acoustic compensation pipeline verified\r\n");
+
+    crate::serial_write_str("[KNT-AUDIO-SPATIAL-EAR-PASS] Low-latency spatial audio virtualizer and ear-canal compensator operational\r\n");
+    true
+}
+
 // -----------------------------------------------------------------------------
 // Unit Tests
 // -----------------------------------------------------------------------------
@@ -1148,7 +1273,7 @@ mod tests {
     }
     #[test]
     pub fn test_xtc_and_impedance_equalizer() {
-        let mut eq = AcousticImpedanceEqualizer::new(CompensationProfile::InEarMonitorIEM);
+        let eq = AcousticImpedanceEqualizer::new(CompensationProfile::InEarMonitorIEM);
         let (l_out, r_out) = eq.process_stereo(1.0, 1.0);
         assert!(l_out > 0.0);
         assert!(r_out > 0.0);
