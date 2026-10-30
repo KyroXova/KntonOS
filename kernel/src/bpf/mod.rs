@@ -21,3 +21,11 @@ pub mod verifier;
 pub use verifier::{
     test_bpf_verifier, BpfVerifier, RegisterState, VerifierError, BPF_MAX_INSNS, BPF_STACK_SIZE,
 };
+
+pub mod vm;
+
+pub use vm::{
+    test_bpf_vm_execution, BpfContext, BpfVirtualMachine, VmExitStatus, BPF_FUNC_GET_SMP_PROCESSOR_ID,
+    BPF_FUNC_KTIME_GET_NS, BPF_FUNC_PACKET_LOAD_U16, BPF_FUNC_PACKET_LOAD_U32,
+    BPF_FUNC_PACKET_LOAD_U8, BPF_FUNC_TRACE_PRINTK,
+};
