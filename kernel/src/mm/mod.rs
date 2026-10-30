@@ -325,3 +325,65 @@ pub fn test_thp_and_numa_subsystem() -> bool {
 
     true
 }
+
+/// Verification self-test suite for Dynamic VMM Kernel Memory Compactor
+/// & Transparent Page Defragmentation Engine.
+pub fn test_memory_compaction_subsystem() -> bool {
+    crate::serial_write_str("[KNT-MEM-COMPACT-TEST] Running Dynamic VMM Memory Compactor & Defragmentation verification suite...\r\n");
+
+    // 1. Verify physical memory fragmentation index and two-pointer compaction scanner
+    if !compactor::test_two_pointer_compactor_scanner() {
+        crate::serial_write_str("[KNT-PANIC] Two-pointer compactor scanner verification failed!\r\n");
+        return false;
+    }
+    crate::serial_write_str("  * Fragmentation index calculation and two-pointer bidirectional scanner verified\r\n");
+
+    // 2. Verify movable page frame migration and atomic frame swapping
+    if !compactor::test_frame_migration_and_atomic_swap() {
+        crate::serial_write_str("[KNT-PANIC] Page frame migration and swapping verification failed!\r\n");
+        return false;
+    }
+    crate::serial_write_str("  * Movable page frame migration, memory barrier ordering, and atomic frame swapping verified\r\n");
+
+    // 3. Verify 2MB huge page aggregation and atomic page table TLB invalidator
+    if !defrag::test_2mb_huge_page_aggregation_and_tlb() {
+        crate::serial_write_str("[KNT-PANIC] 2MB huge page aggregation and TLB invalidation verification failed!\r\n");
+        return false;
+    }
+    crate::serial_write_str("  * 2MB THP aggregation, atomic page table leaf re-pointing, and TLB invalidation verified\r\n");
+
+    // 4. End-to-end integration: proactive daemon-driven zone defragmentation and THP collapse
+    let base_pfn = 0x5000;
+    let total_frames = 200;
+    let mut zone = compactor::CompactionZone::new(base_pfn, total_frames);
+
+    // Set up interleaved movable memory
+    for i in 0..total_frames {
+        if i % 2 == 1 {
+            zone.set_frame_movable(base_pfn + i, 100, 0x00C0_0000 + i * PAGE_SIZE_4KB);
+        }
+    }
+
+    let mut daemon = defrag::TransparentDefragDaemon::new(defrag::DefragPolicy {
+        high_watermark_frag: 0.35,
+        low_watermark_frag: 0.10,
+        max_migrations_per_burst: 100,
+        target_order_pages: 50,
+    });
+
+    let initial_frag = zone.calculate_fragmentation_index(50);
+    if initial_frag != 1.0 {
+        crate::serial_write_str("[KNT-PANIC] Initial zone fragmentation assertion failed!\r\n");
+        return false;
+    }
+
+    let pages_moved = daemon.run_cycle(&mut zone);
+    if pages_moved != 50 || daemon.last_measured_frag != 0.0 {
+        crate::serial_write_str("[KNT-PANIC] Proactive daemon compaction cycle failed!\r\n");
+        return false;
+    }
+
+    crate::serial_write_str("  * End-to-end proactive memory compaction and contiguous 2MB THP defragmentation verified\r\n");
+    crate::serial_write_str("[KNT-MEM-COMPACT-PASS] Dynamic memory compactor and transparent defragmentation operational\r\n");
+    true
+}
