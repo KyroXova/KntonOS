@@ -57,6 +57,15 @@ pub fn test_power_subsystem() -> bool {
     true
 }
 
+pub fn test_hpet_subsystem() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        x86_64::test_hpet_subsystem()
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    true
+}
+
 pub fn test_smp_and_timer_subsystem() -> bool {
     #[cfg(target_arch = "x86_64")]
     {
