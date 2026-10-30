@@ -382,3 +382,189 @@ impl FramePacingRegulator {
         sleep_ns
     }
 }
+
+
+// -----------------------------------------------------------------------------
+// GPU Fence-Aligned PresentWait & Latency Metric Profiler
+// -----------------------------------------------------------------------------
+
+/// Real-time statistical profiler tracking end-to-end latency and queue metrics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LatencyMetricProfiler {
+    pub total_samples: u64,
+    pub avg_end_to_end_latency_ns: u64,
+    pub min_end_to_end_latency_ns: u64,
+    pub max_end_to_end_latency_ns: u64,
+    pub avg_sim_time_ns: u64,
+    pub avg_render_time_ns: u64,
+    pub avg_driver_queue_latency_ns: u64,
+    pub avg_gpu_render_time_ns: u64,
+    pub cumulative_latency_ns: u64,
+}
+
+impl LatencyMetricProfiler {
+    pub fn new() -> Self {
+        Self {
+            min_end_to_end_latency_ns: u64::MAX,
+            ..Default::default()
+        }
+    }
+
+    /// Records a completed frame's breakdown into profiling statistics.
+    pub fn record_frame(&mut self, breakdown: &FrameLatencyBreakdown) {
+        let lat = breakdown.end_to_end_latency_ns;
+        self.total_samples += 1;
+        self.cumulative_latency_ns += lat;
+
+        if lat < self.min_end_to_end_latency_ns {
+            self.min_end_to_end_latency_ns = lat;
+        }
+        if lat > self.max_end_to_end_latency_ns {
+            self.max_end_to_end_latency_ns = lat;
+        }
+
+        self.avg_end_to_end_latency_ns = self.cumulative_latency_ns / self.total_samples;
+
+        // Exponential moving average for sub-durations
+        let alpha = 0.15f32;
+        self.avg_sim_time_ns = ((self.avg_sim_time_ns as f32) * (1.0 - alpha) + (breakdown.sim_time_ns as f32) * alpha) as u64;
+        self.avg_render_time_ns = ((self.avg_render_time_ns as f32) * (1.0 - alpha) + (breakdown.render_time_ns as f32) * alpha) as u64;
+        self.avg_driver_queue_latency_ns = ((self.avg_driver_queue_latency_ns as f32) * (1.0 - alpha) + (breakdown.driver_queue_ns as f32) * alpha) as u64;
+        self.avg_gpu_render_time_ns = ((self.avg_gpu_render_time_ns as f32) * (1.0 - alpha) + (breakdown.gpu_render_time_ns as f32) * alpha) as u64;
+    }
+}
+
+/// Direct3D 12 Low-Latency Frame Pacing & Latency Marker Engine.
+///
+/// Unifies latency markers, proactive sleep regulation, GPU fence timeline synchronization,
+/// and end-to-end latency profiling.
+#[derive(Debug, Clone)]
+pub struct LowLatencyPacingEngine {
+    pub ring: FrameTimelineRing,
+    pub regulator: FramePacingRegulator,
+    pub profiler: LatencyMetricProfiler,
+    pub last_completed_gpu_fence: u64,
+    pub last_completed_frame_id: u64,
+    pub in_flight_frames_count: u32,
+    pub simulated_clock_ns: u64,
+    pub estimated_gpu_idle_ns: u64,
+}
+
+impl LowLatencyPacingEngine {
+    pub fn new(capacity: usize, mode: PacingMode, target_fps: f32) -> Self {
+        Self {
+            ring: FrameTimelineRing::new(capacity),
+            regulator: FramePacingRegulator::new(mode, target_fps, 1),
+            profiler: LatencyMetricProfiler::new(),
+            last_completed_gpu_fence: 0,
+            last_completed_frame_id: 0,
+            in_flight_frames_count: 0,
+            simulated_clock_ns: 0,
+            estimated_gpu_idle_ns: 0,
+        }
+    }
+
+    /// Advances simulated timeline clock by delta nanoseconds.
+    #[inline(always)]
+    pub fn advance_clock(&mut self, delta_ns: u64) {
+        self.simulated_clock_ns = self.simulated_clock_ns.saturating_add(delta_ns);
+    }
+
+    /// Begins a new frame cycle:
+    /// Computes proactive sleep duration, sleeps if necessary, allocates frame ID,
+    /// and records `SimulationStart`.
+    pub fn begin_frame(&mut self) -> Result<(u64, u64), FramePacingError> {
+        let sleep_ns = self.regulator.compute_proactive_sleep(
+            self.simulated_clock_ns,
+            self.estimated_gpu_idle_ns,
+            self.in_flight_frames_count,
+        );
+
+        // Advance clock by sleep duration
+        self.simulated_clock_ns += sleep_ns;
+
+        let frame_id = self.ring.allocate_frame();
+        self.ring.set_marker(frame_id, LatencyMarkerType::SimulationStart, self.simulated_clock_ns)?;
+
+        Ok((frame_id, sleep_ns))
+    }
+
+    /// Records simulation completion.
+    pub fn mark_simulation_end(&mut self, frame_id: u64) -> Result<(), FramePacingError> {
+        self.ring.set_marker(frame_id, LatencyMarkerType::SimulationEnd, self.simulated_clock_ns)
+    }
+
+    /// Records render command list recording start.
+    pub fn mark_render_submit_start(&mut self, frame_id: u64) -> Result<(), FramePacingError> {
+        self.ring.set_marker(frame_id, LatencyMarkerType::RenderSubmitStart, self.simulated_clock_ns)
+    }
+
+    /// Records render command list recording end.
+    pub fn mark_render_submit_end(&mut self, frame_id: u64) -> Result<(), FramePacingError> {
+        self.ring.set_marker(frame_id, LatencyMarkerType::RenderSubmitEnd, self.simulated_clock_ns)
+    }
+
+    /// Records OS driver hardware queue submission.
+    pub fn mark_driver_submit(&mut self, frame_id: u64) -> Result<(), FramePacingError> {
+        self.ring.set_marker(frame_id, LatencyMarkerType::DriverSubmit, self.simulated_clock_ns)
+    }
+
+    /// Records SwapChain::Present start.
+    pub fn mark_present_start(&mut self, frame_id: u64) -> Result<(), FramePacingError> {
+        self.ring.set_marker(frame_id, LatencyMarkerType::PresentStart, self.simulated_clock_ns)
+    }
+
+    /// Completes SwapChain::Present, assigns GPU fence, and increments in-flight frame count.
+    pub fn mark_present_end(&mut self, frame_id: u64, fence_val: u64) -> Result<(), FramePacingError> {
+        self.ring.set_marker(frame_id, LatencyMarkerType::PresentEnd, self.simulated_clock_ns)?;
+
+        if let Some(frame) = self.ring.get_frame_mut(frame_id) {
+            frame.gpu_fence_value = fence_val;
+        }
+
+        self.in_flight_frames_count += 1;
+
+        // Update estimated GPU completion timeline
+        let gpu_est = self.regulator.moving_avg_gpu_time_ns;
+        let base_start = self.simulated_clock_ns.max(self.estimated_gpu_idle_ns);
+        self.estimated_gpu_idle_ns = base_start + gpu_est;
+
+        Ok(())
+    }
+
+    /// Synchronously waits on the GPU timeline fence (PresentWait).
+    pub fn wait_for_gpu_fence(&mut self, target_fence: u64) -> Result<u64, FramePacingError> {
+        if self.last_completed_gpu_fence >= target_fence {
+            return Ok(0);
+        }
+
+        let wait_ns = self.estimated_gpu_idle_ns.saturating_sub(self.simulated_clock_ns);
+        self.simulated_clock_ns += wait_ns;
+        self.last_completed_gpu_fence = target_fence;
+
+        Ok(wait_ns)
+    }
+
+    /// Signals GPU frame completion from hardware fence interrupt.
+    pub fn signal_gpu_completion(
+        &mut self,
+        frame_id: u64,
+        gpu_start_ns: u64,
+        gpu_end_ns: u64,
+    ) -> Result<(), FramePacingError> {
+        self.ring.set_marker(frame_id, LatencyMarkerType::GpuRenderStart, gpu_start_ns)?;
+        self.ring.set_marker(frame_id, LatencyMarkerType::GpuRenderEnd, gpu_end_ns)?;
+
+        if let Some(frame) = self.ring.get_frame(frame_id) {
+            let breakdown = frame.breakdown();
+            self.regulator.update_durations(breakdown.cpu_total_ns, breakdown.gpu_render_time_ns);
+            self.profiler.record_frame(&breakdown);
+            self.last_completed_gpu_fence = frame.gpu_fence_value;
+        }
+
+        self.last_completed_frame_id = frame_id;
+        self.in_flight_frames_count = self.in_flight_frames_count.saturating_sub(1);
+
+        Ok(())
+    }
+}
