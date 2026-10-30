@@ -27,6 +27,7 @@ pub mod bpf;
 pub mod audio;
 pub mod time;
 pub mod video;
+pub mod sys;
 
 pub use memory::ALLOCATOR;
 
@@ -513,6 +514,11 @@ pub extern "C" fn kmain() -> ! {
     loader::init();
     if !loader::test_loader_subsystem() {
         serial_write_str("[KNT-PANIC] ELF64 loader subsystem self-test failed!\r\n");
+    }
+
+    // Milestone 100: Unified Gaming Subsystem Health Matrix & Benchmark Supervisor
+    if !sys::test_milestone_100_health_matrix() {
+        serial_write_str("[KNT-PANIC] Milestone 100 health matrix and benchmark supervisor self-test failed!\r\n");
     }
 
     // Spawn and execute initial Win32 PE64 userland process (/bin/init.exe)
