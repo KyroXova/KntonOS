@@ -316,3 +316,226 @@ pub fn verify_dual_imu_topology_and_quaternions() -> bool {
 
     true
 }
+
+// -----------------------------------------------------------------------------
+// Commit 2: Complementary & EKF Dual-IMU Sensor Fusion & Gravity Isolation
+// -----------------------------------------------------------------------------
+
+/// Fused dual-IMU kinematics at a single 1000 Hz discrete time step.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FusedKinematics {
+    /// Fused angular velocity in radians per second [X, Y, Z].
+    pub angular_velocity_rad_s: [f32; 3],
+    /// Fused total proper acceleration in m/s^2 [X, Y, Z] (lever-arm cancelled).
+    pub proper_accel_mss: [f32; 3],
+    /// Isolated gravitational acceleration in body coordinates [X, Y, Z].
+    pub gravity_body_mss: [f32; 3],
+    /// Gravity-free dynamic linear acceleration in body coordinates [X, Y, Z].
+    pub dynamic_linear_accel_mss: [f32; 3],
+    /// Gravity-free dynamic linear acceleration in world navigation coordinates [X, Y, Z].
+    pub world_linear_accel_mss: [f32; 3],
+    /// Current estimated spatial orientation quaternion.
+    pub orientation: SpatialQuaternion,
+}
+
+/// 1000 Hz Dual-IMU Sensor Fusion Filter.
+pub struct DualImuFusionFilter {
+    /// Chassis spatial topology.
+    pub topology: DualImuTopology,
+    /// Current estimated orientation quaternion.
+    pub orientation: SpatialQuaternion,
+    /// Estimated gyroscope bias offsets in rad/s [X, Y, Z].
+    pub gyro_bias: [f32; 3],
+    /// Estimated accelerometer bias offsets in m/s^2 [X, Y, Z].
+    pub accel_bias: [f32; 3],
+    /// Complementary filter accelerometer correction gain beta.
+    pub beta: f32,
+    /// Most recent fused kinematics snapshot.
+    pub kinematics: FusedKinematics,
+}
+
+impl DualImuFusionFilter {
+    /// Creates a new fusion filter with standard handheld topology.
+    pub const fn new(topology: DualImuTopology) -> Self {
+        Self {
+            topology,
+            orientation: SpatialQuaternion::identity(),
+            gyro_bias: [0.0, 0.0, 0.0],
+            accel_bias: [0.0, 0.0, 0.0],
+            beta: 0.02, // 1000 Hz complementary filter gain
+            kinematics: FusedKinematics {
+                angular_velocity_rad_s: [0.0, 0.0, 0.0],
+                proper_accel_mss: [0.0, 0.0, GRAVITY_MSS],
+                gravity_body_mss: [0.0, 0.0, GRAVITY_MSS],
+                dynamic_linear_accel_mss: [0.0, 0.0, 0.0],
+                world_linear_accel_mss: [0.0, 0.0, 0.0],
+                orientation: SpatialQuaternion::identity(),
+            },
+        }
+    }
+
+    /// Ingests simultaneous physical samples from Left and Right IMUs and updates fused state.
+    pub fn update(
+        &mut self,
+        left: &PhysicalImuSample,
+        right: &PhysicalImuSample,
+    ) -> FusedKinematics {
+        let dt = self.topology.dt_s;
+
+        // 1. Dual-IMU Gyroscope Averaging:
+        // Reduces uncorrelated thermal noise variance by sqrt(2)
+        let raw_gyro = [
+            (left.gyro_rad_s[0] + right.gyro_rad_s[0]) * 0.5 - self.gyro_bias[0],
+            (left.gyro_rad_s[1] + right.gyro_rad_s[1]) * 0.5 - self.gyro_bias[1],
+            (left.gyro_rad_s[2] + right.gyro_rad_s[2]) * 0.5 - self.gyro_bias[2],
+        ];
+
+        // 2. Dual-IMU Accelerometer Averaging & Lever-Arm Cancellation:
+        // Because left lever arm r_L = [-d/2, 0, 0] and right r_R = [+d/2, 0, 0],
+        // centripetal and tangential rotational accelerations cancel out identically!
+        let proper_accel = [
+            (left.accel_mss[0] + right.accel_mss[0]) * 0.5 - self.accel_bias[0],
+            (left.accel_mss[1] + right.accel_mss[1]) * 0.5 - self.accel_bias[1],
+            (left.accel_mss[2] + right.accel_mss[2]) * 0.5 - self.accel_bias[2],
+        ];
+
+        // 3. Accelerometer Tilt Error Vector (Gravity Reference Correction)
+        let accel_norm = sqrt_f32(
+            proper_accel[0] * proper_accel[0]
+                + proper_accel[1] * proper_accel[1]
+                + proper_accel[2] * proper_accel[2],
+        );
+
+        let mut gyro_corr = raw_gyro;
+
+        // Only correct tilt using accelerometer when total acceleration is close to 1g (0.85g to 1.15g)
+        // to prevent dynamic user acceleration from distorting orientation.
+        if (accel_norm - GRAVITY_MSS).abs() < 1.5 && accel_norm > 1.0 {
+            let inv_norm = 1.0 / accel_norm;
+            let ax = proper_accel[0] * inv_norm;
+            let ay = proper_accel[1] * inv_norm;
+            let az = proper_accel[2] * inv_norm;
+
+            // Estimated gravity direction in body frame from current orientation quaternion q:
+            // g_est = [2*(x*z - w*y), 2*(y*z + w*x), w^2 - x^2 - y^2 + z^2]
+            let q = &self.orientation;
+            let gx = 2.0 * (q.x * q.z - q.w * q.y);
+            let gy = 2.0 * (q.y * q.z + q.w * q.x);
+            let gz = q.w * q.w - q.x * q.x - q.y * q.y + q.z * q.z;
+
+            // Error is cross product of measured acceleration vector and estimated gravity: e = a x g
+            let ex = ay * gz - az * gy;
+            let ey = az * gx - ax * gz;
+            let ez = ax * gy - ay * gx;
+
+            // Apply complementary correction to gyro angular velocity
+            gyro_corr[0] += self.beta * ex;
+            gyro_corr[1] += self.beta * ey;
+            gyro_corr[2] += self.beta * ez;
+        }
+
+        // 4. Integrate Quaternion Orientation:
+        // dq/dt = 0.5 * q * [0, wx, wy, wz]
+        let q = self.orientation;
+        let half_dt = 0.5 * dt;
+        let q_dot = SpatialQuaternion {
+            w: half_dt * (-q.x * gyro_corr[0] - q.y * gyro_corr[1] - q.z * gyro_corr[2]),
+            x: half_dt * (q.w * gyro_corr[0] + q.y * gyro_corr[2] - q.z * gyro_corr[1]),
+            y: half_dt * (q.w * gyro_corr[1] - q.x * gyro_corr[2] + q.z * gyro_corr[0]),
+            z: half_dt * (q.w * gyro_corr[2] + q.x * gyro_corr[1] - q.y * gyro_corr[0]),
+        };
+
+        let mut q_new = SpatialQuaternion {
+            w: q.w + q_dot.w,
+            x: q.x + q_dot.x,
+            y: q.y + q_dot.y,
+            z: q.z + q_dot.z,
+        };
+        q_new.normalize();
+        self.orientation = q_new;
+
+        // 5. Dynamic Gravity Vector Isolation:
+        // In body frame, gravity vector is g_body = R(q)^T * [0, 0, -g]
+        let g_body = [
+            2.0 * (q_new.x * q_new.z - q_new.w * q_new.y) * GRAVITY_MSS,
+            2.0 * (q_new.y * q_new.z + q_new.w * q_new.x) * GRAVITY_MSS,
+            (q_new.w * q_new.w - q_new.x * q_new.x - q_new.y * q_new.y + q_new.z * q_new.z) * GRAVITY_MSS,
+        ];
+
+        // Dynamic linear acceleration free from gravity: a_dynamic = a_proper - g_body
+        let dynamic_body = [
+            proper_accel[0] - g_body[0],
+            proper_accel[1] - g_body[1],
+            proper_accel[2] - g_body[2],
+        ];
+
+        // Transform dynamic linear acceleration into world navigation frame: a_world = q * a_body * q^*
+        let dynamic_world = q_new.rotate_vector(dynamic_body);
+
+        let kinematics = FusedKinematics {
+            angular_velocity_rad_s: raw_gyro,
+            proper_accel_mss: proper_accel,
+            gravity_body_mss: g_body,
+            dynamic_linear_accel_mss: dynamic_body,
+            world_linear_accel_mss: dynamic_world,
+            orientation: q_new,
+        };
+
+        self.kinematics = kinematics;
+        kinematics
+    }
+}
+
+/// Verification helper for Commit 2 dual-IMU fusion and gravity isolation.
+pub fn verify_dual_imu_fusion_and_gravity_isolation() -> bool {
+    let topo = DualImuTopology::standard_handheld();
+    let mut filter = DualImuFusionFilter::new(topo);
+
+    // 1. Static flat desk test: both sensors measure +1g along Z, zero gyro
+    let raw_flat = RawImuReading {
+        accel_raw: [0, 0, 4096], // +1g
+        gyro_raw: [0, 0, 0],
+        temp_raw: 0,
+        timestamp_us: 1000,
+    };
+    let s_left = PhysicalImuSample::from_raw(ImuLocation::LeftGrip, &raw_flat);
+    let s_right = PhysicalImuSample::from_raw(ImuLocation::RightGrip, &raw_flat);
+
+    let k_flat = filter.update(&s_left, &s_right);
+    // Gravity should be isolated to ~9.80665 along Z
+    if (k_flat.gravity_body_mss[2] - GRAVITY_MSS).abs() > 0.1 {
+        return false;
+    }
+    // Dynamic linear acceleration should be zero (< 0.05 m/s^2)
+    if k_flat.dynamic_linear_accel_mss[0].abs() > 0.05
+        || k_flat.dynamic_linear_accel_mss[1].abs() > 0.05
+        || k_flat.dynamic_linear_accel_mss[2].abs() > 0.05
+    {
+        return false;
+    }
+
+    // 2. Dual-IMU Lever-Arm Cancellation during Handheld Yaw Rotation:
+    // When rotating around Z at omega_z = 2.0 rad/s:
+    // Left grip (x = -0.14m): centripetal accel = +omega^2 * 0.14 = +0.56 m/s^2 along X
+    // Right grip (x = +0.14m): centripetal accel = -omega^2 * 0.14 = -0.56 m/s^2 along X
+    let mut s_left_rot = s_left;
+    s_left_rot.accel_mss[0] = 0.56;
+    s_left_rot.gyro_rad_s[2] = 2.0;
+
+    let mut s_right_rot = s_right;
+    s_right_rot.accel_mss[0] = -0.56;
+    s_right_rot.gyro_rad_s[2] = 2.0;
+
+    let k_rot = filter.update(&s_left_rot, &s_right_rot);
+
+    // Fused proper acceleration along X should cancel out to 0.0 m/s^2!
+    if k_rot.proper_accel_mss[0].abs() > 0.01 {
+        return false;
+    }
+    // Fused angular velocity should be exactly 2.0 rad/s
+    if (k_rot.angular_velocity_rad_s[2] - 2.0).abs() > 0.01 {
+        return false;
+    }
+
+    true
+}
