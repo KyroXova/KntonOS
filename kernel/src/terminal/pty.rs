@@ -35,6 +35,39 @@ pub const VSTOP: usize = 9;   // XOFF ^S
 pub const VSUSP: usize = 10;  // Suspend ^Z
 pub const VEOL: usize = 11;
 
+#[allow(non_camel_case_types)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct winsize {
+    pub ws_row: u16,
+    pub ws_col: u16,
+    pub ws_xpixel: u16,
+    pub ws_ypixel: u16,
+}
+
+impl winsize {
+    pub const fn new(ws_col: u16, ws_row: u16) -> Self {
+        Self {
+            ws_col,
+            ws_row,
+            ws_xpixel: ws_col.saturating_mul(8),
+            ws_ypixel: ws_row.saturating_mul(16),
+        }
+    }
+}
+
+pub const TCGETS: u64     = 0x5401;
+pub const TCSETS: u64     = 0x5402;
+pub const TCSETSW: u64    = 0x5403;
+pub const TCSETSF: u64    = 0x5404;
+pub const TIOCGPGRP: u64  = 0x540F;
+pub const TIOCSPGRP: u64  = 0x5410;
+pub const TIOCGWINSZ: u64 = 0x5413;
+pub const TIOCSWINSZ: u64 = 0x5414;
+pub const TIOCGSID: u64   = 0x5429;
+pub const TIOCGPTN: u64   = 0x80045430;
+pub const TIOCSPTLCK: u64 = 0x40045431;
+
 // Input flags (c_iflag)
 pub const IGNBRK: tcflag_t = 0o000001;
 pub const BRKINT: tcflag_t = 0o000002;
@@ -318,6 +351,11 @@ pub struct PtyPair {
     pub master_rx_queue: VecDeque<u8>,
     pub master_closed: bool,
     pub slave_closed: bool,
+    pub winsize: winsize,
+    pub foreground_pgrp: u32,
+    pub session_id: u32,
+    pub locked: bool,
+    pub sigwinch_count: usize,
 }
 
 impl PtyPair {
@@ -329,6 +367,11 @@ impl PtyPair {
             master_rx_queue: VecDeque::with_capacity(1024),
             master_closed: false,
             slave_closed: false,
+            winsize: winsize::new(80, 25),
+            foreground_pgrp: 0,
+            session_id: 0,
+            locked: false,
+            sigwinch_count: 0,
         }
     }
 
@@ -380,6 +423,122 @@ impl PtyPair {
         self.ldisc.write_from_slave(data, &mut self.master_rx_queue);
         Ok(data.len())
     }
+
+    pub fn set_winsize(&mut self, ws: winsize) -> bool {
+        let changed = self.winsize.ws_row != ws.ws_row || self.winsize.ws_col != ws.ws_col;
+        self.winsize = ws;
+        if changed {
+            self.sigwinch_count += 1;
+            if self.foreground_pgrp > 0 {
+                let _ = crate::process::signals::SIGNAL_MANAGER.lock().send_signal(
+                    self.foreground_pgrp as u64,
+                    crate::process::signals::SIGWINCH,
+                );
+            }
+        }
+        changed
+    }
+
+    pub const fn get_winsize(&self) -> winsize {
+        self.winsize
+    }
+
+    pub fn set_pgrp(&mut self, pgrp: u32) {
+        self.foreground_pgrp = pgrp;
+    }
+
+    pub const fn get_pgrp(&self) -> u32 {
+        self.foreground_pgrp
+    }
+
+    pub fn ioctl(&mut self, is_master: bool, cmd: u64, arg: u64) -> Result<i64, PtyError> {
+        match cmd {
+            TIOCGWINSZ => {
+                if arg != 0 {
+                    unsafe {
+                        let ptr = arg as *mut winsize;
+                        *ptr = self.winsize;
+                    }
+                }
+                Ok(0)
+            }
+            TIOCSWINSZ => {
+                if arg != 0 {
+                    let new_ws = unsafe { *(arg as *const winsize) };
+                    self.set_winsize(new_ws);
+                }
+                Ok(0)
+            }
+            TCGETS => {
+                if arg != 0 {
+                    unsafe {
+                        let ptr = arg as *mut Termios;
+                        *ptr = self.ldisc.termios;
+                    }
+                }
+                Ok(0)
+            }
+            TCSETS | TCSETSW | TCSETSF => {
+                if arg != 0 {
+                    let new_t = unsafe { *(arg as *const Termios) };
+                    self.ldisc.termios = new_t;
+                }
+                Ok(0)
+            }
+            TIOCGPGRP => {
+                if arg != 0 {
+                    unsafe {
+                        let ptr = arg as *mut u32;
+                        *ptr = self.foreground_pgrp;
+                    }
+                }
+                Ok(self.foreground_pgrp as i64)
+            }
+            TIOCSPGRP => {
+                let pgrp = if arg != 0 {
+                    unsafe { *(arg as *const u32) }
+                } else {
+                    0
+                };
+                self.foreground_pgrp = pgrp;
+                Ok(0)
+            }
+            TIOCGSID => {
+                if arg != 0 {
+                    unsafe {
+                        let ptr = arg as *mut u32;
+                        *ptr = self.session_id;
+                    }
+                }
+                Ok(self.session_id as i64)
+            }
+            TIOCGPTN => {
+                if !is_master {
+                    return Err(PtyError::InvalidArgument);
+                }
+                if arg != 0 {
+                    unsafe {
+                        let ptr = arg as *mut u32;
+                        *ptr = self.id as u32;
+                    }
+                }
+                Ok(self.id as i64)
+            }
+            TIOCSPTLCK => {
+                if !is_master {
+                    return Err(PtyError::InvalidArgument);
+                }
+                let lock_flag = if arg != 0 {
+                    unsafe { *(arg as *const i32) }
+                } else {
+                    0
+                };
+                self.locked = lock_flag != 0;
+                Ok(0)
+            }
+            _ => Err(PtyError::InvalidArgument),
+        }
+    }
 }
 
 /// Global PTY Master/Slave Multiplexer managing /dev/ptmx and /dev/pts/N.
@@ -428,7 +587,34 @@ impl PtyMultiplexer {
     pub fn count(&self) -> usize {
         self.pairs.len()
     }
+    pub fn set_winsize(&self, id: usize, ws: winsize) -> Result<bool, PtyError> {
+        let pair = self.pairs.get(&id).ok_or(PtyError::NotFound)?;
+        Ok(pair.lock().set_winsize(ws))
+    }
+
+    pub fn get_winsize(&self, id: usize) -> Result<winsize, PtyError> {
+        let pair = self.pairs.get(&id).ok_or(PtyError::NotFound)?;
+        Ok(pair.lock().get_winsize())
+    }
+
+    pub fn ioctl(&self, id: usize, is_master: bool, cmd: u64, arg: u64) -> Result<i64, PtyError> {
+        let pair = self.pairs.get(&id).ok_or(PtyError::NotFound)?;
+        pair.lock().ioctl(is_master, cmd, arg)
+    }
 }
 
 /// Global PTY multiplexer singleton.
 pub static PTY_MULTIPLEXER: Spinlock<PtyMultiplexer> = Spinlock::new(PtyMultiplexer::new());
+
+
+pub fn pty_set_winsize(id: usize, ws: winsize) -> Result<bool, PtyError> {
+    PTY_MULTIPLEXER.lock().set_winsize(id, ws)
+}
+
+pub fn pty_get_winsize(id: usize) -> Result<winsize, PtyError> {
+    PTY_MULTIPLEXER.lock().get_winsize(id)
+}
+
+pub fn pty_ioctl(id: usize, is_master: bool, cmd: u64, arg: u64) -> Result<i64, PtyError> {
+    PTY_MULTIPLEXER.lock().ioctl(id, is_master, cmd, arg)
+}
