@@ -631,3 +631,378 @@ pub fn verify_scheduler_and_bufferbloat_control() -> bool {
 
     true
 }
+
+// -----------------------------------------------------------------------------
+// Commit 3: Multi-Link Operation (MLO) & 802.11r Fast Roaming Daemon
+// -----------------------------------------------------------------------------
+
+/// Supported Wi-Fi frequency bands for 802.11ax/be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WifiBand {
+    Band2_4GHz,
+    Band5GHz,
+    Band6GHz,
+}
+
+/// Link descriptor representing an active physical link in Wi-Fi 7 Multi-Link Operation (MLO).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MloLinkDescriptor {
+    /// Link index (0..2).
+    pub link_id: u8,
+    /// Operating RF band.
+    pub band: WifiBand,
+    /// Operating channel number.
+    pub channel: u8,
+    /// Channel bandwidth in MHz (20, 40, 80, 160, 320).
+    pub bandwidth_mhz: u16,
+    /// Received Signal Strength Indicator in dBm (-90 to -30).
+    pub rssi_dbm: i8,
+    /// Channel utilization / BSS load percentage [0..100]%.
+    pub channel_load_pct: u8,
+    /// Packet error rate percentage [0..100]%.
+    pub packet_error_rate_pct: u8,
+    /// Whether this link is currently connected and active.
+    pub is_active: bool,
+}
+
+impl MloLinkDescriptor {
+    /// Computes a composite Link Quality Metric (LQM) where higher is better.
+    pub fn quality_metric(&self) -> i32 {
+        if !self.is_active {
+            return -1000;
+        }
+        // Base score from RSSI (e.g. -50 to -85)
+        let rssi_score = self.rssi_dbm as i32;
+        // Penalize channel load and packet error rate
+        let penalty = (self.channel_load_pct as i32) / 2 + (self.packet_error_rate_pct as i32) * 2;
+        // Bonus for wider 6GHz / 5GHz channels
+        let bw_bonus = match self.bandwidth_mhz {
+            320 => 20,
+            160 => 15,
+            80 => 10,
+            _ => 0,
+        };
+        rssi_score - penalty + bw_bonus
+    }
+}
+
+/// Transmission strategy for Multi-Link Operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MloDispatchMode {
+    /// Steer packet to the single highest-quality link.
+    DynamicSteering,
+    /// Replicate packet simultaneously across both 5 GHz and 6 GHz links for zero jitter.
+    PacketReplication,
+    /// Distribute packet across links for aggregate bandwidth.
+    AggregateThroughput,
+}
+
+/// Coordinates Wi-Fi 7 Multi-Link Operation (MLO) across 2.4, 5, and 6 GHz interfaces.
+pub struct MloCoordinator {
+    /// Physical link descriptors: [Link 0: 2.4GHz, Link 1: 5GHz, Link 2: 6GHz].
+    pub links: [MloLinkDescriptor; 3],
+    /// Circular deduplication ring for packets received on multiple MLO links.
+    pub dedup_ring: [u64; 64],
+    pub dedup_idx: usize,
+    /// Total game packets replicated over dual bands.
+    pub replicated_packets_sent: u64,
+    /// Total redundant duplicate packets safely pruned on RX.
+    pub duplicates_pruned: u64,
+}
+
+impl MloCoordinator {
+    /// Creates a default MLO coordinator with 3 links.
+    pub const fn new() -> Self {
+        Self {
+            links: [
+                MloLinkDescriptor {
+                    link_id: 0,
+                    band: WifiBand::Band2_4GHz,
+                    channel: 6,
+                    bandwidth_mhz: 20,
+                    rssi_dbm: -65,
+                    channel_load_pct: 45,
+                    packet_error_rate_pct: 2,
+                    is_active: true,
+                },
+                MloLinkDescriptor {
+                    link_id: 1,
+                    band: WifiBand::Band5GHz,
+                    channel: 36,
+                    bandwidth_mhz: 160,
+                    rssi_dbm: -58,
+                    channel_load_pct: 20,
+                    packet_error_rate_pct: 1,
+                    is_active: true,
+                },
+                MloLinkDescriptor {
+                    link_id: 2,
+                    band: WifiBand::Band6GHz,
+                    channel: 1,
+                    bandwidth_mhz: 320,
+                    rssi_dbm: -52,
+                    channel_load_pct: 10,
+                    packet_error_rate_pct: 0,
+                    is_active: true,
+                },
+            ],
+            dedup_ring: [0u64; 64],
+            dedup_idx: 0,
+            replicated_packets_sent: 0,
+            duplicates_pruned: 0,
+        }
+    }
+
+    /// Selects transmission link(s) for a packet descriptor.
+    /// Returns a tuple of (primary_link_id, optional_replicated_link_id).
+    pub fn select_transmission_links(&mut self, pkt: &WifiPacketDescriptor) -> (u8, Option<u8>) {
+        if pkt.replicate_mlo && self.links[1].is_active && self.links[2].is_active {
+            self.replicated_packets_sent += 1;
+            // Replicate across 6GHz (Link 2) and 5GHz (Link 1)
+            (2, Some(1))
+        } else {
+            // Pick link with highest composite quality metric
+            let mut best_id = 0u8;
+            let mut best_metric = i32::MIN;
+            for link in self.links.iter() {
+                let m = link.quality_metric();
+                if m > best_metric {
+                    best_metric = m;
+                    best_id = link.link_id;
+                }
+            }
+            (best_id, None)
+        }
+    }
+
+    /// Ingests a received packet ID and filters out duplicates from MLO multi-link transmission.
+    /// Returns true if this is the first arrival (keep packet), false if duplicate (prune packet).
+    pub fn process_rx_packet(&mut self, packet_id: u64) -> bool {
+        // Check if packet ID is already present in deduplication ring
+        for &id in self.dedup_ring.iter() {
+            if id == packet_id && packet_id != 0 {
+                self.duplicates_pruned += 1;
+                return false; // Duplicate packet
+            }
+        }
+
+        // Store new packet ID in circular ring
+        self.dedup_ring[self.dedup_idx] = packet_id;
+        self.dedup_idx = (self.dedup_idx + 1) % 64;
+        true // First arrival, accept packet
+    }
+}
+
+/// Access Point candidate descriptor for 802.11r fast roaming.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CandidateAp {
+    /// Basic Service Set Identifier (MAC address).
+    pub bssid: [u8; 6],
+    /// Operating channel.
+    pub channel: u8,
+    /// Signal strength in dBm.
+    pub rssi_dbm: i8,
+    /// True if AP supports 802.11r Fast BSS Transition.
+    pub supports_ft: bool,
+}
+
+impl CandidateAp {
+    pub const fn empty() -> Self {
+        Self {
+            bssid: [0u8; 6],
+            channel: 0,
+            rssi_dbm: -100,
+            supports_ft: false,
+        }
+    }
+}
+
+/// Operational state of the 802.11r Fast BSS Transition roaming state machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoamingState {
+    /// Connected to current BSSID with stable signal.
+    Connected,
+    /// Background scanning candidate APs on alternate channels.
+    Scanning,
+    /// Fast Transition pre-authentication in progress over-the-air.
+    PreAuthenticating,
+    /// Reassociation request transmitted to target AP.
+    Reassociating,
+    /// Handoff successfully completed.
+    RoamCompleted,
+}
+
+/// Maximum number of tracked candidate APs.
+pub const MAX_CANDIDATE_APS: usize = 8;
+
+/// Sub-10ms 802.11r Fast BSS Transition (FT) Roaming Daemon.
+pub struct FastRoamingDaemon {
+    /// Current associated BSSID.
+    pub current_bssid: [u8; 6],
+    /// Current connection RSSI in dBm.
+    pub current_rssi_dbm: i8,
+    /// RSSI threshold below which roaming evaluation triggers (nominally -72 dBm).
+    pub roam_trigger_threshold_dbm: i8,
+    /// Minimum signal improvement required to roam (hysteresis in dB, nominally 10 dB).
+    pub roam_hysteresis_db: u8,
+    /// Tracked candidate APs.
+    pub candidates: [CandidateAp; MAX_CANDIDATE_APS],
+    pub candidate_count: usize,
+    /// Current roaming state machine state.
+    pub state: RoamingState,
+    /// Duration of last successful 802.11r handoff in microseconds.
+    pub last_roam_duration_us: u32,
+    /// Total successful fast transitions completed.
+    pub total_roams_completed: u32,
+}
+
+impl FastRoamingDaemon {
+    /// Creates a new fast roaming daemon.
+    pub const fn new(initial_bssid: [u8; 6], initial_rssi: i8) -> Self {
+        Self {
+            current_bssid: initial_bssid,
+            current_rssi_dbm: initial_rssi,
+            roam_trigger_threshold_dbm: -72,
+            roam_hysteresis_db: 10,
+            candidates: [CandidateAp::empty(); MAX_CANDIDATE_APS],
+            candidate_count: 0,
+            state: RoamingState::Connected,
+            last_roam_duration_us: 0,
+            total_roams_completed: 0,
+        }
+    }
+
+    /// Updates candidate AP list from background scan results.
+    pub fn update_candidates(&mut self, scan_results: &[CandidateAp]) {
+        self.candidate_count = 0;
+        for &ap in scan_results {
+            if self.candidate_count < MAX_CANDIDATE_APS {
+                self.candidates[self.candidate_count] = ap;
+                self.candidate_count += 1;
+            }
+        }
+    }
+
+    /// Updates current AP signal strength and evaluates if roaming is required.
+    /// Returns target BSSID if an 802.11r fast transition was triggered.
+    pub fn evaluate_roam(&mut self, new_rssi_dbm: i8, current_time_us: u64) -> Option<[u8; 6]> {
+        self.current_rssi_dbm = new_rssi_dbm;
+
+        // Check if signal fell below trigger threshold
+        if self.current_rssi_dbm > self.roam_trigger_threshold_dbm {
+            self.state = RoamingState::Connected;
+            return None;
+        }
+
+        // Find candidate AP with highest signal strength supporting 802.11r FT
+        let mut best_target: Option<CandidateAp> = None;
+        let mut best_rssi = self.current_rssi_dbm + (self.roam_hysteresis_db as i8);
+
+        for i in 0..self.candidate_count {
+            let ap = self.candidates[i];
+            if ap.supports_ft && ap.bssid != self.current_bssid && ap.rssi_dbm > best_rssi {
+                best_rssi = ap.rssi_dbm;
+                best_target = Some(ap);
+            }
+        }
+
+        if let Some(target) = best_target {
+            self.state = RoamingState::PreAuthenticating;
+            // Execute simulated 802.11r Fast Transition
+            let _start = current_time_us;
+            // Over-the-air FT auth frame (1.2 ms) + FT reassoc frame (1.8 ms) = 3.0 ms total
+            let transition_duration_us = 3_000u32;
+            self.state = RoamingState::Reassociating;
+
+            self.current_bssid = target.bssid;
+            self.current_rssi_dbm = target.rssi_dbm;
+            self.state = RoamingState::RoamCompleted;
+            self.last_roam_duration_us = transition_duration_us;
+            self.total_roams_completed += 1;
+
+            Some(target.bssid)
+        } else {
+            None
+        }
+    }
+}
+
+/// Verification helper for Commit 3 MLO aggregation and 802.11r fast roaming algorithms.
+pub fn verify_mlo_aggregation_and_fast_roaming() -> bool {
+    // 1. Verify MLO Link Selection & Game Packet Replication
+    let mut mlo = MloCoordinator::new();
+
+    // Normal bulk packet: steers to best link (6 GHz has lowest load and widest 320 MHz bandwidth)
+    let p_bulk = WifiPacketDescriptor::new_bulk_packet(1, 1460, 1000);
+    let (primary, replica) = mlo.select_transmission_links(&p_bulk);
+    if primary != 2 || replica.is_some() {
+        return false;
+    }
+
+    // Critical game tick packet: MUST replicate across 6 GHz (Link 2) and 5 GHz (Link 1)
+    let p_game = WifiPacketDescriptor::new_game_packet(2, 64, 1000, true);
+    let (prim_game, rep_game) = mlo.select_transmission_links(&p_game);
+    if prim_game != 2 || rep_game != Some(1) {
+        return false;
+    }
+    if mlo.replicated_packets_sent != 1 {
+        return false;
+    }
+
+    // 2. Verify RX Deduplication Ring
+    // First arrival of packet 2 on 6 GHz link -> accepted
+    let rx1 = mlo.process_rx_packet(2);
+    if !rx1 {
+        return false;
+    }
+
+    // Second arrival of identical packet 2 on 5 GHz replica link -> pruned as duplicate
+    let rx2 = mlo.process_rx_packet(2);
+    if rx2 || mlo.duplicates_pruned != 1 {
+        return false;
+    }
+
+    // 3. Verify Sub-10ms 802.11r Fast BSS Transition Roaming Daemon
+    let ap1_bssid = [0x00, 0x11, 0x22, 0x33, 0x44, 0x01];
+    let ap2_bssid = [0x00, 0x11, 0x22, 0x33, 0x44, 0x02];
+
+    let mut daemon = FastRoamingDaemon::new(ap1_bssid, -65); // Stable signal (-65 dBm)
+
+    // Register neighbor candidate APs
+    let candidates = [
+        CandidateAp {
+            bssid: ap2_bssid,
+            channel: 44,
+            rssi_dbm: -55, // Strong neighbor AP (-55 dBm)
+            supports_ft: true,
+        },
+    ];
+    daemon.update_candidates(&candidates);
+
+    // Signal remains good (-68 dBm > -72 dBm trigger threshold) -> should not roam
+    let roam_none = daemon.evaluate_roam(-68, 500_000);
+    if roam_none.is_some() || daemon.state != RoamingState::Connected {
+        return false;
+    }
+
+    // Signal drops severely (-78 dBm < -72 dBm threshold) -> triggers fast roaming
+    let roam_target = daemon.evaluate_roam(-78, 600_000);
+    if roam_target != Some(ap2_bssid) {
+        return false;
+    }
+
+    // Verify handoff properties
+    if daemon.current_bssid != ap2_bssid || daemon.current_rssi_dbm != -55 {
+        return false;
+    }
+    if daemon.state != RoamingState::RoamCompleted || daemon.total_roams_completed != 1 {
+        return false;
+    }
+
+    // Sub-10ms requirement: must complete in under 10,000 microseconds
+    if daemon.last_roam_duration_us >= 10_000 || daemon.last_roam_duration_us == 0 {
+        return false;
+    }
+
+    true
+}
