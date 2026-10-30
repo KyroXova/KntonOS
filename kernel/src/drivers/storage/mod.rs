@@ -5,6 +5,9 @@
 
 pub mod ahci;
 pub mod nvme;
+pub mod uring;
+
+pub use uring::*;
 
 pub use nvme::{
     make_aqa, nvme_cq_doorbell, nvme_sq_doorbell, build_identify_controller, build_identify_namespace, build_nvm_read, build_nvm_write,
