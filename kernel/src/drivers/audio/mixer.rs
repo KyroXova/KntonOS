@@ -1,11 +1,14 @@
-//! Multi-Channel PCM Software Audio Mixer and Kernel Sample Queue.
+//! Multi-Channel PCM Software Audio Mixer and Real-Time Soft-Knee Limiter.
 //!
-//! Provides 16-bit signed stereo sample manipulation, saturating arithmetic,
-//! per-channel volume scaling, master volume control, and DMA buffer rendering.
+//! Provides 16-bit signed stereo sample manipulation, dynamic gain scaling (up to 2.0x boost),
+//! stereo panning (-128..=127), soft-knee dynamic headroom compression to prevent clipping
+//! distortion, per-channel playback lifecycle control, and DMA buffer rendering.
 
 pub const MAX_CHANNELS: usize = 8;
 pub const QUEUE_CAPACITY: usize = 1024;
 pub const DEFAULT_VOLUME: u16 = 256; // 1.0 (Unity Gain, range 0..=256)
+pub const UNITY_GAIN: u16 = 256;     // 1.0x gain factor
+pub const MAX_GAIN: u16 = 512;        // 2.0x gain boost
 
 /// 16-bit Signed Stereo Audio Sample.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +57,92 @@ impl PcmSample {
         let left = i16::from_le_bytes([bytes[0], bytes[1]]);
         let right = i16::from_le_bytes([bytes[2], bytes[3]]);
         Self { left, right }
+    }
+}
+
+/// Applies stereo pan (-128 = Left, 0 = Center, +127 = Right).
+#[inline]
+pub fn apply_pan(left: i32, right: i32, pan: i8) -> (i32, i32) {
+    if pan == 0 {
+        return (left, right);
+    }
+    if pan <= -127 {
+        return (left, 0);
+    }
+    if pan >= 127 {
+        return (0, right);
+    }
+    let (l_mult, r_mult) = if pan < 0 {
+        let p = pan as i32;
+        let r_scale = 256 + (p * 2);
+        (256, r_scale.clamp(0, 256))
+    } else {
+        let p = pan as i32;
+        let l_scale = 256 - (p * 2);
+        (l_scale.clamp(0, 256), 256)
+    };
+    ((left * l_mult) / 256, (right * r_mult) / 256)
+}
+
+/// Real-time Soft-Knee Limiter and Dynamic Headroom Compressor.
+///
+/// Prevents harsh digital clipping when multiple audio streams sum together,
+/// applying a transparent linear curve below `threshold` and a smooth rational
+/// asymptotic saturation curve between `threshold` and `ceiling`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SoftKneeLimiter {
+    pub threshold: i32,
+    pub ceiling: i32,
+    pub enabled: bool,
+    pub clipped_samples_count: u64,
+}
+
+impl SoftKneeLimiter {
+    pub const DEFAULT_THRESHOLD: i32 = 24576; // 75% full scale (approx -2.5 dB)
+    pub const DEFAULT_CEILING: i32 = 32767;   // 100% full scale (0 dBFS)
+
+    pub const fn new(threshold: i32, ceiling: i32) -> Self {
+        Self {
+            threshold,
+            ceiling,
+            enabled: true,
+            clipped_samples_count: 0,
+        }
+    }
+
+    pub const fn default_stereo() -> Self {
+        Self::new(Self::DEFAULT_THRESHOLD, Self::DEFAULT_CEILING)
+    }
+
+    /// Compresses a single audio sample component via rational soft-knee curve.
+    pub fn limit_sample(&mut self, val: i32) -> i16 {
+        if !self.enabled {
+            return val.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        }
+
+        let sign = if val < 0 { -1 } else { 1 };
+        let mag = val.abs();
+
+        if mag <= self.threshold {
+            return val.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        }
+
+        self.clipped_samples_count += 1;
+        let range = self.ceiling - self.threshold;
+        let delta = mag - self.threshold;
+        let compressed = ((range as i64 * delta as i64) / ((range + delta) as i64)) as i32;
+        let final_mag = (self.threshold + compressed).min(self.ceiling);
+        (sign * final_mag) as i16
+    }
+
+    /// Limits a stereo pair of 32-bit accumulated samples.
+    pub fn limit_stereo(&mut self, left: i32, right: i32) -> (i16, i16) {
+        (self.limit_sample(left), self.limit_sample(right))
+    }
+
+    #[inline(always)]
+    pub fn reset_stats(&mut self) {
+        self.clipped_samples_count = 0;
     }
 }
 
@@ -117,11 +206,14 @@ impl AudioSampleQueue {
     }
 }
 
-/// Independent audio playback channel.
+/// Independent audio playback channel with dynamic gain and stereo pan.
 pub struct AudioChannel {
     pub id: u8,
     pub active: bool,
     pub volume: u16, // 0..=256
+    pub gain: u16,   // 0..=512 (256 = 1.0x unity, 512 = 2.0x boost)
+    pub pan: i8,     // -128 = Left, 0 = Center, +127 = Right
+    pub paused: bool,
     pub muted: bool,
     pub queue: AudioSampleQueue,
 }
@@ -132,6 +224,9 @@ impl AudioChannel {
             id,
             active: false,
             volume: DEFAULT_VOLUME,
+            gain: UNITY_GAIN,
+            pan: 0,
+            paused: false,
             muted: false,
             queue: AudioSampleQueue::new(),
         }
@@ -139,6 +234,18 @@ impl AudioChannel {
 
     pub fn set_volume(&mut self, volume: u16) {
         self.volume = volume.min(256);
+    }
+
+    pub fn set_gain(&mut self, gain: u16) {
+        self.gain = gain.min(MAX_GAIN);
+    }
+
+    pub fn set_pan(&mut self, pan: i8) {
+        self.pan = pan;
+    }
+
+    pub fn set_paused(&mut self, paused: bool) {
+        self.paused = paused;
     }
 
     pub fn set_muted(&mut self, muted: bool) {
@@ -163,6 +270,9 @@ impl AudioChannel {
     }
 
     pub fn read_sample(&mut self) -> Option<PcmSample> {
+        if self.paused {
+            return None;
+        }
         let sample = self.queue.pop()?;
         if self.queue.is_empty() {
             self.active = false;
@@ -170,17 +280,25 @@ impl AudioChannel {
         if self.muted {
             Some(PcmSample::silent())
         } else {
-            Some(sample.scale(self.volume))
+            let vol_scaled = sample.scale(self.volume);
+            if self.gain != UNITY_GAIN {
+                let l = ((vol_scaled.left as i32 * self.gain as i32) / 256).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+                let r = ((vol_scaled.right as i32 * self.gain as i32) / 256).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+                Some(PcmSample::new(l, r))
+            } else {
+                Some(vol_scaled)
+            }
         }
     }
 }
 
-/// Multi-Channel Software Audio Mixer.
+/// Multi-Channel Software Audio Mixer with Soft-Knee Limiting.
 pub struct AudioMixer {
     pub channels: [AudioChannel; MAX_CHANNELS],
     pub master_volume: u16, // 0..=256
     pub master_muted: bool,
     pub sample_rate: u32,
+    pub limiter: SoftKneeLimiter,
 }
 
 impl AudioMixer {
@@ -199,6 +317,7 @@ impl AudioMixer {
             master_volume: DEFAULT_VOLUME,
             master_muted: false,
             sample_rate: 48000,
+            limiter: SoftKneeLimiter::default_stereo(),
         }
     }
 
@@ -218,12 +337,51 @@ impl AudioMixer {
         }
     }
 
-    /// Renders a single mixed stereo sample across all channels with saturation clamping.
+    pub fn set_channel_gain(&mut self, index: usize, gain: u16) -> bool {
+        if let Some(ch) = self.channel(index) {
+            ch.set_gain(gain);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn set_channel_pan(&mut self, index: usize, pan: i8) -> bool {
+        if let Some(ch) = self.channel(index) {
+            ch.set_pan(pan);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn set_channel_paused(&mut self, index: usize, paused: bool) -> bool {
+        if let Some(ch) = self.channel(index) {
+            ch.set_paused(paused);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn set_limiter_enabled(&mut self, enabled: bool) {
+        self.limiter.enabled = enabled;
+    }
+
+    pub fn set_limiter_threshold(&mut self, threshold: i32) {
+        self.limiter.threshold = threshold;
+    }
+
+    pub fn limiter_clipped_count(&self) -> u64 {
+        self.limiter.clipped_samples_count
+    }
+
+    /// Renders a single mixed stereo sample across all channels with dynamic gain, panning,
+    /// 32-bit accumulation, and soft-knee limiter compression.
     pub fn mix_sample(&mut self) -> PcmSample {
         if self.master_muted {
-            // Still consume samples from active channels to prevent queues from lagging behind
             for ch in &mut self.channels {
-                if ch.active {
+                if ch.active && !ch.paused {
                     ch.read_sample();
                 }
             }
@@ -235,10 +393,12 @@ impl AudioMixer {
         let mut has_active = false;
 
         for ch in &mut self.channels {
-            if ch.active {
+            if ch.active && !ch.paused {
+                let pan = ch.pan;
                 if let Some(sample) = ch.read_sample() {
-                    acc_left += sample.left as i32;
-                    acc_right += sample.right as i32;
+                    let (pl, pr) = apply_pan(sample.left as i32, sample.right as i32, pan);
+                    acc_left += pl;
+                    acc_right += pr;
                     has_active = true;
                 }
             }
@@ -248,11 +408,9 @@ impl AudioMixer {
             return PcmSample::silent();
         }
 
-        // Apply saturation clamping to prevent wrapping artifacts
-        let clamped_left = acc_left.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
-        let clamped_right = acc_right.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
-
-        let sample = PcmSample::new(clamped_left, clamped_right);
+        // Apply soft-knee limiter compression
+        let (lim_left, lim_right) = self.limiter.limit_stereo(acc_left, acc_right);
+        let sample = PcmSample::new(lim_left, lim_right);
         sample.scale(self.master_volume)
     }
 
@@ -367,6 +525,114 @@ pub fn verify_audio_mixer() -> bool {
     // Third sample should be silent (0, 0) since queues emptied
     let sample2 = PcmSample::from_bytes([out_buf[8], out_buf[9], out_buf[10], out_buf[11]]);
     if sample2 != PcmSample::silent() {
+        return false;
+    }
+
+    true
+}
+
+/// Verification of dynamic gain, panning, and soft-knee limiter compression.
+pub fn verify_soft_knee_limiter_and_gain() -> bool {
+    // 1. Standalone limiter test
+    let mut limiter = SoftKneeLimiter::default_stereo();
+
+    // Below threshold: linear transparency
+    if limiter.limit_sample(10000) != 10000 || limiter.limit_sample(-10000) != -10000 {
+        return false;
+    }
+    if limiter.limit_sample(24576) != 24576 {
+        return false;
+    }
+    if limiter.clipped_samples_count != 0 {
+        return false;
+    }
+
+    // Above threshold: smooth saturation curve without hard clipping
+    let compressed_pos = limiter.limit_sample(40000);
+    if compressed_pos != 29926 {
+        return false;
+    }
+    let compressed_neg = limiter.limit_sample(-40000);
+    if compressed_neg != -29926 {
+        return false;
+    }
+    if limiter.clipped_samples_count != 2 {
+        return false;
+    }
+
+    // Extreme sum (e.g. 5 loud streams summing to 150,000)
+    let extreme = limiter.limit_sample(150000);
+    if extreme < 32000 {
+        return false;
+    }
+
+    // 2. Panning test
+    let (l_full, r_full) = apply_pan(10000, 10000, -128); // Full left
+    if l_full != 10000 || r_full != 0 {
+        return false;
+    }
+    let (l_right, r_right) = apply_pan(10000, 10000, 127); // Full right
+    if l_right != 0 || r_right != 10000 {
+        return false;
+    }
+    let (l_mid, r_mid) = apply_pan(10000, 10000, 0); // Center
+    if l_mid != 10000 || r_mid != 10000 {
+        return false;
+    }
+
+    // 3. Multi-stream mixer with dynamic gain and limiter
+    let mut mixer = AudioMixer::new();
+
+    // Stream 0: Gain 1.5x (384) -> 10,000 * 384 / 256 = 15,000
+    if let Some(ch0) = mixer.channel(0) {
+        ch0.set_gain(384);
+        ch0.enqueue_sample(PcmSample::new(10000, 10000));
+    } else {
+        return false;
+    }
+
+    // Stream 1: Gain 2.0x (512) -> 10,000 * 512 / 256 = 20,000
+    if let Some(ch1) = mixer.channel(1) {
+        ch1.set_gain(512);
+        ch1.enqueue_sample(PcmSample::new(10000, 10000));
+    } else {
+        return false;
+    }
+
+    // Stream 2: Pan full Left (-128) -> Left = 10,000, Right = 0
+    if let Some(ch2) = mixer.channel(2) {
+        ch2.set_pan(-128);
+        ch2.enqueue_sample(PcmSample::new(10000, 10000));
+    } else {
+        return false;
+    }
+
+    // Acc Left: 15,000 + 20,000 + 10,000 = 45,000 (exceeds threshold 24,576!)
+    // Acc Right: 15,000 + 20,000 + 0 = 35,000 (exceeds threshold 24,576!)
+    let mixed = mixer.mix_sample();
+
+    // Verify soft-knee limiter compressed the outputs safely below i16::MAX (32767)
+    if mixed.left <= 24576 {
+        return false;
+    }
+    if mixed.right <= 24576 {
+        return false;
+    }
+    // Left had higher input (45,000) than Right (35,000), so compressed Left must be > Right
+    if mixed.left <= mixed.right {
+        return false;
+    }
+    if mixer.limiter_clipped_count() < 2 {
+        return false;
+    }
+
+    // 4. Pausing verification
+    if let Some(ch0) = mixer.channel(0) {
+        ch0.enqueue_sample(PcmSample::new(5000, 5000));
+        ch0.set_paused(true);
+    }
+    let silent_mix = mixer.mix_sample();
+    if silent_mix != PcmSample::silent() {
         return false;
     }
 
