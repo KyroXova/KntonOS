@@ -1,8 +1,5 @@
 //! Zero-Copy DMA RX/TX Ring Buffer Descriptors & Cacheline-Aligned Rings.
-//!
 //! Provides hardware-compatible network ring buffer descriptors, 64-byte
-//! cacheline alignment to avoid false sharing across CPU cores, hardware/software
-//! ownership bits, cyclic head/tail cursors, and zero-copy packet buffer slicing.
 
 pub const DEFAULT_RING_SIZE: usize = 64;
 pub const PACKET_BUF_SIZE: usize = 2048; // Standard 2KB buffer per RX/TX packet
@@ -78,9 +75,7 @@ impl PacketSlice {
 }
 
 /// Cacheline-aligned (64-byte) DMA Ring Buffer for RX or TX.
-///
 /// Ensures head and tail pointers and descriptor arrays reside on distinct
-/// cache lines to eliminate false sharing between DMA engines and producer/consumer cores.
 #[repr(C, align(64))]
 pub struct DmaRingBuffer<const N: usize = DEFAULT_RING_SIZE> {
     pub descriptors: [DmaPacketDescriptor; N],

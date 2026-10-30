@@ -1,9 +1,5 @@
 //! BSD / POSIX Event Readiness Polling & Multiplexing Engine.
-//!
 //! Implements standard `poll` and `select` I/O readiness multiplexing over the socket table:
-//! - PollFd descriptor with standard bitflags (POLLIN, POLLOUT, POLLERR, POLLHUP, POLLNVAL)
-//! - Non-blocking and tick-bounded readiness polling across heterogeneous stream & datagram sockets
-//! - Select bitmap/set readiness evaluator for WinSock/POSIX compatibility
 
 use crate::net::socket::{GLOBAL_SOCKET_TABLE, SocketState};
 

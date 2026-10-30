@@ -1,9 +1,5 @@
 //! Embedded HTTP/1.1 Micro-Server & Request Routing Engine.
-//!
 //! Provides a lightweight embedded HTTP/1.1 server supporting:
-//! - Connection handler over BSD / WinSock socket descriptors
-//! - HTTP/1.1 request wire parser (method, path, query parameters, header dictionary)
-//! - Route matching engine supporting exact and prefix route dispatch
 
 use crate::net::http::HttpMethod;
 use crate::net::socket::{close, recv, send, SocketHandle};
