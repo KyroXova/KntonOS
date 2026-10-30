@@ -367,3 +367,179 @@ fn str_contains_ignore_case(haystack: &str, needle: &str) -> bool {
     }
     false
 }
+
+// -----------------------------------------------------------------------------
+// Touchscreen & Digitizer Coordinate Normalization Transform
+// -----------------------------------------------------------------------------
+
+/// Touchscreen Coordinate Transformation Matrix (CTM).
+///
+/// Implements standard 3x3 affine transformation for digitizer normalization:
+///   [X']   [c0 c1 c2] [X]
+///   [Y'] = [c3 c4 c5] [Y]
+///   [1 ]   [0  0  1 ] [1]
+///
+/// Where X, Y are normalized input coordinates in [0.0, 1.0].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TouchCalibrationMatrix {
+    pub c: [f32; 6],
+}
+
+impl Default for TouchCalibrationMatrix {
+    fn default() -> Self {
+        Self::IDENTITY
+    }
+}
+
+impl TouchCalibrationMatrix {
+    /// Identity calibration matrix (0 degrees rotation).
+    pub const IDENTITY: Self = Self {
+        c: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+    };
+
+    pub const fn new(c0: f32, c1: f32, c2: f32, c3: f32, c4: f32, c5: f32) -> Self {
+        Self {
+            c: [c0, c1, c2, c3, c4, c5],
+        }
+    }
+
+    /// Constructs the touch CTM matching the hardware panel orientation.
+    pub fn for_orientation(orientation: PanelOrientation) -> Self {
+        match orientation {
+            PanelOrientation::Normal => Self::IDENTITY,
+            PanelOrientation::RightUp => {
+                // 90 deg clockwise rotation:
+                // X' = Y
+                // Y' = 1.0 - X
+                Self::new(0.0, 1.0, 0.0, -1.0, 0.0, 1.0)
+            }
+            PanelOrientation::BottomUp => {
+                // 180 deg upside-down:
+                // X' = 1.0 - X
+                // Y' = 1.0 - Y
+                Self::new(-1.0, 0.0, 1.0, 0.0, -1.0, 1.0)
+            }
+            PanelOrientation::LeftUp => {
+                // 270 deg (90 counter-clockwise):
+                // X' = 1.0 - Y
+                // Y' = X
+                Self::new(0.0, -1.0, 1.0, 1.0, 0.0, 0.0)
+            }
+        }
+    }
+
+    /// Applies matrix transformation to normalized coordinates [0.0, 1.0].
+    pub fn transform_normalized(&self, norm_x: f32, norm_y: f32) -> (f32, f32) {
+        let x_out = self.c[0] * norm_x + self.c[1] * norm_y + self.c[2];
+        let y_out = self.c[3] * norm_x + self.c[4] * norm_y + self.c[5];
+
+        // Clamp to [0.0, 1.0] viewport boundary
+        let clamped_x = if x_out < 0.0 { 0.0 } else if x_out > 1.0 { 1.0 } else { x_out };
+        let clamped_y = if y_out < 0.0 { 0.0 } else if y_out > 1.0 { 1.0 } else { y_out };
+
+        (clamped_x, clamped_y)
+    }
+}
+
+/// Raw touch contact input received directly from I2C / USB HID digitizer hardware.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RawTouchInput {
+    /// Multi-touch contact / tracking ID (0..15).
+    pub contact_id: u32,
+    /// Raw X coordinate in digitizer units.
+    pub raw_x: u32,
+    /// Raw Y coordinate in digitizer units.
+    pub raw_y: u32,
+    /// Contact pressure (0..4095).
+    pub pressure: u16,
+    /// Whether contact is currently touching the surface.
+    pub touch_down: bool,
+}
+
+/// Calibrated, orientation-transformed touch event ready for desktop compositor dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct TouchPoint {
+    /// Multi-touch contact ID.
+    pub contact_id: u32,
+    /// Raw hardware X.
+    pub raw_x: u32,
+    /// Raw hardware Y.
+    pub raw_y: u32,
+    /// Normalized transformed X in range [0.0, 1.0].
+    pub norm_x: f32,
+    /// Normalized transformed Y in range [0.0, 1.0].
+    pub norm_y: f32,
+    /// Transformed desktop pixel X coordinate.
+    pub screen_x: u32,
+    /// Transformed desktop pixel Y coordinate.
+    pub screen_y: u32,
+    /// Contact pressure.
+    pub pressure: u16,
+    /// Touch contact active state.
+    pub touch_down: bool,
+}
+
+/// Touchscreen Coordinate Normalization & Orientation Transform Pipeline.
+pub struct TouchTransformPipeline {
+    pub orientation: PanelOrientation,
+    pub raw_max_x: u32,
+    pub raw_max_y: u32,
+    pub screen_w: u32,
+    pub screen_h: u32,
+    pub matrix: TouchCalibrationMatrix,
+}
+
+impl TouchTransformPipeline {
+    pub fn new(
+        orientation: PanelOrientation,
+        raw_max_x: u32,
+        raw_max_y: u32,
+        screen_w: u32,
+        screen_h: u32,
+    ) -> Self {
+        let matrix = TouchCalibrationMatrix::for_orientation(orientation);
+        Self {
+            orientation,
+            raw_max_x: raw_max_x.max(1),
+            raw_max_y: raw_max_y.max(1),
+            screen_w: screen_w.max(1),
+            screen_h: screen_h.max(1),
+            matrix,
+        }
+    }
+
+    /// Updates panel orientation and recomputes the calibration matrix.
+    pub fn set_orientation(&mut self, orientation: PanelOrientation) {
+        self.orientation = orientation;
+        self.matrix = TouchCalibrationMatrix::for_orientation(orientation);
+    }
+
+    /// Transforms a raw digitizer input packet into calibrated desktop screen coordinates.
+    pub fn transform(&self, input: &RawTouchInput) -> TouchPoint {
+        // 1. Normalize raw hardware coordinates into [0.0, 1.0]
+        let nx_raw = (input.raw_x as f32) / (self.raw_max_x as f32);
+        let ny_raw = (input.raw_y as f32) / (self.raw_max_y as f32);
+
+        // 2. Apply orientation transformation matrix
+        let (nx_trans, ny_trans) = self.matrix.transform_normalized(nx_raw, ny_raw);
+
+        // 3. Scale to desktop compositor pixel dimensions
+        let max_screen_x = self.screen_w.saturating_sub(1) as f32;
+        let max_screen_y = self.screen_h.saturating_sub(1) as f32;
+
+        let sx = (nx_trans * max_screen_x + 0.5) as u32;
+        let sy = (ny_trans * max_screen_y + 0.5) as u32;
+
+        TouchPoint {
+            contact_id: input.contact_id,
+            raw_x: input.raw_x,
+            raw_y: input.raw_y,
+            norm_x: nx_trans,
+            norm_y: ny_trans,
+            screen_x: sx,
+            screen_y: sy,
+            pressure: input.pressure,
+            touch_down: input.touch_down,
+        }
+    }
+}
