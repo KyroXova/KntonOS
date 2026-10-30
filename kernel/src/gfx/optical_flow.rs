@@ -366,3 +366,379 @@ impl OpticalFlowDescriptor {
         Ok(())
     }
 }
+
+
+// -----------------------------------------------------------------------------
+// Frame Buffers, Pyramids & Hierarchical Block Matching (HBM)
+// -----------------------------------------------------------------------------
+
+/// Grayscale / luminance frame buffer used for hardware motion estimation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrameBuffer {
+    pub width: u32,
+    pub height: u32,
+    pub data: Vec<u8>,
+}
+
+impl FrameBuffer {
+    /// Creates a new frame buffer from dimensions and raw pixel bytes.
+    pub fn new(width: u32, height: u32, data: Vec<u8>) -> Result<Self, OpticalFlowError> {
+        if width == 0 || height == 0 {
+            return Err(OpticalFlowError::InvalidDimensions);
+        }
+        if data.len() < (width * height) as usize {
+            return Err(OpticalFlowError::BufferTooSmall);
+        }
+        Ok(Self { width, height, data })
+    }
+
+    /// Creates a zero-filled frame buffer with the given dimensions.
+    pub fn zero(width: u32, height: u32) -> Self {
+        let total = (width * height) as usize;
+        Self {
+            width,
+            height,
+            data: alloc::vec![0u8; total],
+        }
+    }
+
+    /// Reads a pixel value with border clamping (edge replication).
+    #[inline(always)]
+    pub fn get_pixel(&self, x: i32, y: i32) -> u8 {
+        let cx = x.clamp(0, self.width.saturating_sub(1) as i32) as u32;
+        let cy = y.clamp(0, self.height.saturating_sub(1) as i32) as u32;
+        let idx = (cy * self.width + cx) as usize;
+        self.data[idx]
+    }
+
+    /// Sets a pixel value at (x, y). Out-of-bounds writes are safely ignored.
+    #[inline(always)]
+    pub fn set_pixel(&mut self, x: u32, y: u32, val: u8) {
+        if x < self.width && y < self.height {
+            let idx = (y * self.width + x) as usize;
+            self.data[idx] = val;
+        }
+    }
+
+    /// Samples a pixel at sub-pixel 1/4th-pel resolution using fixed-point bilinear interpolation.
+    /// `x_quarter` and `y_quarter` are coordinates in units of 0.25 pixels.
+    pub fn sample_subpixel_quarter_pel(&self, x_quarter: i32, y_quarter: i32) -> u8 {
+        let px = x_quarter >> 2;
+        let py = y_quarter >> 2;
+        let fx = ((x_quarter & 3) * 64) as i32; // 0, 64, 128, 192 (out of 256)
+        let fy = ((y_quarter & 3) * 64) as i32;
+
+        let p00 = self.get_pixel(px, py) as i32;
+        let p10 = self.get_pixel(px + 1, py) as i32;
+        let p01 = self.get_pixel(px, py + 1) as i32;
+        let p11 = self.get_pixel(px + 1, py + 1) as i32;
+
+        let inv_fx = 256 - fx;
+        let inv_fy = 256 - fy;
+
+        let w00 = inv_fx * inv_fy;
+        let w10 = fx * inv_fy;
+        let w01 = inv_fx * fy;
+        let w11 = fx * fy;
+
+        let interpolated = (p00 * w00 + p10 * w10 + p01 * w01 + p11 * w11 + 32768) >> 16;
+        interpolated.clamp(0, 255) as u8
+    }
+
+    /// Downsamples the frame by 2x in each dimension using a 2x2 box average.
+    pub fn downsample_2x(&self) -> Self {
+        let new_w = (self.width + 1) / 2;
+        let new_h = (self.height + 1) / 2;
+        let mut downsampled = alloc::vec![0u8; (new_w * new_h) as usize];
+
+        for ny in 0..new_h {
+            for nx in 0..new_w {
+                let sx = (nx * 2) as i32;
+                let sy = (ny * 2) as i32;
+
+                let p00 = self.get_pixel(sx, sy) as u32;
+                let p10 = self.get_pixel(sx + 1, sy) as u32;
+                let p01 = self.get_pixel(sx, sy + 1) as u32;
+                let p11 = self.get_pixel(sx + 1, sy + 1) as u32;
+
+                let avg = ((p00 + p10 + p01 + p11 + 2) / 4) as u8;
+                let idx = (ny * new_w + nx) as usize;
+                downsampled[idx] = avg;
+            }
+        }
+
+        Self {
+            width: new_w,
+            height: new_h,
+            data: downsampled,
+        }
+    }
+}
+
+/// Multi-resolution image pyramid for hierarchical coarse-to-fine motion estimation.
+#[derive(Debug, Clone)]
+pub struct ImagePyramid {
+    pub levels: Vec<FrameBuffer>,
+}
+
+impl ImagePyramid {
+    /// Builds an image pyramid from the base frame with up to `max_levels` octaves.
+    pub fn build(base: FrameBuffer, max_levels: usize) -> Self {
+        let mut levels = Vec::new();
+        let mut current = base;
+
+        let max_lvls = max_levels.max(1);
+        for _ in 0..max_lvls {
+            let next = current.downsample_2x();
+            let stop = current.width <= 4 || current.height <= 4;
+            levels.push(current);
+            if stop {
+                break;
+            }
+            current = next;
+        }
+
+        Self { levels }
+    }
+
+    /// Returns the number of levels in the pyramid.
+    #[inline(always)]
+    pub fn num_levels(&self) -> usize {
+        self.levels.len()
+    }
+}
+
+/// Computes the Sum of Absolute Differences (SAD) for a block at integer displacement (dx, dy).
+pub fn compute_block_sad(
+    cur: &FrameBuffer,
+    ref_frame: &FrameBuffer,
+    bx: u32,
+    by: u32,
+    bsize: u32,
+    dx: i32,
+    dy: i32,
+) -> u32 {
+    let mut sad = 0u32;
+    for j in 0..bsize {
+        for i in 0..bsize {
+            let cx = (bx + i) as i32;
+            let cy = (by + j) as i32;
+            let p_cur = cur.get_pixel(cx, cy) as i32;
+            let p_ref = ref_frame.get_pixel(cx + dx, cy + dy) as i32;
+            sad += (p_cur - p_ref).abs() as u32;
+        }
+    }
+    sad
+}
+
+/// Computes the Sum of Absolute Differences (SAD) for a block at quarter-pel displacement (qx, qy).
+pub fn compute_block_sad_quarter_pel(
+    cur: &FrameBuffer,
+    ref_frame: &FrameBuffer,
+    bx: u32,
+    by: u32,
+    bsize: u32,
+    qx: i32,
+    qy: i32,
+) -> u32 {
+    let mut sad = 0u32;
+    for j in 0..bsize {
+        for i in 0..bsize {
+            let cx = (bx + i) as i32;
+            let cy = (by + j) as i32;
+            let p_cur = cur.get_pixel(cx, cy) as i32;
+
+            let rx_q = (cx * 4) + qx;
+            let ry_q = (cy * 4) + qy;
+            let p_ref = ref_frame.sample_subpixel_quarter_pel(rx_q, ry_q) as i32;
+            sad += (p_cur - p_ref).abs() as u32;
+        }
+    }
+    sad
+}
+
+/// Consolidated Direct3D 12 Hardware Optical Flow Vector Accelerator.
+#[derive(Debug, Clone)]
+pub struct OpticalFlowAccelerator {
+    pub desc: OpticalFlowDescriptor,
+    pub cost_surface: Option<CostSurfaceGrid>,
+    pub total_vectors_computed: u64,
+}
+
+impl OpticalFlowAccelerator {
+    /// Creates a new optical flow accelerator engine with the specified descriptor.
+    pub fn new(desc: OpticalFlowDescriptor) -> Result<Self, OpticalFlowError> {
+        desc.validate()?;
+        let cost_surface = if desc.enable_cost_surface {
+            let gw = (desc.frame_width + desc.block_size - 1) / desc.block_size;
+            let gh = (desc.frame_height + desc.block_size - 1) / desc.block_size;
+            Some(CostSurfaceGrid::new(gw, gh, desc.search_radius))
+        } else {
+            None
+        };
+
+        Ok(Self {
+            desc,
+            cost_surface,
+            total_vectors_computed: 0,
+        })
+    }
+
+    /// Estimates the optical flow vector field from `cur_frame` to `ref_frame`.
+    pub fn estimate_motion(
+        &mut self,
+        cur_frame: &FrameBuffer,
+        ref_frame: &FrameBuffer,
+    ) -> Result<OpticalFlowVectorField, OpticalFlowError> {
+        if cur_frame.width != self.desc.frame_width || cur_frame.height != self.desc.frame_height {
+            return Err(OpticalFlowError::InvalidDimensions);
+        }
+        if ref_frame.width != self.desc.frame_width || ref_frame.height != self.desc.frame_height {
+            return Err(OpticalFlowError::InvalidDimensions);
+        }
+
+        let mut field = OpticalFlowVectorField::new(
+            self.desc.frame_width,
+            self.desc.frame_height,
+            self.desc.block_size,
+        );
+
+        // Build 3-level multi-resolution pyramids
+        let pyr_cur = ImagePyramid::build(cur_frame.clone(), 3);
+        let pyr_ref = ImagePyramid::build(ref_frame.clone(), 3);
+        let num_levels = pyr_cur.num_levels().min(pyr_ref.num_levels());
+
+        let bsize = self.desc.block_size;
+        let gw = field.grid_width;
+        let gh = field.grid_height;
+
+        for gy in 0..gh {
+            for gx in 0..gw {
+                let mut best_dx = 0i32;
+                let mut best_dy = 0i32;
+
+                // Coarse-to-fine search across pyramid levels
+                for lvl_idx in (0..num_levels).rev() {
+                    let cur_lvl = &pyr_cur.levels[lvl_idx];
+                    let ref_lvl = &pyr_ref.levels[lvl_idx];
+
+                    let scale = 1u32 << lvl_idx;
+                    let lvl_bsize = (bsize / scale).max(2);
+                    let bx = gx * lvl_bsize;
+                    let by = gy * lvl_bsize;
+
+                    if lvl_idx == num_levels - 1 {
+                        // Coarsest level: wide window search around 0
+                        let r = (self.desc.search_radius / scale).max(2) as i32;
+                        let mut min_sad = u32::MAX;
+                        for dy in -r..=r {
+                            for dx in -r..=r {
+                                let sad = compute_block_sad(cur_lvl, ref_lvl, bx, by, lvl_bsize, dx, dy);
+                                if sad < min_sad {
+                                    min_sad = sad;
+                                    best_dx = dx;
+                                    best_dy = dy;
+                                }
+                            }
+                        }
+                    } else {
+                        // Finer levels: scale predictor by 2 and refine locally
+                        best_dx *= 2;
+                        best_dy *= 2;
+                        let r = 2i32; // Local refinement radius
+                        let mut min_sad = u32::MAX;
+                        let mut refined_dx = best_dx;
+                        let mut refined_dy = best_dy;
+
+                        for dy in -r..=r {
+                            for dx in -r..=r {
+                                let cand_dx = best_dx + dx;
+                                let cand_dy = best_dy + dy;
+                                let sad = compute_block_sad(cur_lvl, ref_lvl, bx, by, lvl_bsize, cand_dx, cand_dy);
+                                if sad < min_sad {
+                                    min_sad = sad;
+                                    refined_dx = cand_dx;
+                                    refined_dy = cand_dy;
+                                }
+                            }
+                        }
+                        best_dx = refined_dx;
+                        best_dy = refined_dy;
+                    }
+                }
+
+                // Level 0: Record matching costs into cost surface if enabled
+                if let Some(ref mut cs) = self.cost_surface {
+                    let r = cs.search_radius as i32;
+                    let bx = gx * bsize;
+                    let by = gy * bsize;
+                    for dy in -r..=r {
+                        for dx in -r..=r {
+                            let sad = compute_block_sad(cur_frame, ref_frame, bx, by, bsize, dx, dy);
+                            cs.set_cost(gx, gy, dx, dy, sad);
+                        }
+                    }
+                }
+
+                // Level 0: Sub-pixel refinement (Quarter-Pel or Half-Pel)
+                let bx = gx * bsize;
+                let by = gy * bsize;
+                let mv = match self.desc.precision {
+                    OpticalFlowPrecision::FullPel => MotionVector::from_integer_pel(best_dx, best_dy),
+                    OpticalFlowPrecision::HalfPel => {
+                        let mut min_sad = u32::MAX;
+                        let mut best_qx = best_dx * 4;
+                        let mut best_qy = best_dy * 4;
+                        for dqy in [-2, 0, 2] {
+                            for dqx in [-2, 0, 2] {
+                                let qx = best_dx * 4 + dqx;
+                                let qy = best_dy * 4 + dqy;
+                                let sad = compute_block_sad_quarter_pel(cur_frame, ref_frame, bx, by, bsize, qx, qy);
+                                if sad < min_sad {
+                                    min_sad = sad;
+                                    best_qx = qx;
+                                    best_qy = qy;
+                                }
+                            }
+                        }
+                        MotionVector::from_quarter_pel(best_qx as i16, best_qy as i16)
+                    }
+                    OpticalFlowPrecision::QuarterPel => {
+                        let mut min_sad = u32::MAX;
+                        let mut best_qx = best_dx * 4;
+                        let mut best_qy = best_dy * 4;
+                        for dqy in -2..=2 {
+                            for dqx in -2..=2 {
+                                let qx = best_dx * 4 + dqx;
+                                let qy = best_dy * 4 + dqy;
+                                let sad = compute_block_sad_quarter_pel(cur_frame, ref_frame, bx, by, bsize, qx, qy);
+                                if sad < min_sad {
+                                    min_sad = sad;
+                                    best_qx = qx;
+                                    best_qy = qy;
+                                }
+                            }
+                        }
+                        MotionVector::from_quarter_pel(best_qx as i16, best_qy as i16)
+                    }
+                };
+
+                field.set_vector(gx, gy, mv);
+                self.total_vectors_computed += 1;
+            }
+        }
+
+        Ok(field)
+    }
+
+    /// Estimates bidirectional optical flow fields (both Forward $0 \to 1$ and Backward $1 \to 0$).
+    pub fn estimate_bidirectional(
+        &mut self,
+        frame_0: &FrameBuffer,
+        frame_1: &FrameBuffer,
+    ) -> Result<(OpticalFlowVectorField, OpticalFlowVectorField), OpticalFlowError> {
+        let forward = self.estimate_motion(frame_0, frame_1)?;
+        let backward = self.estimate_motion(frame_1, frame_0)?;
+        Ok((forward, backward))
+    }
+}
