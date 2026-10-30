@@ -163,8 +163,12 @@ impl SocketTable {
         let handle = inner.next_handle;
         inner.next_handle = inner.next_handle.wrapping_add(1);
 
-        let socket = Socket::new(handle, domain, sock_type, protocol);
+                let socket = Socket::new(handle, domain, sock_type, protocol);
         inner.sockets.insert(handle, socket);
+
+        if domain == SocketDomain::AfUnix {
+            let _ = crate::net::af_unix::UNIX_SOCKET_TABLE.lock().create_socket_with_handle(handle, sock_type);
+        }
 
         Ok(handle)
     }
@@ -173,7 +177,11 @@ impl SocketTable {
     pub fn set_nonblocking(&self, handle: SocketHandle, nonblocking: bool) -> Result<(), SocketError> {
         let mut inner = self.inner.lock();
         let sock = inner.sockets.get_mut(&handle).ok_or(SocketError::InvalidHandle)?;
-        sock.nonblocking = nonblocking;
+                let is_unix = sock.domain == SocketDomain::AfUnix;
+        drop(inner);
+        if is_unix {
+            let _ = crate::net::af_unix::UNIX_SOCKET_TABLE.lock().set_nonblocking(handle, nonblocking);
+        }
         Ok(())
     }
 
@@ -208,6 +216,11 @@ impl SocketTable {
     pub fn listen(&self, handle: SocketHandle, _backlog: usize) -> Result<(), SocketError> {
         let mut inner = self.inner.lock();
         let sock = inner.sockets.get_mut(&handle).ok_or(SocketError::InvalidHandle)?;
+        if sock.domain == SocketDomain::AfUnix {
+            sock.state = SocketState::Listening;
+            drop(inner);
+            return crate::net::af_unix::UNIX_SOCKET_TABLE.lock().listen(handle, _backlog).map_err(|_| SocketError::InvalidHandle);
+        }
 
         if sock.socket_type != SocketType::SockStream {
             return Err(SocketError::UnsupportedType);
@@ -494,6 +507,11 @@ impl SocketTable {
         sock.rx_buffer.clear();
         sock.tx_buffer.clear();
         sock.pending_connections.clear();
+        let is_unix = sock.domain == SocketDomain::AfUnix;
+        drop(inner);
+        if is_unix {
+            let _ = crate::net::af_unix::UNIX_SOCKET_TABLE.lock().close(handle);
+        }
         Ok(())
     }
 
@@ -526,6 +544,83 @@ impl SocketTable {
     pub fn count(&self) -> usize {
         let inner = self.inner.lock();
         inner.sockets.len()
+    }
+
+    pub fn bind_unix(&self, handle: SocketHandle, sun: &crate::net::af_unix::sockaddr_un) -> Result<(), SocketError> {
+        let is_unix = {
+            let inner = self.inner.lock();
+            let sock = inner.sockets.get(&handle).ok_or(SocketError::InvalidHandle)?;
+            sock.domain == SocketDomain::AfUnix
+        };
+        if !is_unix {
+            return Err(SocketError::UnsupportedDomain);
+        }
+        crate::net::af_unix::UNIX_SOCKET_TABLE.lock().bind(handle, sun).map_err(|e| match e {
+            crate::net::af_unix::UnixSocketError::AddressInUse => SocketError::AddressInUse,
+            crate::net::af_unix::UnixSocketError::AlreadyBound => SocketError::AlreadyBound,
+            _ => SocketError::InvalidAddress,
+        })?;
+        let mut inner = self.inner.lock();
+        if let Some(sock) = inner.sockets.get_mut(&handle) {
+            sock.state = SocketState::Bound;
+        }
+        Ok(())
+    }
+
+    pub fn connect_unix(&self, handle: SocketHandle, sun: &crate::net::af_unix::sockaddr_un) -> Result<(), SocketError> {
+        let is_unix = {
+            let inner = self.inner.lock();
+            let sock = inner.sockets.get(&handle).ok_or(SocketError::InvalidHandle)?;
+            sock.domain == SocketDomain::AfUnix
+        };
+        if !is_unix {
+            return Err(SocketError::UnsupportedDomain);
+        }
+        crate::net::af_unix::UNIX_SOCKET_TABLE.lock().connect(handle, sun).map_err(|e| match e {
+            crate::net::af_unix::UnixSocketError::AlreadyConnected => SocketError::AlreadyConnected,
+            crate::net::af_unix::UnixSocketError::ConnectionRefused => SocketError::ConnectionRefused,
+            crate::net::af_unix::UnixSocketError::WouldBlock => SocketError::WouldBlock,
+            _ => SocketError::InvalidAddress,
+        })?;
+        let mut inner = self.inner.lock();
+        if let Some(sock) = inner.sockets.get_mut(&handle) {
+            sock.state = SocketState::Connected;
+        }
+        Ok(())
+    }
+
+    pub fn accept_unix(&self, handle: SocketHandle) -> Result<(SocketHandle, Option<crate::net::af_unix::ucred>), SocketError> {
+        let (sock_type, protocol) = {
+            let inner = self.inner.lock();
+            let sock = inner.sockets.get(&handle).ok_or(SocketError::InvalidHandle)?;
+            if sock.domain != SocketDomain::AfUnix {
+                return Err(SocketError::UnsupportedDomain);
+            }
+            (sock.socket_type, sock.protocol)
+        };
+
+        let new_handle = {
+            let mut inner = self.inner.lock();
+            if inner.sockets.len() >= inner.max_sockets {
+                return Err(SocketError::TableFull);
+            }
+            let h = inner.next_handle;
+            inner.next_handle = inner.next_handle.wrapping_add(1);
+            let mut child = Socket::new(h, SocketDomain::AfUnix, sock_type, protocol);
+            child.state = SocketState::Connected;
+            inner.sockets.insert(h, child);
+            h
+        };
+
+        crate::net::af_unix::UNIX_SOCKET_TABLE.lock().accept(handle, new_handle).map_err(|e| match e {
+            crate::net::af_unix::UnixSocketError::WouldBlock => SocketError::WouldBlock,
+            crate::net::af_unix::UnixSocketError::ConnectionReset => SocketError::NotConnected,
+            _ => SocketError::InvalidHandle,
+        })
+    }
+
+    pub fn getpeercred(&self, handle: SocketHandle) -> Result<crate::net::af_unix::ucred, SocketError> {
+        crate::net::af_unix::UNIX_SOCKET_TABLE.lock().getpeercred(handle).map_err(|_| SocketError::NotConnected)
     }
 }
 
@@ -576,6 +671,22 @@ pub fn close(handle: SocketHandle) -> Result<(), SocketError> {
 
 pub fn set_nonblocking(handle: SocketHandle, nonblocking: bool) -> Result<(), SocketError> {
     GLOBAL_SOCKET_TABLE.set_nonblocking(handle, nonblocking)
+}
+
+pub fn bind_unix(handle: SocketHandle, sun: &crate::net::af_unix::sockaddr_un) -> Result<(), SocketError> {
+    GLOBAL_SOCKET_TABLE.bind_unix(handle, sun)
+}
+
+pub fn connect_unix(handle: SocketHandle, sun: &crate::net::af_unix::sockaddr_un) -> Result<(), SocketError> {
+    GLOBAL_SOCKET_TABLE.connect_unix(handle, sun)
+}
+
+pub fn accept_unix(handle: SocketHandle) -> Result<(SocketHandle, Option<crate::net::af_unix::ucred>), SocketError> {
+    GLOBAL_SOCKET_TABLE.accept_unix(handle)
+}
+
+pub fn getpeercred(handle: SocketHandle) -> Result<crate::net::af_unix::ucred, SocketError> {
+    GLOBAL_SOCKET_TABLE.getpeercred(handle)
 }
 
 /// Self-test verifying socket descriptor allocation, nonblocking flag, and lifecycle.

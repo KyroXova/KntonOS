@@ -7,6 +7,12 @@
 //! - Packetized message-boundary preserving datagram queue (`UnixDatagramQueue`)
 //! - Peer credentials (`ucred` struct: pid, uid, gid) for SO_PEERCRED IPC authentication
 
+use alloc::collections::BTreeMap;
+use crate::fs::{FilePerms, FsError, VFS};
+use crate::memory::Spinlock;
+use crate::net::socket::{
+    SocketDomain, SocketHandle, SocketProtocol, SocketState, SocketType, GLOBAL_SOCKET_TABLE,
+};
 use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::vec;
@@ -33,6 +39,7 @@ pub const DEFAULT_DATAGRAM_MAX_BYTES: usize = 65536;
 pub enum UnixSocketError {
     AddressInUse,
     AddressNotAvailable,
+    AlreadyBound,
     ConnectionRefused,
     ConnectionReset,
     NotConnected,
@@ -414,4 +421,305 @@ impl UnixDatagramQueue {
         self.packets.clear();
         self.current_bytes = 0;
     }
+}
+
+
+/// Individual Unix domain socket state descriptor.
+#[derive(Debug)]
+pub struct UnixSocket {
+    pub handle: SocketHandle,
+    pub sock_type: SocketType,
+    pub state: SocketState,
+    pub address: Option<UnixSocketAddress>,
+    pub cred: ucred,
+    pub peer_cred: Option<ucred>,
+    pub peer_handle: Option<SocketHandle>,
+    pub peer_address: Option<UnixSocketAddress>,
+    pub nonblocking: bool,
+    pub backlog: usize,
+    pub pending_connections: VecDeque<SocketHandle>,
+    pub stream_rx: UnixStreamRingBuffer,
+    pub dgram_rx: UnixDatagramQueue,
+    pub bound_path: Option<String>,
+    pub peer_closed: bool,
+}
+
+impl UnixSocket {
+    pub fn new(handle: SocketHandle, sock_type: SocketType) -> Self {
+        Self {
+            handle,
+            sock_type,
+            state: SocketState::Unbound,
+            address: None,
+            cred: ucred::kernel_root(),
+            peer_cred: None,
+            peer_handle: None,
+            peer_address: None,
+            nonblocking: false,
+            backlog: 128,
+            pending_connections: VecDeque::new(),
+            stream_rx: UnixStreamRingBuffer::with_default_capacity(),
+            dgram_rx: UnixDatagramQueue::with_default_limits(),
+            bound_path: None,
+            peer_closed: false,
+        }
+    }
+}
+
+/// Global registry and state machine manager for Unix Domain Sockets.
+pub struct UnixSocketTable {
+    sockets: BTreeMap<SocketHandle, UnixSocket>,
+    pathname_bindings: BTreeMap<String, SocketHandle>,
+    abstract_bindings: BTreeMap<Vec<u8>, SocketHandle>,
+}
+
+impl UnixSocketTable {
+    pub const fn new() -> Self {
+        Self {
+            sockets: BTreeMap::new(),
+            pathname_bindings: BTreeMap::new(),
+            abstract_bindings: BTreeMap::new(),
+        }
+    }
+
+    pub fn create_socket_with_handle(&mut self, handle: SocketHandle, sock_type: SocketType) -> Result<(), UnixSocketError> {
+        let sock = UnixSocket::new(handle, sock_type);
+        self.sockets.insert(handle, sock);
+        Ok(())
+    }
+
+    pub fn bind(&mut self, handle: SocketHandle, sun: &sockaddr_un) -> Result<(), UnixSocketError> {
+        let addr = sun.to_address();
+        if addr.is_unnamed() {
+            return Err(UnixSocketError::InvalidArgument);
+        }
+
+        let sock = self.sockets.get_mut(&handle).ok_or(UnixSocketError::NotFound)?;
+        if sock.state != SocketState::Unbound {
+            return Err(UnixSocketError::AlreadyBound);
+        }
+
+        match addr {
+            UnixSocketAddress::Pathname(ref path) => {
+                if self.pathname_bindings.contains_key(path) {
+                    return Err(UnixSocketError::AddressInUse);
+                }
+                match VFS.lock().bind_socket(path, handle, FilePerms::rwx()) {
+                    Ok(_) => {}
+                    Err(FsError::AlreadyExists) => return Err(UnixSocketError::AddressInUse),
+                    Err(_) => return Err(UnixSocketError::InvalidArgument),
+                }
+                self.pathname_bindings.insert(path.clone(), handle);
+                sock.bound_path = Some(path.clone());
+            }
+            UnixSocketAddress::Abstract(ref name) => {
+                if self.abstract_bindings.contains_key(name) {
+                    return Err(UnixSocketError::AddressInUse);
+                }
+                self.abstract_bindings.insert(name.clone(), handle);
+            }
+            UnixSocketAddress::Unnamed => return Err(UnixSocketError::InvalidArgument),
+        }
+
+        sock.address = Some(addr);
+        sock.state = SocketState::Bound;
+        Ok(())
+    }
+
+    pub fn listen(&mut self, handle: SocketHandle, backlog: usize) -> Result<(), UnixSocketError> {
+        let sock = self.sockets.get_mut(&handle).ok_or(UnixSocketError::NotFound)?;
+        if sock.sock_type != SocketType::SockStream && sock.sock_type != SocketType::SockSeqPacket {
+            return Err(UnixSocketError::InvalidArgument);
+        }
+        if sock.state != SocketState::Bound && sock.state != SocketState::Unbound {
+            return Err(UnixSocketError::AlreadyConnected);
+        }
+
+        sock.state = SocketState::Listening;
+        sock.backlog = if backlog == 0 { 128 } else { backlog.min(128) };
+        Ok(())
+    }
+
+    pub fn connect(&mut self, handle: SocketHandle, sun: &sockaddr_un) -> Result<(), UnixSocketError> {
+        let target_addr = sun.to_address();
+        if target_addr.is_unnamed() {
+            return Err(UnixSocketError::InvalidArgument);
+        }
+
+        let (target_handle, is_dgram) = {
+            let client = self.sockets.get(&handle).ok_or(UnixSocketError::NotFound)?;
+            if client.state == SocketState::Connected {
+                return Err(UnixSocketError::AlreadyConnected);
+            }
+            if client.state == SocketState::Listening {
+                return Err(UnixSocketError::InvalidArgument);
+            }
+
+            let th = match target_addr {
+                UnixSocketAddress::Pathname(ref path) => {
+                    if let Some(&h) = self.pathname_bindings.get(path) {
+                        h
+                    } else if let Some(h) = VFS.lock().get_socket_node(path) {
+                        h
+                    } else {
+                        return Err(UnixSocketError::NotFound);
+                    }
+                }
+                UnixSocketAddress::Abstract(ref name) => {
+                    *self.abstract_bindings.get(name).ok_or(UnixSocketError::ConnectionRefused)?
+                }
+                UnixSocketAddress::Unnamed => return Err(UnixSocketError::InvalidArgument),
+            };
+
+            (th, client.sock_type == SocketType::SockDgram)
+        };
+
+        if is_dgram {
+            let client = self.sockets.get_mut(&handle).ok_or(UnixSocketError::NotFound)?;
+            client.peer_address = Some(target_addr);
+            client.peer_handle = Some(target_handle);
+            client.state = SocketState::Connected;
+            return Ok(());
+        }
+
+        let (server_backlog, pending_count) = {
+            let server = self.sockets.get(&target_handle).ok_or(UnixSocketError::ConnectionRefused)?;
+            if server.state != SocketState::Listening {
+                return Err(UnixSocketError::ConnectionRefused);
+            }
+            (server.backlog, server.pending_connections.len())
+        };
+
+        if pending_count >= server_backlog {
+            return Err(UnixSocketError::ConnectionRefused);
+        }
+
+        let server = self.sockets.get_mut(&target_handle).ok_or(UnixSocketError::ConnectionRefused)?;
+        server.pending_connections.push_back(handle);
+
+        let client = self.sockets.get_mut(&handle).ok_or(UnixSocketError::NotFound)?;
+        client.state = SocketState::Connecting;
+        client.peer_address = Some(target_addr);
+
+        Ok(())
+    }
+
+    pub fn accept(&mut self, handle: SocketHandle, new_handle: SocketHandle) -> Result<(SocketHandle, Option<ucred>), UnixSocketError> {
+        let (server_type, server_cred, client_handle) = {
+            let server = self.sockets.get_mut(&handle).ok_or(UnixSocketError::NotFound)?;
+            if server.state != SocketState::Listening {
+                return Err(UnixSocketError::InvalidArgument);
+            }
+
+            let client_h = server.pending_connections.pop_front().ok_or(UnixSocketError::WouldBlock)?;
+            (server.sock_type, server.cred, client_h)
+        };
+
+        let client_cred = {
+            let client = self.sockets.get_mut(&client_handle).ok_or(UnixSocketError::ConnectionReset)?;
+            client.state = SocketState::Connected;
+            client.peer_handle = Some(new_handle);
+            client.peer_cred = Some(server_cred);
+            client.cred
+        };
+
+        let mut child = UnixSocket::new(new_handle, server_type);
+        child.state = SocketState::Connected;
+        child.peer_handle = Some(client_handle);
+        child.peer_cred = Some(client_cred);
+
+        self.sockets.insert(new_handle, child);
+
+        Ok((new_handle, Some(client_cred)))
+    }
+
+    pub fn close(&mut self, handle: SocketHandle) -> Result<(), UnixSocketError> {
+        if let Some(sock) = self.sockets.remove(&handle) {
+            if let Some(path) = &sock.bound_path {
+                self.pathname_bindings.remove(path);
+            }
+            if let Some(UnixSocketAddress::Abstract(name)) = &sock.address {
+                self.abstract_bindings.remove(name);
+            }
+            if let Some(peer_h) = sock.peer_handle {
+                if let Some(peer) = self.sockets.get_mut(&peer_h) {
+                    peer.peer_closed = true;
+                }
+            }
+            Ok(())
+        } else {
+            Err(UnixSocketError::NotFound)
+        }
+    }
+
+    pub fn getpeercred(&self, handle: SocketHandle) -> Result<ucred, UnixSocketError> {
+        let sock = self.sockets.get(&handle).ok_or(UnixSocketError::NotFound)?;
+        sock.peer_cred.ok_or(UnixSocketError::NotConnected)
+    }
+
+    pub fn set_credentials(&mut self, handle: SocketHandle, cred: ucred) -> Result<(), UnixSocketError> {
+        let sock = self.sockets.get_mut(&handle).ok_or(UnixSocketError::NotFound)?;
+        sock.cred = cred;
+        Ok(())
+    }
+
+    pub fn set_nonblocking(&mut self, handle: SocketHandle, nonblocking: bool) -> Result<(), UnixSocketError> {
+        let sock = self.sockets.get_mut(&handle).ok_or(UnixSocketError::NotFound)?;
+        sock.nonblocking = nonblocking;
+        Ok(())
+    }
+
+    pub fn get_state(&self, handle: SocketHandle) -> Result<SocketState, UnixSocketError> {
+        let sock = self.sockets.get(&handle).ok_or(UnixSocketError::NotFound)?;
+        Ok(sock.state)
+    }
+
+    pub fn exists(&self, handle: SocketHandle) -> bool {
+        self.sockets.contains_key(&handle)
+    }
+}
+
+pub static UNIX_SOCKET_TABLE: Spinlock<UnixSocketTable> = Spinlock::new(UnixSocketTable::new());
+
+pub fn unix_socket(sock_type: SocketType) -> Result<SocketHandle, UnixSocketError> {
+    GLOBAL_SOCKET_TABLE
+        .create_socket(SocketDomain::AfUnix, sock_type, SocketProtocol::Default)
+        .map_err(|_| UnixSocketError::BufferFull)
+}
+
+pub fn unix_bind(handle: SocketHandle, sun: &sockaddr_un) -> Result<(), UnixSocketError> {
+    UNIX_SOCKET_TABLE.lock().bind(handle, sun)
+}
+
+pub fn unix_listen(handle: SocketHandle, backlog: usize) -> Result<(), UnixSocketError> {
+    UNIX_SOCKET_TABLE.lock().listen(handle, backlog)
+}
+
+pub fn unix_connect(handle: SocketHandle, sun: &sockaddr_un) -> Result<(), UnixSocketError> {
+    UNIX_SOCKET_TABLE.lock().connect(handle, sun)
+}
+
+pub fn unix_accept(handle: SocketHandle) -> Result<(SocketHandle, Option<ucred>), UnixSocketError> {
+    let new_handle = GLOBAL_SOCKET_TABLE
+        .create_socket(SocketDomain::AfUnix, SocketType::SockStream, SocketProtocol::Default)
+        .map_err(|_| UnixSocketError::BufferFull)?;
+    UNIX_SOCKET_TABLE.lock().accept(handle, new_handle)
+}
+
+pub fn unix_getpeercred(handle: SocketHandle) -> Result<ucred, UnixSocketError> {
+    UNIX_SOCKET_TABLE.lock().getpeercred(handle)
+}
+
+pub fn unix_set_credentials(handle: SocketHandle, cred: ucred) -> Result<(), UnixSocketError> {
+    UNIX_SOCKET_TABLE.lock().set_credentials(handle, cred)
+}
+
+pub fn unix_close(handle: SocketHandle) -> Result<(), UnixSocketError> {
+    let _ = GLOBAL_SOCKET_TABLE.close(handle);
+    UNIX_SOCKET_TABLE.lock().close(handle)
+}
+
+pub fn unix_set_nonblocking(handle: SocketHandle, nonblocking: bool) -> Result<(), UnixSocketError> {
+    let _ = GLOBAL_SOCKET_TABLE.set_nonblocking(handle, nonblocking);
+    UNIX_SOCKET_TABLE.lock().set_nonblocking(handle, nonblocking)
 }
