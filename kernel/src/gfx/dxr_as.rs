@@ -259,3 +259,181 @@ impl TopLevelAsDesc {
         (raw + 255) & !255 // 256-byte scratch align
     }
 }
+
+
+// -----------------------------------------------------------------------------
+// DXR 256-Byte Aligned Scratch Buffer Allocator
+// -----------------------------------------------------------------------------
+
+/// Required byte alignment for GPU virtual addresses of raytracing scratch buffers.
+pub const D3D12_RAYTRACING_ACCELERATION_STRUCTURE_SCRATCH_BYTE_ALIGNMENT: u64 = 256;
+
+/// High-throughput linear scratch allocator providing 256-byte aligned temporary memory for BVH builds.
+#[derive(Debug)]
+pub struct RaytracingScratchAllocator {
+    pub base_gpu_va: u64,
+    pub total_capacity_bytes: u64,
+    pub allocated_bytes: u64,
+    pub peak_allocated_bytes: u64,
+}
+
+impl RaytracingScratchAllocator {
+    pub fn new(base_gpu_va: u64, total_capacity_bytes: u64) -> Result<Self, &'static str> {
+        if (base_gpu_va % D3D12_RAYTRACING_ACCELERATION_STRUCTURE_SCRATCH_BYTE_ALIGNMENT) != 0 {
+            return Err("Scratch buffer GPU virtual address must be 256-byte aligned");
+        }
+        Ok(Self {
+            base_gpu_va,
+            total_capacity_bytes,
+            allocated_bytes: 0,
+            peak_allocated_bytes: 0,
+        })
+    }
+
+    /// Suballocates a 256-byte aligned scratch buffer segment.
+    pub fn allocate_scratch(&mut self, size_bytes: u64) -> Result<u64, &'static str> {
+        let aligned_size = (size_bytes + 255) & !255;
+        if self.allocated_bytes + aligned_size > self.total_capacity_bytes {
+            return Err("Out of raytracing scratch memory");
+        }
+
+        let offset = self.allocated_bytes;
+        self.allocated_bytes += aligned_size;
+        if self.allocated_bytes > self.peak_allocated_bytes {
+            self.peak_allocated_bytes = self.allocated_bytes;
+        }
+
+        Ok(self.base_gpu_va + offset)
+    }
+
+    /// Resets the scratch allocator after BVH build completion.
+    #[inline(always)]
+    pub fn reset(&mut self) {
+        self.allocated_bytes = 0;
+    }
+}
+
+// -----------------------------------------------------------------------------
+// BVH Compaction Manager & Post-Build Optimizer
+// -----------------------------------------------------------------------------
+
+/// Metadata tracking post-build compaction for a Bottom-Level Acceleration Structure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompactedBlasRecord {
+    pub blas_id: u32,
+    pub uncompacted_size_bytes: u64,
+    pub compacted_size_bytes: u64,
+    pub original_gpu_va: u64,
+    pub compacted_gpu_va: u64,
+}
+
+impl CompactedBlasRecord {
+    #[inline(always)]
+    pub const fn vram_saved_bytes(&self) -> u64 {
+        if self.uncompacted_size_bytes > self.compacted_size_bytes {
+            self.uncompacted_size_bytes - self.compacted_size_bytes
+        } else {
+            0
+        }
+    }
+
+    #[inline(always)]
+    pub const fn savings_percentage(&self) -> u32 {
+        if self.uncompacted_size_bytes == 0 {
+            0
+        } else {
+            ((self.vram_saved_bytes() * 100) / self.uncompacted_size_bytes) as u32
+        }
+    }
+}
+
+/// Acceleration Structure Manager tracking BLAS, TLAS, scratch allocations, and BVH compaction.
+#[derive(Debug)]
+pub struct RaytracingAccelerationStructureManager {
+    pub scratch_allocator: RaytracingScratchAllocator,
+    pub blas_table: Vec<BottomLevelAsDesc>,
+    pub tlas_table: Vec<TopLevelAsDesc>,
+    pub compacted_records: Vec<CompactedBlasRecord>,
+}
+
+impl RaytracingAccelerationStructureManager {
+    pub fn new(scratch_base_gpu_va: u64, scratch_capacity_bytes: u64) -> Result<Self, &'static str> {
+        let scratch_alloc = RaytracingScratchAllocator::new(scratch_base_gpu_va, scratch_capacity_bytes)?;
+        Ok(Self {
+            scratch_allocator: scratch_alloc,
+            blas_table: Vec::new(),
+            tlas_table: Vec::new(),
+            compacted_records: Vec::new(),
+        })
+    }
+
+    pub fn register_blas(&mut self, desc: BottomLevelAsDesc) {
+        self.blas_table.push(desc);
+    }
+
+    pub fn register_tlas(&mut self, desc: TopLevelAsDesc) {
+        self.tlas_table.push(desc);
+    }
+
+    /// Simulates building a BLAS on GPU, allocating the required 256-byte aligned scratch buffer.
+    pub fn build_blas(&mut self, blas_id: u32) -> Result<(u64, u64), &'static str> {
+        let blas = self.blas_table.iter().find(|b| b.blas_id == blas_id).ok_or("BLAS ID not found")?;
+        let result_size = blas.estimated_result_size_bytes();
+        let scratch_size = blas.estimated_scratch_size_bytes();
+        let scratch_va = self.scratch_allocator.allocate_scratch(scratch_size)?;
+        Ok((result_size, scratch_va))
+    }
+
+    /// Performs post-build BVH size compaction, generating a new compacted BLAS record.
+    pub fn compact_blas(
+        &mut self,
+        blas_id: u32,
+        compacted_size_bytes: u64,
+        compacted_gpu_va: u64,
+    ) -> Result<CompactedBlasRecord, &'static str> {
+        if (compacted_gpu_va % D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT) != 0 {
+            return Err("Compacted BLAS GPU VA must be 64-byte aligned");
+        }
+
+        let blas = self.blas_table.iter_mut().find(|b| b.blas_id == blas_id).ok_or("BLAS not found")?;
+        let uncompacted_size = blas.estimated_result_size_bytes();
+        let original_va = blas.gpu_virtual_address;
+
+        let record = CompactedBlasRecord {
+            blas_id,
+            uncompacted_size_bytes: uncompacted_size,
+            compacted_size_bytes,
+            original_gpu_va: original_va,
+            compacted_gpu_va,
+        };
+
+        // Update BLAS GPU address to point to the newly compacted location
+        blas.gpu_virtual_address = compacted_gpu_va;
+        self.compacted_records.push(record);
+
+        // Update referencing TLAS instances
+        self.update_tlas_instances_to_compacted_blas(original_va, compacted_gpu_va);
+
+        Ok(record)
+    }
+
+    /// Updates all instances referencing the old BLAS GPU address to use the newly compacted address.
+    pub fn update_tlas_instances_to_compacted_blas(&mut self, old_blas_va: u64, new_blas_va: u64) -> usize {
+        let mut updated = 0;
+        for tlas in &mut self.tlas_table {
+            for instance in &mut tlas.instances {
+                if instance.acceleration_structure == old_blas_va {
+                    instance.acceleration_structure = new_blas_va;
+                    updated += 1;
+                }
+            }
+        }
+        updated
+    }
+
+    /// Total VRAM bytes saved across all compacted acceleration structures.
+    #[inline(always)]
+    pub fn total_vram_saved_bytes(&self) -> u64 {
+        self.compacted_records.iter().map(|r| r.vram_saved_bytes()).sum()
+    }
+}
