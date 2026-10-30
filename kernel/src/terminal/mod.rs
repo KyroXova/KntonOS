@@ -4,6 +4,7 @@
 //! with canonical and raw modes, ANSI / VT100 / xterm escape code parsing, 24-bit RGB TrueColor SGR,
 //! and terminal window sizing with SIGWINCH broadcast.
 
+pub mod ansi;
 pub mod pty;
 
 pub use pty::{
@@ -12,4 +13,8 @@ pub use pty::{
     IGNBRK, IGNCR, IGNPAR, INLCR, INPCK, ISIG, ISTRIP, IXOFF, IXON, NCCS, NOFLSH, OCRNL,
     ONLCR, ONLRET, ONOCR, OPOST, PARENB, PARMRK, PTY_MULTIPLEXER, TOSTOP, VEOF, VEOL, VERASE,
     VINTR, VKILL, VMIN, VQUIT, VSTART, VSTOP, VSUSP, VTIME,
+};
+
+pub use ansi::{
+    xterm_256_to_color, AnsiCell, AnsiCursor, AnsiStyle, AnsiTerminal, ANSI_16_COLORS,
 };
