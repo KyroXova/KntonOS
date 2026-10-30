@@ -86,13 +86,16 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-059 | Dynamic Core Parking, C-State Governor, & Energy-Performance Bias (EPB / EPP) Manager | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-059-core-parking.md) |
 | TASK-KNT-060 | Zero-Latency DMA Audio Ring Buffer & Multi-Stream Real-Time Mixer Engine | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-060-dma-audio-mixer.md) |
 | TASK-KNT-061 | Memory-Mapped I/O (MMIO) Watchpoint & Kernel Hypervisor-Assisted Debug Trap Engine | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-061-mmio-debug-traps.md) |
-| TASK-KNT-062 | In-Game Quick-Access Hardware Plane Overlay & Performance Telemetry HUD | In Progress | Active on workspace/jules-martin | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-062-overlay-hud.md) |
-| TASK-KNT-063 | High-Performance S0i3 / S3 Instant-Resume Freeze & Wakeup Controller | In Progress | Active on workspace/priya-nair | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-063-suspend-resume.md) |
-| TASK-KNT-064 | Zero-Overhead Kernel Trace Ring Buffer & Performance Profiling Event Engine | Claimed | TASK-KNT-061 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-064-perf-events.md) |
+| TASK-KNT-062 | In-Game Quick-Access Hardware Plane Overlay & Performance Telemetry HUD | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-062-overlay-hud.md) |
+| TASK-KNT-063 | High-Performance S0i3 / S3 Instant-Resume Freeze & Wakeup Controller | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-063-suspend-resume.md) |
+| TASK-KNT-064 | Zero-Overhead Kernel Trace Ring Buffer & Performance Profiling Event Engine | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-064-perf-events.md) |
+| TASK-KNT-065 | eBPF-Style Bytecode In-Kernel Packet & Event Filter Engine | Claimed | TASK-KNT-064 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-065-bpf-filter.md) |
+| TASK-KNT-066 | Kernel-Direct Hardware Gamepad Haptic / Dual-Rumble Driver & Waveform Synthesizer | Claimed | TASK-KNT-051 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-066-gamepad-haptics.md) |
+| TASK-KNT-067 | High-Speed NVMe Overlapped Async I/O (io_uring Style) Completion Engine | Claimed | TASK-KNT-046 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-067-nvme-uring.md) |
 
 ## Active reservations
 
 - `kernel/src/pkg/`: reserved by ArdenKestrel for TASK-KNT-045.
-- `kernel/src/compositor/overlay.rs`, `kernel/src/compositor/hud.rs`: reserved by Jules Martin for TASK-KNT-062.
-- `kernel/src/power/freeze.rs`, `kernel/src/power/s3_resume.rs`: reserved by Priya Nair for TASK-KNT-063.
-- `kernel/src/trace/ring.rs`, `kernel/src/trace/events.rs`: reserved by Ada Chen for TASK-KNT-064.
+- `kernel/src/bpf/`: reserved by Ada Chen for TASK-KNT-065.
+- `kernel/src/drivers/input/haptic.rs`: reserved by Jules Martin for TASK-KNT-066.
+- `kernel/src/drivers/storage/uring.rs`: reserved by Priya Nair for TASK-KNT-067.
