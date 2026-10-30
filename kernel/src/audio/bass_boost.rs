@@ -1,11 +1,5 @@
 //! Dynamic Bass Booster & Psychoacoustic Harmonic Synthesizer.
-//!
 //! Designed for handheld console micro-speakers with physical low-frequency cutoffs (~80 Hz):
-//! - Isolates sub-bass content below the speaker cutoff frequency.
-//! - High-pass filters the physical audio stream to protect micro-speaker voice coils from over-excursion.
-//! - Synthesizes 2nd and 3rd harmonics using nonlinear waveshaping (Missing Fundamental psychoacoustic effect).
-//! - Shapes generated harmonics through a resonant bandpass filter aligned with micro-speaker acoustic efficiency.
-//! - Blends synthesized harmonics back into the main audio path for rich, perceived deep bass.
 
 use crate::graphics::types::{cos_f32, sin_f32, PI};
 use super::hrtf::AUDIO_SAMPLE_RATE;
@@ -16,9 +10,7 @@ pub const DEFAULT_SPEAKER_CUTOFF_HZ: f32 = 80.0;
 /// Center frequency for harmonic bandpass resonance (140 Hz).
 pub const HARMONIC_RESONANCE_HZ: f32 = 140.0;
 
-// -----------------------------------------------------------------------------
 // Biquad Filter Helpers for Crossover & Harmonic Shaping
-// -----------------------------------------------------------------------------
 
 /// Simple 2nd-order IIR biquad section for crossover filtering.
 #[derive(Debug, Clone, Copy)]
@@ -154,9 +146,7 @@ impl SimpleBiquad {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Psychoacoustic Harmonic Synthesizer
-// -----------------------------------------------------------------------------
 
 /// Harmonic synthesis parameters for virtual bass enhancement.
 #[derive(Debug, Clone, Copy)]
@@ -231,8 +221,7 @@ impl PsychoacousticBassEnhancer {
     }
 
     /// Synthesizes 2nd and 3rd harmonics from a normalized sub-bass input.
-    /// - 2nd harmonic (even): generated via full-wave rectification / absolute magnitude waveshaping.
-    /// - 3rd harmonic (odd): generated via cubic polynomial saturation: x * (1.5 - 0.5 * x^2).
+    /// 2nd harmonic (even): generated via full-wave rectification / absolute magnitude waveshaping.
     #[inline]
     fn synthesize_harmonics_channel(&self, sub: f32) -> f32 {
         let norm = (sub / 32768.0).clamp(-1.0, 1.0);
@@ -251,10 +240,6 @@ impl PsychoacousticBassEnhancer {
 
     /// Processes a single stereo PCM sample:
     /// 1. Extracts sub-bass below speaker cutoff.
-    /// 2. Protects speaker by high-passing the direct sound.
-    /// 3. Generates 2nd and 3rd harmonics in the audible 80-250 Hz range.
-    /// 4. Shapes harmonics with resonant bandpass filter.
-    /// 5. Mixes synthesized harmonics back into the output stream.
     #[inline]
     pub fn process_sample(&mut self, left: i16, right: i16) -> (i16, i16) {
         if !self.enabled {
@@ -306,9 +291,7 @@ impl PsychoacousticBassEnhancer {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Unit Tests
-// -----------------------------------------------------------------------------
 
 /// Unit test verifying psychoacoustic harmonic bass generation and speaker protection highpass.
 pub fn test_psychoacoustic_harmonic_synthesizer() -> bool {
@@ -358,9 +341,7 @@ pub fn test_psychoacoustic_harmonic_synthesizer() -> bool {
     true
 }
 
-// -----------------------------------------------------------------------------
 // Dynamic Soft-Saturation Limiter
-// -----------------------------------------------------------------------------
 
 /// Soft-knee saturation limiter preventing digital clipping and micro-speaker bottoming out.
 #[derive(Debug, Clone, Copy)]
@@ -438,14 +419,10 @@ impl SoftSaturationLimiter {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Real-Time Game Audio Pipeline Processor
-// -----------------------------------------------------------------------------
 
 /// Unified real-time game audio enhancement processor combining:
 /// 1. 10-Band Parametric Equalizer (RBJ Biquad filters)
-/// 2. Psychoacoustic Bass Enhancer (Missing fundamental harmonic synthesizer)
-/// 3. Dynamic Soft-Saturation Limiter (Anti-clipping protection)
 pub struct GameAudioProcessor {
     pub eq: super::eq::ParametricEqualizer10,
     pub bass_enhancer: PsychoacousticBassEnhancer,

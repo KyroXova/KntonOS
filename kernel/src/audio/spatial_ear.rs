@@ -1,8 +1,5 @@
 //! Kernel-Direct Low-Latency Spatial Audio Virtualizer & Ear-Canal Impedance Compensator Engine.
-//!
 //! Provides bare-metal 3D binaural audio spatialization, sub-millisecond fractional delay modeling,
-//! spherical head-shadow diffraction, cross-talk cancellation (XTC) for handheld stereo speakers,
-//! and ear-canal acoustic impedance resonance compensation for headphone and IEM gaming.
 
 #![allow(dead_code)]
 
@@ -12,9 +9,7 @@ use crate::graphics::types::{cos_f32, sin_f32, sqrt_f32, HALF_PI, PI, TWO_PI};
 use crate::audio::spatializer::{atan_f32, atan2_f32};
 use crate::audio::eq::db_to_amplitude_ratio;
 
-// -----------------------------------------------------------------------------
 // Constants
-// -----------------------------------------------------------------------------
 
 use crate::audio::hrtf::{AUDIO_SAMPLE_RATE, SPEED_OF_SOUND};
 
@@ -42,9 +37,7 @@ pub const MAX_ITD_SECONDS: f32 = 0.0008;
 /// Maximum allowable ITD in samples at 48 kHz (~38.4 samples).
 pub const SPATIAL_MAX_ITD_SAMPLES: f32 = MAX_ITD_SECONDS * AUDIO_SAMPLE_RATE;
 
-// -----------------------------------------------------------------------------
 // 1. 3D Spatial Vector & Coordinate Geometry
-// -----------------------------------------------------------------------------
 
 /// 3D Spatial Vector representing positions, velocities, and directional vectors in meters.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -294,9 +287,7 @@ impl SpatialEmitter {
     }
 }
 
-// -----------------------------------------------------------------------------
 // 2. Interaural Time (ITD) & Level (ILD) Difference Modeling
-// -----------------------------------------------------------------------------
 
 /// Calculated Binaural Spatial Parameters for a listener-emitter pair.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -391,9 +382,7 @@ impl BinauralParameters {
     }
 }
 
-// -----------------------------------------------------------------------------
 // 2b. Sub-Millisecond Fractional Delay Line & Spherical Head-Shadow Filter
-// -----------------------------------------------------------------------------
 
 /// Ring buffer capacity for the sub-millisecond fractional delay line (128 samples = 2.67 ms at 48 kHz).
 pub const FRACTIONAL_DELAY_CAPACITY: usize = 128;
@@ -617,9 +606,7 @@ impl DualEarSpatialChannel {
     }
 }
 
-// -----------------------------------------------------------------------------
 // 3. Ear-Canal Acoustic Impedance & Transfer Function (ECTF)
-// -----------------------------------------------------------------------------
 
 /// Acoustic Impedance and Quarter-Wave Resonance Model for the Human Ear Canal.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -787,9 +774,7 @@ impl CompensationProfile {
     }
 }
 
-// -----------------------------------------------------------------------------
 // 4. Cross-Talk Cancellation (XTC) & Acoustic Impedance Equalizer
-// -----------------------------------------------------------------------------
 
 /// Single-channel biquad IIR filter runner for ear-canal acoustic equalization.
 #[derive(Debug, Clone, Copy)]
@@ -878,10 +863,7 @@ pub const XTC_DELAY_CAPACITY: usize = 64;
 pub const XTC_DELAY_MASK: usize = XTC_DELAY_CAPACITY - 1;
 
 /// Cross-Talk Cancellation (XTC) Virtualizer for Handheld Gaming Speakers.
-///
 /// Enables binaural 3D spatial audio over physical stereo speakers by canceling
-/// ipsilateral-to-contralateral ear acoustic leakage using an inverted, delayed,
-/// and low-pass filtered cross-feed network.
 #[derive(Debug, Clone, Copy)]
 pub struct CrossTalkCancellationVirtualizer {
     left_delay_buf: [f32; XTC_DELAY_CAPACITY],
@@ -1061,9 +1043,7 @@ impl SpatialAudioVirtualizerEngine {
     }
 }
 
-// =============================================================================
 // 5. Subsystem Verification Suite & Boot Sentinel
-// =============================================================================
 
 /// Verification self-test suite for Kernel-Direct Low-Latency Spatial Audio Virtualizer & Ear-Canal Impedance Compensator Engine (TASK-KNT-118).
 pub fn test_spatial_audio_virtualizer_subsystem() -> bool {
@@ -1186,9 +1166,7 @@ pub fn test_spatial_audio_virtualizer_subsystem() -> bool {
     true
 }
 
-// -----------------------------------------------------------------------------
 // Unit Tests
-// -----------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
