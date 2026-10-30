@@ -1,8 +1,15 @@
 //! Universal Serial Bus (USB) Subsystem for KntonOS.
 
+pub mod bot;
 pub mod hid;
 pub mod xhci;
 
+pub use bot::{
+    verify_bot_structures, CommandBlockWrapper, CommandStatusWrapper, ScsiCdb, CBW_FLAG_DATA_IN,
+    CBW_FLAG_DATA_OUT, CBW_LENGTH, CBW_SIGNATURE, CSW_LENGTH, CSW_SIGNATURE, CSW_STATUS_FAILED,
+    CSW_STATUS_PASSED, CSW_STATUS_PHASE_ERROR, USB_CLASS_MASS_STORAGE, USB_PROTOCOL_BOT,
+    USB_SUBCLASS_SCSI,
+};
 pub use hid::{
     dispatch_keyboard_report, dispatch_mouse_report, ConfigurationDescriptor, DeviceDescriptor,
     EndpointDescriptor, HidDescriptor, HidKeyboardReport, HidMouseReport, InterfaceDescriptor,
