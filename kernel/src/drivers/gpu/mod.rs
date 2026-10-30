@@ -7,9 +7,13 @@
 pub mod drm;
 pub mod modeset;
 pub mod virtio_gpu;
+pub mod panel;
+pub mod rotation;
 
 pub use drm::*;
 pub use modeset::*;
+pub use panel::*;
+pub use rotation::*;
 pub use virtio_gpu::{
     test_gpu_command_submit_and_resource_allocation, test_scanout_flush_and_zero_copy_handover,
     test_virtio_gpu_packet_structures, test_virtio_gpu_subsystem, VirtioGpuCtrlHdr,
