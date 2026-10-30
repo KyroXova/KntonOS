@@ -389,3 +389,267 @@ impl BarrierGroup {
         self.global_barriers.len() + self.buffer_barriers.len() + self.texture_barriers.len()
     }
 }
+
+
+/// State tracking for an individual subresource.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SubresourceState {
+    pub layout: BarrierLayout,
+    pub access: u32,
+    pub sync: u32,
+}
+
+impl Default for SubresourceState {
+    fn default() -> Self {
+        Self {
+            layout: BarrierLayout::Undefined,
+            access: BarrierAccess::COMMON,
+            sync: BarrierSync::NONE,
+        }
+    }
+}
+
+/// Description and tracking state for a registered texture resource.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextureResourceDesc {
+    pub texture_id: u32,
+    pub mip_levels: u32,
+    pub array_size: u32,
+    pub plane_count: u32,
+    pub subresources: Vec<SubresourceState>,
+}
+
+impl TextureResourceDesc {
+    /// Creates a new texture resource with initialized subresource states.
+    pub fn new(texture_id: u32, mip_levels: u32, array_size: u32, plane_count: u32, initial_layout: BarrierLayout) -> Self {
+        let total = (mip_levels * array_size * plane_count).max(1) as usize;
+        let mut subresources = Vec::with_capacity(total);
+        for _ in 0..total {
+            subresources.push(SubresourceState {
+                layout: initial_layout,
+                access: BarrierAccess::COMMON,
+                sync: BarrierSync::ALL,
+            });
+        }
+        Self {
+            texture_id,
+            mip_levels,
+            array_size,
+            plane_count,
+            subresources,
+        }
+    }
+
+    /// Computes the flat linear index for a given (mip, slice, plane) coordinate.
+    #[inline]
+    pub fn calc_subresource_index(&self, mip: u32, slice: u32, plane: u32) -> usize {
+        (mip + slice * self.mip_levels + plane * self.mip_levels * self.array_size) as usize
+    }
+
+    /// Retrieves the subresource state at a specific coordinate.
+    pub fn get_subresource(&self, mip: u32, slice: u32, plane: u32) -> Option<&SubresourceState> {
+        let idx = self.calc_subresource_index(mip, slice, plane);
+        self.subresources.get(idx)
+    }
+
+    /// Checks if a given range falls within the bounds of this texture.
+    pub fn is_range_valid(&self, range: &SubresourceRange) -> bool {
+        if range.is_all() {
+            return true;
+        }
+        (range.index_or_first_mip + range.num_mips <= self.mip_levels)
+            && (range.first_array_slice + range.num_array_slices <= self.array_size)
+            && (range.first_plane + range.num_planes <= self.plane_count)
+    }
+}
+
+/// Description and tracking state for a registered GPU buffer resource.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BufferResourceDesc {
+    pub gpu_va: u64,
+    pub size: u64,
+    pub current_access: u32,
+    pub current_sync: u32,
+}
+
+impl BufferResourceDesc {
+    pub fn new(gpu_va: u64, size: u64) -> Self {
+        Self {
+            gpu_va,
+            size,
+            current_access: BarrierAccess::COMMON,
+            current_sync: BarrierSync::ALL,
+        }
+    }
+}
+
+/// Barrier transition evaluator and state tracking validator.
+///
+/// Ensures all state changes comply with D3D12 Enhanced Barrier specifications,
+/// verifying sync scopes, cache access flags, and texture layout transitions.
+#[derive(Debug, Clone, Default)]
+pub struct BarrierTransitionValidator {
+    pub textures: Vec<TextureResourceDesc>,
+    pub buffers: Vec<BufferResourceDesc>,
+    pub total_transitions_evaluated: u64,
+    pub discarded_transitions: u64,
+}
+
+impl BarrierTransitionValidator {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Registers a texture resource for state tracking.
+    pub fn register_texture(&mut self, texture: TextureResourceDesc) {
+        if let Some(existing) = self.textures.iter_mut().find(|t| t.texture_id == texture.texture_id) {
+            *existing = texture;
+        } else {
+            self.textures.push(texture);
+        }
+    }
+
+    /// Registers a buffer resource for state tracking.
+    pub fn register_buffer(&mut self, buffer: BufferResourceDesc) {
+        if let Some(existing) = self.buffers.iter_mut().find(|b| b.gpu_va == buffer.gpu_va) {
+            *existing = buffer;
+        } else {
+            self.buffers.push(buffer);
+        }
+    }
+
+    /// Finds a registered texture by ID.
+    pub fn find_texture(&self, texture_id: u32) -> Option<&TextureResourceDesc> {
+        self.textures.iter().find(|t| t.texture_id == texture_id)
+    }
+
+    /// Finds a registered texture by ID mutably.
+    pub fn find_texture_mut(&mut self, texture_id: u32) -> Option<&mut TextureResourceDesc> {
+        self.textures.iter_mut().find(|t| t.texture_id == texture_id)
+    }
+
+    /// Finds a registered buffer by GPU virtual address.
+    pub fn find_buffer(&self, gpu_va: u64) -> Option<&BufferResourceDesc> {
+        self.buffers.iter().find(|b| b.gpu_va <= gpu_va && gpu_va < b.gpu_va + b.size)
+    }
+
+    /// Finds a registered buffer by GPU virtual address mutably.
+    pub fn find_buffer_mut(&mut self, gpu_va: u64) -> Option<&mut BufferResourceDesc> {
+        self.buffers.iter_mut().find(|b| b.gpu_va <= gpu_va && gpu_va < b.gpu_va + b.size)
+    }
+
+    /// Validates and evaluates a global memory and execution barrier.
+    pub fn evaluate_global(&mut self, barrier: &GlobalBarrier) -> Result<(), BarrierError> {
+        barrier.validate()?;
+
+        // Global barrier affects all registered resources
+        for buf in self.buffers.iter_mut() {
+            buf.current_sync = barrier.sync_after;
+            buf.current_access = barrier.access_after;
+        }
+        for tex in self.textures.iter_mut() {
+            for sub in tex.subresources.iter_mut() {
+                sub.sync = barrier.sync_after;
+                sub.access = barrier.access_after;
+            }
+        }
+
+        self.total_transitions_evaluated += 1;
+        Ok(())
+    }
+
+    /// Validates and evaluates a buffer barrier.
+    pub fn evaluate_buffer(&mut self, barrier: &BufferBarrier) -> Result<(), BarrierError> {
+        barrier.validate()?;
+
+        // Verify buffer registration and range bounds
+        let buf = self.buffers.iter_mut().find(|b| b.gpu_va == barrier.buffer_gpu_va)
+            .ok_or(BarrierError::InvalidBufferRange)?;
+
+        if barrier.offset + barrier.size > buf.size {
+            return Err(BarrierError::InvalidBufferRange);
+        }
+
+        buf.current_sync = barrier.sync_after;
+        buf.current_access = barrier.access_after;
+
+        self.total_transitions_evaluated += 1;
+        Ok(())
+    }
+
+    /// Validates and evaluates a texture subresource barrier.
+    pub fn evaluate_texture(&mut self, barrier: &TextureBarrier) -> Result<(), BarrierError> {
+        barrier.validate()?;
+
+        let tex = self.textures.iter_mut().find(|t| t.texture_id == barrier.texture_id)
+            .ok_or(BarrierError::InvalidSubresourceRange)?;
+
+        if !tex.is_range_valid(&barrier.subresources) {
+            return Err(BarrierError::InvalidSubresourceRange);
+        }
+
+        let is_discard = (barrier.flags & TextureBarrierFlags::DISCARD) != 0;
+        if is_discard {
+            self.discarded_transitions += 1;
+        }
+
+        // Apply transition across affected subresources
+        if barrier.subresources.is_all() {
+            for sub in tex.subresources.iter_mut() {
+                // If not discarding and not undefined, verify current layout matches layout_before
+                if !is_discard && sub.layout != BarrierLayout::Undefined && sub.layout != barrier.layout_before {
+                    return Err(BarrierError::InvalidLayoutTransition {
+                        from: sub.layout,
+                        to: barrier.layout_before,
+                    });
+                }
+                sub.layout = barrier.layout_after;
+                sub.sync = barrier.sync_after;
+                sub.access = barrier.access_after;
+            }
+        } else {
+            let start_mip = barrier.subresources.index_or_first_mip;
+            let end_mip = start_mip + barrier.subresources.num_mips;
+            let start_slice = barrier.subresources.first_array_slice;
+            let end_slice = start_slice + barrier.subresources.num_array_slices;
+            let start_plane = barrier.subresources.first_plane;
+            let end_plane = start_plane + barrier.subresources.num_planes;
+
+            for plane in start_plane..end_plane {
+                for slice in start_slice..end_slice {
+                    for mip in start_mip..end_mip {
+                        let idx = tex.calc_subresource_index(mip, slice, plane);
+                        if let Some(sub) = tex.subresources.get_mut(idx) {
+                            if !is_discard && sub.layout != BarrierLayout::Undefined && sub.layout != barrier.layout_before {
+                                return Err(BarrierError::InvalidLayoutTransition {
+                                    from: sub.layout,
+                                    to: barrier.layout_before,
+                                });
+                            }
+                            sub.layout = barrier.layout_after;
+                            sub.sync = barrier.sync_after;
+                            sub.access = barrier.access_after;
+                        }
+                    }
+                }
+            }
+        }
+
+        self.total_transitions_evaluated += 1;
+        Ok(())
+    }
+
+    /// Evaluates all barriers in a barrier group.
+    pub fn evaluate_group(&mut self, group: &BarrierGroup) -> Result<(), BarrierError> {
+        for global in &group.global_barriers {
+            self.evaluate_global(global)?;
+        }
+        for buffer in &group.buffer_barriers {
+            self.evaluate_buffer(buffer)?;
+        }
+        for texture in &group.texture_barriers {
+            self.evaluate_texture(texture)?;
+        }
+        Ok(())
+    }
+}
