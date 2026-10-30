@@ -17,9 +17,9 @@ These branches are managed by their respective developers with granular commit l
 
 | Contributor identity | Branch | Local workspace | Status |
 | --- | --- | --- | --- |
-| Ada Chen | `workspace/ada-chen` | `E:\Git Lab's\kntonOS-ada-chen` | Idle (TASK-KNT-103 complete) |
-| Jules Martin | `workspace/jules-martin` | `E:\Git Lab's\kntonOS-jules-martin` | Idle (TASK-KNT-101 complete) |
-| Priya Nair | `workspace/priya-nair` | `E:\Git Lab's\kntonOS-priya-nair` | Idle (TASK-KNT-102 complete) |
+| Ada Chen | `workspace/ada-chen` | `E:\Git Lab's\kntonOS-ada-chen` | Active (TASK-KNT-106) |
+| Jules Martin | `workspace/jules-martin` | `E:\Git Lab's\kntonOS-jules-martin` | Active (TASK-KNT-104) |
+| Priya Nair | `workspace/priya-nair` | `E:\Git Lab's\kntonOS-priya-nair` | Active (TASK-KNT-105) |
 
 ## Task index
 
@@ -128,7 +128,13 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-101 | Unified Handheld PC MicroSD Card UHS-I/II Host Controller & Fast Game Storage Driver | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-101-sdhci-storage.md) |
 | TASK-KNT-102 | Direct3D 12 Work Graphs & Autonomous GPU Shader Execution Engine | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-102-work-graphs.md) |
 | TASK-KNT-103 | Real-Time Low-Latency Game Voice Chat & Acoustic Noise Cancellation (DSP / RNNoise-Style) Filter Engine | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-103-voice-dsp.md) |
+| TASK-KNT-104 | Unified Handheld PC Hall Effect Magnetic Joystick & Trigger Calibration Engine | Claimed | TASK-KNT-051 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-104-hall-effect.md) |
+| TASK-KNT-105 | Kernel-Direct GPU Sampler Feedback Streaming & Texture LOD Clamp Engine | Claimed | TASK-KNT-081 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-105-sampler-feedback.md) |
+| TASK-KNT-106 | Low-Latency In-Game Bluetooth LE Gamepad & Wireless Headset Audio Streamer | Claimed | TASK-KNT-070 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-106-ble-audio.md) |
 
 ## Active reservations
 
 - `kernel/src/pkg/`: reserved by ArdenKestrel for TASK-KNT-045.
+- `kernel/src/drivers/input/hall_effect.rs`: reserved by Jules Martin for TASK-KNT-104.
+- `kernel/src/gfx/sampler_feedback.rs`: reserved by Priya Nair for TASK-KNT-105.
+- `kernel/src/net/ble_audio.rs`: reserved by Ada Chen for TASK-KNT-106.
