@@ -14,6 +14,7 @@ pub mod voice_dsp;
 pub mod spatial_ear;
 pub mod drc;
 pub mod occlusion;
+pub mod vad;
 
 pub use occlusion::test_audio_occlusion_subsystem;
 
