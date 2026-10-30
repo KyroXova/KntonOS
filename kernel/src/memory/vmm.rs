@@ -63,6 +63,7 @@ impl PageTableFlags {
     pub const DIRTY: u64 = 1 << 6;
     pub const HUGE_PAGE: u64 = 1 << 7;
     pub const GLOBAL: u64 = 1 << 8;
+    pub const COW: u64 = 1 << 9; // Available for software Copy-on-Write tracking
     pub const NO_EXECUTE: u64 = 1 << 63;
 }
 
@@ -91,6 +92,29 @@ impl PageTableEntry {
     #[inline(always)]
     pub const fn is_user_accessible(&self) -> bool {
         (self.0 & PageTableFlags::USER_ACCESSIBLE) != 0
+    }
+
+    #[inline(always)]
+    pub const fn is_cow(&self) -> bool {
+        (self.0 & PageTableFlags::COW) != 0
+    }
+
+    #[inline(always)]
+    pub fn set_cow(&mut self, cow: bool) {
+        if cow {
+            self.0 |= PageTableFlags::COW;
+        } else {
+            self.0 &= !PageTableFlags::COW;
+        }
+    }
+
+    #[inline(always)]
+    pub fn set_writable(&mut self, writable: bool) {
+        if writable {
+            self.0 |= PageTableFlags::WRITABLE;
+        } else {
+            self.0 &= !PageTableFlags::WRITABLE;
+        }
     }
 
     #[inline(always)]

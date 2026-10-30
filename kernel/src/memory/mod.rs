@@ -9,11 +9,15 @@ pub mod heap;
 pub mod pmm;
 pub mod spinlock;
 pub mod vmm;
+pub mod demand_paging;
+pub mod cow;
 
 pub use heap::{KntonAllocator, DEFAULT_HEAP_SIZE};
 pub use pmm::{BitmapFrameAllocator, FrameAllocator, PhysAddr, PhysFrame, PAGE_SIZE};
 pub use spinlock::Spinlock;
 pub use vmm::{PageTable, PageTableEntry, PageTableFlags, PageTableManager, VirtAddr, VmmError};
+pub use demand_paging::{test_vma_and_error_codes, PageFaultErrorCode, VmArea, VmFlags};
+pub use cow::{test_cow_bitfields, MAX_TRACKED_PHYS_FRAMES, PTE_AVL_MASK, PTE_COW_BIT};
 
 /// Global Physical Memory Manager singleton.
 pub static PMM: Spinlock<BitmapFrameAllocator> = Spinlock::new(BitmapFrameAllocator::new());
