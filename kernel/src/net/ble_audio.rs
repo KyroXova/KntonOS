@@ -1,0 +1,777 @@
+//! Low-Latency Bluetooth Low Energy (BLE 5.2/5.3) Subsystem for KntonOS.
+//!
+//! Provides ultra-low-latency kernel-space BLE protocol handling for handheld gaming PC
+//! peripherals: wireless controllers (HID over GATT / HoGP) and LE Audio headsets
+//! (Connected Isochronous Streams / CIS with LC3 codec framing).
+//!
+//! Architecture:
+//! - HCI Transport Packet Layer (Command, Event, ACL Data, ISO Data)
+//! - L2CAP Protocol Multiplexer with dynamic MTU negotiation
+//! - Connected Isochronous Streams (CIS) Scheduler with 7.5ms/10ms LC3 audio burst pacing
+//! - HID over GATT (HoG) Gamepad Report Processor with adaptive anti-jitter buffer
+
+extern crate alloc;
+
+use alloc::collections::VecDeque;
+use alloc::vec::Vec;
+
+// =============================================================================
+// 1. HCI Transport Packet Formats (Core Spec v5.3 Vol 4, Part E)
+// =============================================================================
+
+/// HCI Transport Packet Indicator byte sent across UART/USB/PCIe Bluetooth transports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum HciPacketIndicator {
+    Command = 0x01,
+    AclData = 0x02,
+    SyncData = 0x03,
+    Event = 0x04,
+    IsoData = 0x05,
+}
+
+impl HciPacketIndicator {
+    pub fn from_u8(val: u8) -> Option<Self> {
+        match val {
+            0x01 => Some(Self::Command),
+            0x02 => Some(Self::AclData),
+            0x03 => Some(Self::SyncData),
+            0x04 => Some(Self::Event),
+            0x05 => Some(Self::IsoData),
+            _ => None,
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// HCI Opcodes & Groups (OGF / OCF)
+// -----------------------------------------------------------------------------
+
+pub const HCI_OGF_LINK_CONTROL: u16 = 0x01;
+pub const HCI_OGF_LINK_POLICY: u16 = 0x02;
+pub const HCI_OGF_CONTROLLER_BASEBAND: u16 = 0x03;
+pub const HCI_OGF_INFORMATIONAL: u16 = 0x04;
+pub const HCI_OGF_STATUS: u16 = 0x05;
+pub const HCI_OGF_LE_CONTROLLER: u16 = 0x08;
+
+/// Computes an HCI 16-bit opcode from 6-bit OGF and 10-bit OCF.
+pub const fn make_hci_opcode(ogf: u16, ocf: u16) -> u16 {
+    ((ogf & 0x3F) << 10) | (ocf & 0x03FF)
+}
+
+// Standard BLE OCF definitions
+pub const HCI_OCF_LE_SET_EVENT_MASK: u16 = 0x0001;
+pub const HCI_OCF_LE_READ_BUFFER_SIZE_V2: u16 = 0x0060;
+pub const HCI_OCF_LE_SET_CIG_PARAMETERS: u16 = 0x0062;
+pub const HCI_OCF_LE_CREATE_CIS: u16 = 0x0064;
+pub const HCI_OCF_LE_SETUP_ISO_DATA_PATH: u16 = 0x006E;
+pub const HCI_OCF_LE_CONNECTION_UPDATE: u16 = 0x0013;
+
+pub const HCI_OPCODE_LE_SET_EVENT_MASK: u16 = make_hci_opcode(HCI_OGF_LE_CONTROLLER, HCI_OCF_LE_SET_EVENT_MASK);
+pub const HCI_OPCODE_LE_READ_BUFFER_SIZE_V2: u16 = make_hci_opcode(HCI_OGF_LE_CONTROLLER, HCI_OCF_LE_READ_BUFFER_SIZE_V2);
+pub const HCI_OPCODE_LE_SET_CIG_PARAMETERS: u16 = make_hci_opcode(HCI_OGF_LE_CONTROLLER, HCI_OCF_LE_SET_CIG_PARAMETERS);
+pub const HCI_OPCODE_LE_CREATE_CIS: u16 = make_hci_opcode(HCI_OGF_LE_CONTROLLER, HCI_OCF_LE_CREATE_CIS);
+pub const HCI_OPCODE_LE_SETUP_ISO_DATA_PATH: u16 = make_hci_opcode(HCI_OGF_LE_CONTROLLER, HCI_OCF_LE_SETUP_ISO_DATA_PATH);
+pub const HCI_OPCODE_LE_CONNECTION_UPDATE: u16 = make_hci_opcode(HCI_OGF_LE_CONTROLLER, HCI_OCF_LE_CONNECTION_UPDATE);
+
+// -----------------------------------------------------------------------------
+// HCI Command Packet
+// -----------------------------------------------------------------------------
+
+/// HCI Command Packet (Indicator 0x01)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HciCommandPacket {
+    pub opcode: u16,
+    pub params: Vec<u8>,
+}
+
+impl HciCommandPacket {
+    pub fn new(opcode: u16, params: Vec<u8>) -> Self {
+        Self { opcode, params }
+    }
+
+    pub fn ogf(&self) -> u8 {
+        ((self.opcode >> 10) & 0x3F) as u8
+    }
+
+    pub fn ocf(&self) -> u16 {
+        self.opcode & 0x03FF
+    }
+
+    /// Serializes command packet into byte buffer including packet indicator 0x01.
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(4 + self.params.len());
+        buf.push(HciPacketIndicator::Command as u8);
+        buf.push((self.opcode & 0xFF) as u8);
+        buf.push(((self.opcode >> 8) & 0xFF) as u8);
+        buf.push(self.params.len() as u8);
+        buf.extend_from_slice(&self.params);
+        buf
+    }
+
+    /// Parses command packet from byte slice (starts at indicator 0x01 or opcode).
+    pub fn parse(data: &[u8]) -> Option<Self> {
+        let offset = if !data.is_empty() && data[0] == HciPacketIndicator::Command as u8 {
+            1
+        } else {
+            0
+        };
+
+        if data.len() < offset + 3 {
+            return None;
+        }
+
+        let opcode = (data[offset] as u16) | ((data[offset + 1] as u16) << 8);
+        let param_len = data[offset + 2] as usize;
+
+        if data.len() < offset + 3 + param_len {
+            return None;
+        }
+
+        let params = data[offset + 3..offset + 3 + param_len].to_vec();
+        Some(Self { opcode, params })
+    }
+}
+
+// -----------------------------------------------------------------------------
+// HCI Event Packet & Subevent Codes
+// -----------------------------------------------------------------------------
+
+pub const HCI_EVT_DISCONNECTION_COMPLETE: u8 = 0x05;
+pub const HCI_EVT_COMMAND_COMPLETE: u8 = 0x0E;
+pub const HCI_EVT_COMMAND_STATUS: u8 = 0x0F;
+pub const HCI_EVT_NUM_COMPLETED_PACKETS: u8 = 0x13;
+pub const HCI_EVT_LE_META: u8 = 0x3E;
+
+// LE Meta Subevent Codes
+pub const HCI_LE_SUBEVT_CONNECTION_COMPLETE: u8 = 0x01;
+pub const HCI_LE_SUBEVT_CONNECTION_UPDATE_COMPLETE: u8 = 0x03;
+pub const HCI_LE_SUBEVT_CIS_ESTABLISHED: u8 = 0x19;
+pub const HCI_LE_SUBEVT_CIS_REQUEST: u8 = 0x1A;
+
+/// HCI Event Packet (Indicator 0x04)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HciEventPacket {
+    pub event_code: u8,
+    pub params: Vec<u8>,
+}
+
+impl HciEventPacket {
+    pub fn new(event_code: u8, params: Vec<u8>) -> Self {
+        Self { event_code, params }
+    }
+
+    pub fn is_le_meta(&self) -> bool {
+        self.event_code == HCI_EVT_LE_META
+    }
+
+    pub fn subevent_code(&self) -> Option<u8> {
+        if self.is_le_meta() && !self.params.is_empty() {
+            Some(self.params[0])
+        } else {
+            None
+        }
+    }
+
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(3 + self.params.len());
+        buf.push(HciPacketIndicator::Event as u8);
+        buf.push(self.event_code);
+        buf.push(self.params.len() as u8);
+        buf.extend_from_slice(&self.params);
+        buf
+    }
+
+    pub fn parse(data: &[u8]) -> Option<Self> {
+        let offset = if !data.is_empty() && data[0] == HciPacketIndicator::Event as u8 {
+            1
+        } else {
+            0
+        };
+
+        if data.len() < offset + 2 {
+            return None;
+        }
+
+        let event_code = data[offset];
+        let param_len = data[offset + 1] as usize;
+
+        if data.len() < offset + 2 + param_len {
+            return None;
+        }
+
+        let params = data[offset + 2..offset + 2 + param_len].to_vec();
+        Some(Self { event_code, params })
+    }
+}
+
+// -----------------------------------------------------------------------------
+// HCI ACL Data Packet
+// -----------------------------------------------------------------------------
+
+/// Packet Boundary Flag in ACL Data Header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum AclPacketBoundaryFlag {
+    FirstNonFlushable = 0b00,
+    Continuing = 0b01,
+    FirstFlushable = 0b10,
+    CompleteL2capPdu = 0b11,
+}
+
+impl AclPacketBoundaryFlag {
+    pub fn from_u8(val: u8) -> Self {
+        match val & 0x03 {
+            0b00 => Self::FirstNonFlushable,
+            0b01 => Self::Continuing,
+            0b10 => Self::FirstFlushable,
+            _ => Self::CompleteL2capPdu,
+        }
+    }
+}
+
+/// HCI ACL Data Packet (Indicator 0x02)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HciAclDataPacket {
+    pub connection_handle: u16, // 12-bit handle (0..4095)
+    pub pb_flag: AclPacketBoundaryFlag,
+    pub bc_flag: u8,            // 2-bit broadcast flag (normally 0b00 point-to-point)
+    pub payload: Vec<u8>,
+}
+
+impl HciAclDataPacket {
+    pub fn new(handle: u16, pb: AclPacketBoundaryFlag, payload: Vec<u8>) -> Self {
+        Self {
+            connection_handle: handle & 0x0FFF,
+            pb_flag: pb,
+            bc_flag: 0b00,
+            payload,
+        }
+    }
+
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(5 + self.payload.len());
+        buf.push(HciPacketIndicator::AclData as u8);
+
+        let handle_flags: u16 = (self.connection_handle & 0x0FFF)
+            | (((self.pb_flag as u8 & 0x03) as u16) << 12)
+            | (((self.bc_flag & 0x03) as u16) << 14);
+
+        buf.push((handle_flags & 0xFF) as u8);
+        buf.push(((handle_flags >> 8) & 0xFF) as u8);
+
+        let len = self.payload.len() as u16;
+        buf.push((len & 0xFF) as u8);
+        buf.push(((len >> 8) & 0xFF) as u8);
+
+        buf.extend_from_slice(&self.payload);
+        buf
+    }
+
+    pub fn parse(data: &[u8]) -> Option<Self> {
+        let offset = if !data.is_empty() && data[0] == HciPacketIndicator::AclData as u8 {
+            1
+        } else {
+            0
+        };
+
+        if data.len() < offset + 4 {
+            return None;
+        }
+
+        let handle_flags = (data[offset] as u16) | ((data[offset + 1] as u16) << 8);
+        let connection_handle = handle_flags & 0x0FFF;
+        let pb_val = ((handle_flags >> 12) & 0x03) as u8;
+        let bc_flag = ((handle_flags >> 14) & 0x03) as u8;
+        let pb_flag = AclPacketBoundaryFlag::from_u8(pb_val);
+
+        let data_len = (data[offset + 2] as usize) | ((data[offset + 3] as usize) << 8);
+        if data.len() < offset + 4 + data_len {
+            return None;
+        }
+
+        let payload = data[offset + 4..offset + 4 + data_len].to_vec();
+        Some(Self {
+            connection_handle,
+            pb_flag,
+            bc_flag,
+            payload,
+        })
+    }
+}
+
+// -----------------------------------------------------------------------------
+// HCI ISO Data Packet (Core Spec v5.2/v5.3 for LE Audio CIS/BIS)
+// -----------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum IsoPacketBoundary {
+    FirstFragment = 0b00,
+    ContinuingFragment = 0b01,
+    CompleteSdu = 0b10,
+    LastFragment = 0b11,
+}
+
+impl IsoPacketBoundary {
+    pub fn from_u8(val: u8) -> Self {
+        match val & 0x03 {
+            0b00 => Self::FirstFragment,
+            0b01 => Self::ContinuingFragment,
+            0b10 => Self::CompleteSdu,
+            _ => Self::LastFragment,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum IsoPacketStatus {
+    ValidData = 0b00,
+    PossiblyInvalidData = 0b01,
+    LostData = 0b10,
+}
+
+impl IsoPacketStatus {
+    pub fn from_u8(val: u8) -> Self {
+        match val & 0x03 {
+            0b00 => Self::ValidData,
+            0b01 => Self::PossiblyInvalidData,
+            _ => Self::LostData,
+        }
+    }
+}
+
+/// HCI ISO Data Packet (Indicator 0x05)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HciIsoDataPacket {
+    pub connection_handle: u16,     // 12-bit handle
+    pub pb_flag: IsoPacketBoundary, // 2-bit PB flag
+    pub has_timestamp: bool,        // 1-bit TS flag
+    pub packet_status: IsoPacketStatus,
+    pub timestamp_us: Option<u32>,  // 32-bit time in microseconds (optional)
+    pub packet_seq_num: u16,        // 16-bit sequence number
+    pub sdu_len: u16,               // 12-bit SDU length
+    pub sdu_data: Vec<u8>,          // Audio SDU payload (e.g. LC3 frame)
+}
+
+impl HciIsoDataPacket {
+    pub fn new(
+        handle: u16,
+        pb: IsoPacketBoundary,
+        seq_num: u16,
+        timestamp_us: Option<u32>,
+        sdu_data: Vec<u8>,
+    ) -> Self {
+        let sdu_len = sdu_data.len() as u16;
+        let has_timestamp = timestamp_us.is_some();
+        Self {
+            connection_handle: handle & 0x0FFF,
+            pb_flag: pb,
+            has_timestamp,
+            packet_status: IsoPacketStatus::ValidData,
+            timestamp_us,
+            packet_seq_num: seq_num,
+            sdu_len,
+            sdu_data,
+        }
+    }
+
+    pub fn serialize(&self) -> Vec<u8> {
+        let header_extra = if self.has_timestamp { 4 } else { 0 };
+        // Total data load = header_extra (4 if TS) + 2 (seq) + 2 (sdu_len + flags) + sdu_data
+        let iso_data_load_len = header_extra + 4 + self.sdu_data.len();
+
+        let mut buf = Vec::with_capacity(5 + iso_data_load_len);
+        buf.push(HciPacketIndicator::IsoData as u8);
+
+        // Word 1: Handle (12b) | PB (2b) | TS (1b) | RFU (1b)
+        let ts_bit = if self.has_timestamp { 1u16 << 14 } else { 0 };
+        let handle_flags: u16 = (self.connection_handle & 0x0FFF)
+            | (((self.pb_flag as u8 & 0x03) as u16) << 12)
+            | ts_bit;
+        buf.push((handle_flags & 0xFF) as u8);
+        buf.push(((handle_flags >> 8) & 0xFF) as u8);
+
+        // Word 2: ISO Data Load Length (14b) | Packet Status (2b)
+        let load_len_status: u16 = ((iso_data_load_len as u16) & 0x3FFF)
+            | (((self.packet_status as u8 & 0x03) as u16) << 14);
+        buf.push((load_len_status & 0xFF) as u8);
+        buf.push(((load_len_status >> 8) & 0xFF) as u8);
+
+        // Optional Timestamp (4 bytes)
+        if let Some(ts) = self.timestamp_us {
+            buf.push((ts & 0xFF) as u8);
+            buf.push(((ts >> 8) & 0xFF) as u8);
+            buf.push(((ts >> 16) & 0xFF) as u8);
+            buf.push(((ts >> 24) & 0xFF) as u8);
+        }
+
+        // Sequence number (2 bytes)
+        buf.push((self.packet_seq_num & 0xFF) as u8);
+        buf.push(((self.packet_seq_num >> 8) & 0xFF) as u8);
+
+        // SDU Length (12b) | RFU (4b)
+        let sdu_len_field: u16 = self.sdu_len & 0x0FFF;
+        buf.push((sdu_len_field & 0xFF) as u8);
+        buf.push(((sdu_len_field >> 8) & 0xFF) as u8);
+
+        // SDU Data
+        buf.extend_from_slice(&self.sdu_data);
+        buf
+    }
+
+    pub fn parse(data: &[u8]) -> Option<Self> {
+        let offset = if !data.is_empty() && data[0] == HciPacketIndicator::IsoData as u8 {
+            1
+        } else {
+            0
+        };
+
+        if data.len() < offset + 4 {
+            return None;
+        }
+
+        let handle_flags = (data[offset] as u16) | ((data[offset + 1] as u16) << 8);
+        let connection_handle = handle_flags & 0x0FFF;
+        let pb_flag = IsoPacketBoundary::from_u8(((handle_flags >> 12) & 0x03) as u8);
+        let has_timestamp = (handle_flags & (1 << 14)) != 0;
+
+        let load_len_status = (data[offset + 2] as u16) | ((data[offset + 3] as u16) << 8);
+        let iso_data_load_len = (load_len_status & 0x3FFF) as usize;
+        let packet_status = IsoPacketStatus::from_u8(((load_len_status >> 14) & 0x03) as u8);
+
+        if data.len() < offset + 4 + iso_data_load_len {
+            return None;
+        }
+
+        let mut cur = offset + 4;
+        let timestamp_us = if has_timestamp {
+            if data.len() < cur + 4 {
+                return None;
+            }
+            let ts = (data[cur] as u32)
+                | ((data[cur + 1] as u32) << 8)
+                | ((data[cur + 2] as u32) << 16)
+                | ((data[cur + 3] as u32) << 24);
+            cur += 4;
+            Some(ts)
+        } else {
+            None
+        };
+
+        if data.len() < cur + 4 {
+            return None;
+        }
+
+        let packet_seq_num = (data[cur] as u16) | ((data[cur + 1] as u16) << 8);
+        cur += 2;
+
+        let sdu_len = ((data[cur] as u16) | ((data[cur + 1] as u16) << 8)) & 0x0FFF;
+        cur += 2;
+
+        let sdu_data_len = sdu_len as usize;
+        if data.len() < cur + sdu_data_len {
+            return None;
+        }
+
+        let sdu_data = data[cur..cur + sdu_data_len].to_vec();
+
+        Some(Self {
+            connection_handle,
+            pb_flag,
+            has_timestamp,
+            packet_status,
+            timestamp_us,
+            packet_seq_num,
+            sdu_len,
+            sdu_data,
+        })
+    }
+}
+
+// =============================================================================
+// 2. BLE Connection Parameters & Handheld Low-Latency Profile
+// =============================================================================
+
+/// BLE Connection Parameters (Core Spec v5.3 Vol 4, Part E, Section 7.8.18).
+///
+/// Connection intervals are specified in units of 1.25 ms (7.5 ms = 6 units).
+/// Supervision timeout is specified in units of 10 ms (200 ms = 20 units).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BleConnectionParams {
+    /// Connection interval minimum in 1.25 ms units (Range: 6 to 3200, 7.5ms to 4.0s).
+    pub min_interval: u16,
+    /// Connection interval maximum in 1.25 ms units.
+    pub max_interval: u16,
+    /// Slave latency: number of connection events peripheral can skip (0 for zero-latency gaming).
+    pub latency: u16,
+    /// Supervision timeout in 10 ms units (Range: 10 to 3200, 100ms to 32.0s).
+    pub timeout: u16,
+}
+
+impl BleConnectionParams {
+    /// Handheld gaming controller low-latency profile (7.5 ms interval, 0 latency, 200 ms timeout).
+    pub const fn gaming_low_latency_7_5ms() -> Self {
+        Self {
+            min_interval: 6, // 6 * 1.25 ms = 7.5 ms
+            max_interval: 6,
+            latency: 0,
+            timeout: 20, // 20 * 10 ms = 200 ms
+        }
+    }
+
+    /// Handheld gaming controller standard profile (10.0 ms interval, 0 latency, 250 ms timeout).
+    pub const fn gaming_standard_10ms() -> Self {
+        Self {
+            min_interval: 8, // 8 * 1.25 ms = 10.0 ms
+            max_interval: 8,
+            latency: 0,
+            timeout: 25, // 25 * 10 ms = 250 ms
+        }
+    }
+
+    /// Calculates minimum connection interval in milliseconds.
+    pub fn min_interval_ms(&self) -> f32 {
+        self.min_interval as f32 * 1.25
+    }
+
+    /// Calculates maximum connection interval in milliseconds.
+    pub fn max_interval_ms(&self) -> f32 {
+        self.max_interval as f32 * 1.25
+    }
+
+    /// Returns true if parameters enforce ultra-responsive sub-8ms polling for esports gamepads.
+    pub fn is_sub_8ms(&self) -> bool {
+        self.max_interval <= 6
+    }
+}
+
+// =============================================================================
+// 3. L2CAP Protocol Channel Multiplexing (Core Spec Vol 3, Part A)
+// =============================================================================
+
+pub const L2CAP_CID_NULL: u16 = 0x0000;
+pub const L2CAP_CID_ATT: u16 = 0x0004;         // Attribute Protocol (GATT / HoGP Gamepad)
+pub const L2CAP_CID_LE_SIGNALING: u16 = 0x0005; // LE L2CAP Signaling
+pub const L2CAP_CID_SMP: u16 = 0x0006;          // Security Manager Protocol
+pub const L2CAP_CID_DYNAMIC_START: u16 = 0x0040; // Dynamic Connection-Oriented Channels
+
+pub const L2CAP_DEFAULT_ATT_MTU: u16 = 23;      // Minimum BLE ATT MTU
+pub const L2CAP_GAMING_ATT_MTU: u16 = 247;      // High-throughput gaming MTU
+pub const L2CAP_MAX_MTU: u16 = 512;
+
+// L2CAP LE Signaling Command Codes
+pub const L2CAP_SIG_CONN_PARAM_UPDATE_REQ: u8 = 0x12;
+pub const L2CAP_SIG_CONN_PARAM_UPDATE_RSP: u8 = 0x13;
+pub const L2CAP_SIG_LE_CREDIT_BASED_CONN_REQ: u8 = 0x14;
+pub const L2CAP_SIG_LE_CREDIT_BASED_CONN_RSP: u8 = 0x15;
+pub const L2CAP_SIG_FLOW_CONTROL_CREDIT: u8 = 0x16;
+
+/// L2CAP Basic Information Frame (PDU)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct L2capPdu {
+    pub length: u16,
+    pub channel_id: u16,
+    pub payload: Vec<u8>,
+}
+
+impl L2capPdu {
+    pub fn new(channel_id: u16, payload: Vec<u8>) -> Self {
+        Self {
+            length: payload.len() as u16,
+            channel_id,
+            payload,
+        }
+    }
+
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(4 + self.payload.len());
+        buf.push((self.length & 0xFF) as u8);
+        buf.push(((self.length >> 8) & 0xFF) as u8);
+        buf.push((self.channel_id & 0xFF) as u8);
+        buf.push(((self.channel_id >> 8) & 0xFF) as u8);
+        buf.extend_from_slice(&self.payload);
+        buf
+    }
+
+    pub fn parse(data: &[u8]) -> Option<Self> {
+        if data.len() < 4 {
+            return None;
+        }
+
+        let length = (data[0] as u16) | ((data[1] as u16) << 8);
+        let channel_id = (data[2] as u16) | ((data[3] as u16) << 8);
+
+        let payload_len = length as usize;
+        if data.len() < 4 + payload_len {
+            return None;
+        }
+
+        let payload = data[4..4 + payload_len].to_vec();
+        Some(Self {
+            length,
+            channel_id,
+            payload,
+        })
+    }
+}
+
+/// L2CAP Channel Multiplexer for routing BLE traffic to ATT/GATT, Signaling, and dynamic streams.
+#[derive(Debug)]
+pub struct L2capMultiplexer {
+    pub att_mtu: u16,
+    pub rx_att_queue: VecDeque<L2capPdu>,
+    pub rx_signaling_queue: VecDeque<L2capPdu>,
+    pub rx_dynamic_queue: VecDeque<L2capPdu>,
+    pub tx_packets: VecDeque<L2capPdu>,
+}
+
+impl L2capMultiplexer {
+    pub fn new() -> Self {
+        Self {
+            att_mtu: L2CAP_DEFAULT_ATT_MTU,
+            rx_att_queue: VecDeque::with_capacity(32),
+            rx_signaling_queue: VecDeque::with_capacity(16),
+            rx_dynamic_queue: VecDeque::with_capacity(32),
+            tx_packets: VecDeque::with_capacity(32),
+        }
+    }
+
+    /// Negotiates high-throughput ATT MTU for gaming accessories (e.g. 247 or 512 bytes).
+    pub fn negotiate_mtu(&mut self, requested_mtu: u16) -> u16 {
+        let clamped = requested_mtu.clamp(L2CAP_DEFAULT_ATT_MTU, L2CAP_MAX_MTU);
+        self.att_mtu = clamped;
+        clamped
+    }
+
+    /// Routes an incoming L2CAP packet based on its Channel ID (CID).
+    pub fn route_incoming_pdu(&mut self, pdu: L2capPdu) -> Result<(), &'static str> {
+        match pdu.channel_id {
+            L2CAP_CID_ATT => {
+                if pdu.payload.len() > self.att_mtu as usize {
+                    return Err("L2CAP ATT PDU exceeds negotiated MTU");
+                }
+                self.rx_att_queue.push_back(pdu);
+                Ok(())
+            }
+            L2CAP_CID_LE_SIGNALING => {
+                self.rx_signaling_queue.push_back(pdu);
+                Ok(())
+            }
+            cid if cid >= L2CAP_CID_DYNAMIC_START => {
+                self.rx_dynamic_queue.push_back(pdu);
+                Ok(())
+            }
+            _ => Err("Unsupported or unknown L2CAP CID"),
+        }
+    }
+
+    /// Formats and enqueues an outgoing ATT notification/command PDU.
+    pub fn send_att(&mut self, payload: Vec<u8>) -> Result<(), &'static str> {
+        if payload.len() > self.att_mtu as usize {
+            return Err("Payload exceeds ATT MTU");
+        }
+        self.tx_packets.push_back(L2capPdu::new(L2CAP_CID_ATT, payload));
+        Ok(())
+    }
+
+    /// Generates an L2CAP Connection Parameter Update Request PDU for low-latency gaming.
+    pub fn create_conn_param_update_req(&self, id: u8, params: &BleConnectionParams) -> L2capPdu {
+        let mut payload = Vec::with_capacity(12);
+        payload.push(L2CAP_SIG_CONN_PARAM_UPDATE_REQ);
+        payload.push(id);
+        // Length of signal parameter field (8 bytes)
+        payload.push(8);
+        payload.push(0);
+
+        payload.push((params.min_interval & 0xFF) as u8);
+        payload.push(((params.min_interval >> 8) & 0xFF) as u8);
+        payload.push((params.max_interval & 0xFF) as u8);
+        payload.push(((params.max_interval >> 8) & 0xFF) as u8);
+        payload.push((params.latency & 0xFF) as u8);
+        payload.push(((params.latency >> 8) & 0xFF) as u8);
+        payload.push((params.timeout & 0xFF) as u8);
+        payload.push(((params.timeout >> 8) & 0xFF) as u8);
+
+        L2capPdu::new(L2CAP_CID_LE_SIGNALING, payload)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Unit Tests for Commit 1
+// -----------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    pub fn test_hci_packet_formats() {
+        // Test HCI Command Packet
+        let cmd = HciCommandPacket::new(HCI_OPCODE_LE_CONNECTION_UPDATE, alloc::vec![0x40, 0x00, 0x06, 0x00]);
+        let serialized_cmd = cmd.serialize();
+        assert_eq!(serialized_cmd[0], HciPacketIndicator::Command as u8);
+        let parsed_cmd = HciCommandPacket::parse(&serialized_cmd).expect("Parse HCI command failed");
+        assert_eq!(parsed_cmd.opcode, HCI_OPCODE_LE_CONNECTION_UPDATE);
+        assert_eq!(parsed_cmd.params, alloc::vec![0x40, 0x00, 0x06, 0x00]);
+
+        // Test HCI Event Packet
+        let evt = HciEventPacket::new(HCI_EVT_LE_META, alloc::vec![HCI_LE_SUBEVT_CIS_ESTABLISHED, 0x00, 0x42]);
+        let serialized_evt = evt.serialize();
+        assert_eq!(serialized_evt[0], HciPacketIndicator::Event as u8);
+        let parsed_evt = HciEventPacket::parse(&serialized_evt).expect("Parse HCI event failed");
+        assert_eq!(parsed_evt.is_le_meta(), true);
+        assert_eq!(parsed_evt.subevent_code(), Some(HCI_LE_SUBEVT_CIS_ESTABLISHED));
+
+        // Test HCI ACL Data Packet
+        let acl = HciAclDataPacket::new(0x0042, AclPacketBoundaryFlag::CompleteL2capPdu, alloc::vec![0x10, 0x20, 0x30]);
+        let serialized_acl = acl.serialize();
+        assert_eq!(serialized_acl[0], HciPacketIndicator::AclData as u8);
+        let parsed_acl = HciAclDataPacket::parse(&serialized_acl).expect("Parse HCI ACL failed");
+        assert_eq!(parsed_acl.connection_handle, 0x0042);
+        assert_eq!(parsed_acl.pb_flag, AclPacketBoundaryFlag::CompleteL2capPdu);
+        assert_eq!(parsed_acl.payload, alloc::vec![0x10, 0x20, 0x30]);
+
+        // Test HCI ISO Data Packet
+        let iso = HciIsoDataPacket::new(0x0050, IsoPacketBoundary::CompleteSdu, 1024, Some(100_000), alloc::vec![0xAA, 0xBB, 0xCC]);
+        let serialized_iso = iso.serialize();
+        assert_eq!(serialized_iso[0], HciPacketIndicator::IsoData as u8);
+        let parsed_iso = HciIsoDataPacket::parse(&serialized_iso).expect("Parse HCI ISO failed");
+        assert_eq!(parsed_iso.connection_handle, 0x0050);
+        assert_eq!(parsed_iso.packet_seq_num, 1024);
+        assert_eq!(parsed_iso.timestamp_us, Some(100_000));
+        assert_eq!(parsed_iso.sdu_data, alloc::vec![0xAA, 0xBB, 0xCC]);
+    }
+
+    #[test]
+    pub fn test_l2cap_multiplexing_and_mtu() {
+        let mut mux = L2capMultiplexer::new();
+        assert_eq!(mux.att_mtu, L2CAP_DEFAULT_ATT_MTU);
+
+        // MTU Negotiation
+        let negotiated = mux.negotiate_mtu(247);
+        assert_eq!(negotiated, 247);
+        assert_eq!(mux.att_mtu, 247);
+
+        // Connection Params check
+        let params = BleConnectionParams::gaming_low_latency_7_5ms();
+        assert!(params.is_sub_8ms());
+        assert!((params.min_interval_ms() - 7.5).abs() < 0.001);
+
+        // L2CAP Signaling PDU creation
+        let sig_pdu = mux.create_conn_param_update_req(1, &params);
+        let serialized = sig_pdu.serialize();
+        let parsed = L2capPdu::parse(&serialized).expect("Parse L2CAP PDU failed");
+        assert_eq!(parsed.channel_id, L2CAP_CID_LE_SIGNALING);
+
+        // Route into multiplexer
+        mux.route_incoming_pdu(parsed).expect("Route signaling failed");
+        assert_eq!(mux.rx_signaling_queue.len(), 1);
+
+        // ATT packet routing
+        let att_pdu = L2capPdu::new(L2CAP_CID_ATT, alloc::vec![0x01, 0x02, 0x03]);
+        mux.route_incoming_pdu(att_pdu).expect("Route ATT failed");
+        assert_eq!(mux.rx_att_queue.len(), 1);
+    }
+}

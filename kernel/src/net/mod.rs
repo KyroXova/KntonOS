@@ -22,6 +22,9 @@ pub mod tls;
 pub mod udp;
 pub mod ring;
 pub mod multiqueue;
+pub mod ble_audio;
+
+pub use ble_audio::*;
 
 pub use multiqueue::*;
 
