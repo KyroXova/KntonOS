@@ -72,9 +72,11 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-045 | kpkg Native Package Manifest Parser, Merkle Tree Content-Addressed Storage (CAS), & Zstandard Archive Decompressor | Claimed | TASK-KNT-038 | ArdenKestrel / dev | [Card](docs/tasks/TASK-KNT-045-kpkg-cas.md) |
 | TASK-KNT-046 | NVMe (Non-Volatile Memory Express) Storage Controller Driver & Submission/Completion Queue Engine | Claimed | TASK-KNT-041 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-046-nvme.md) |
 | TASK-KNT-047 | High-Precision Event Timer (HPET) & Real-Time Monotonic Nanosecond Clock Subsystem | Claimed | TASK-KNT-018 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-047-hpet.md) |
+| TASK-KNT-048 | Virtual Terminal ANSI 24-bit TrueColor Emulator & PTY Master/Slave Multiplexer | Claimed | TASK-KNT-016 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-048-pty-truecolor.md) |
 
 ## Active reservations
 
 - `kernel/src/pkg/`: reserved by ArdenKestrel for TASK-KNT-045.
 - `kernel/src/drivers/storage/nvme.rs`: reserved by Jules Martin for TASK-KNT-046.
 - `kernel/src/arch/x86_64/hpet.rs`: reserved by Ada Chen for TASK-KNT-047.
+- `kernel/src/terminal/pty.rs`, `kernel/src/terminal/ansi.rs`: reserved by Priya Nair for TASK-KNT-048.
