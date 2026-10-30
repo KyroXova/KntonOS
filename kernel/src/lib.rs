@@ -26,6 +26,7 @@ pub mod trace;
 pub mod bpf;
 pub mod audio;
 pub mod time;
+pub mod video;
 
 pub use memory::ALLOCATOR;
 
@@ -216,6 +217,11 @@ pub extern "C" fn kmain() -> ! {
     // Initialize and verify Unified Kernel Dynamic Frequency Scaling (DVFS) & Micro-Voltage Stepping Governor
     if !power::test_dvfs_governor_subsystem() {
         serial_write_str("[KNT-PANIC] DVFS governor and voltage stepping self-test failed!\r\n");
+    }
+
+    // Initialize and verify Kernel-Direct Hardware Video Decode & Zero-Copy Presentation Streamer
+    if !video::test_video_decode_subsystem() {
+        serial_write_str("[KNT-PANIC] Hardware video decode and presentation streamer self-test failed!\r\n");
     }
 
     // Initialize Virtual File System & mount demo initramfs
