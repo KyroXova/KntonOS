@@ -1,8 +1,5 @@
 //! Hardware-Accelerated Frame Capture & Direct DRM Scanout Grabber.
-//!
 //! Provides direct frame grabbing from active DRM/KMS scanout buffers or compositor
-//! backbuffers with monotonic timestamping, circular ring buffering, zero-copy dirty
-//! rectangle extraction, and backpressure drop-frame tracking.
 
 use alloc::vec::Vec;
 use crate::compositor::dirty::Rect;

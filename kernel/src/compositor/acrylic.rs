@@ -1,7 +1,5 @@
 //! Acrylic Glass Shader Simulation & Frosted Backdrop Rasterizer for KntonOS.
-//!
 //! Implements a fast 3x3 box blur kernel, 60% alpha tinted translucent overlay,
-//! and procedural noise grain texture (0x20FFFFFF) simulating Windows 11 Fluent Acrylic material.
 
 use crate::display::color::Color;
 use super::dirty::Rect;
