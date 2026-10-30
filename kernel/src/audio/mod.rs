@@ -15,6 +15,8 @@ pub mod spatial_ear;
 pub mod drc;
 pub mod occlusion;
 
+pub use occlusion::test_audio_occlusion_subsystem;
+
 pub use hrtf::*;
 pub use drc::*;
 pub use spatial_ear::*;
