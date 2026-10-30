@@ -1040,7 +1040,7 @@ pub fn verify_barriers_and_descriptor_bindings() -> bool {
         Err(_) => return false,
     };
 
-    if cmdbuf.packet_count() != 7 {
+    if cmdbuf.packet_count() != 8 {
         return false;
     }
 

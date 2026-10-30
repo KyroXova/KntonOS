@@ -266,6 +266,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] PCIe FLR and GPU TDR subsystem self-test failed!\r\n");
     }
 
+    // Initialize and verify Direct3D / Vulkan-Style Command Buffer Recording & Hardware Queue Submission Engine
+    if !gfx::test_gpu_command_buffer_and_queue_subsystem() {
+        serial_write_str("[KNT-PANIC] GPU command buffer and queue submission self-test failed!\r\n");
+    }
+
     // Initialize and verify AHCI SATA Persistent Storage Subsystem
     if !drivers::storage::test_ahci_sata_subsystem() {
         serial_write_str("[KNT-PANIC] AHCI SATA storage subsystem self-test failed!\r\n");
