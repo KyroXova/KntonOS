@@ -3,6 +3,11 @@ pub mod thread;
 pub mod process;
 pub mod scheduler;
 pub mod signals;
+pub mod checkpoint;
+pub mod resilience;
+
+pub use checkpoint::*;
+pub use resilience::*;
 
 pub use context::{switch_context, Context};
 pub use thread::{Priority, ThreadControlBlock, ThreadState};
