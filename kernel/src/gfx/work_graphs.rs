@@ -480,6 +480,12 @@ impl WorkGraphScheduler {
         Ok(())
     }
 
+    /// Number of records currently waiting in a node's ring buffer.
+    #[inline]
+    pub fn ring_len(&self, node_id: NodeId) -> usize {
+        self.nodes.iter().position(|n| n.node_id == node_id).map(|idx| self.rings[idx].len()).unwrap_or(0)
+    }
+
     /// Pops the next pending record from a node's ring.
     pub fn pop_record(&mut self, node_id: NodeId) -> Option<NodeRecord> {
         let node_idx = self.nodes.iter().position(|n| n.node_id == node_id)?;
@@ -665,31 +671,32 @@ impl WorkGraphEngine {
 
                 match node_desc.node_type {
                     WorkGraphNodeType::Broadcasting => {
-                        // Pop records one by one
-                        while let Some(input_record) = self.scheduler.pop_record(node_id) {
-                            work_done_in_pass = true;
-                            result.total_node_invocations += 1;
-                            result.total_records_consumed += 1;
-                            self.scheduler.stats_mut().broadcasting_dispatches += 1;
+                        let count_to_process = self.scheduler.ring_len(node_id);
+                        for _ in 0..count_to_process {
+                            if let Some(input_record) = self.scheduler.pop_record(node_id) {
+                                work_done_in_pass = true;
+                                result.total_node_invocations += 1;
+                                result.total_records_consumed += 1;
+                                self.scheduler.stats_mut().broadcasting_dispatches += 1;
 
-                            // Broadcasting node generates downstream records to each valid target
-                            for target in node_desc.output_targets.iter().flatten() {
-                                let mut out_payload = [0u8; MAX_NODE_RECORD_PAYLOAD_BYTES];
-                                let copy_len = core::cmp::min(
-                                    input_record.payload_size as usize,
-                                    node_desc.input_record_size,
-                                );
-                                out_payload[..copy_len].copy_from_slice(&input_record.payload[..copy_len]);
+                                for target in node_desc.output_targets.iter().flatten() {
+                                    let mut out_payload = [0u8; MAX_NODE_RECORD_PAYLOAD_BYTES];
+                                    let copy_len = core::cmp::min(
+                                        input_record.payload_size as usize,
+                                        node_desc.input_record_size,
+                                    );
+                                    out_payload[..copy_len].copy_from_slice(&input_record.payload[..copy_len]);
 
-                                let child_record = NodeRecord {
-                                    target_node: *target,
-                                    payload_size: copy_len as u16,
-                                    priority: input_record.priority,
-                                    flags: 0,
-                                    payload: out_payload,
-                                };
-                                self.scheduler.enqueue_record(child_record)?;
-                                result.total_records_generated += 1;
+                                    let child_record = NodeRecord {
+                                        target_node: *target,
+                                        payload_size: copy_len as u16,
+                                        priority: input_record.priority,
+                                        flags: 0,
+                                        payload: out_payload,
+                                    };
+                                    self.scheduler.enqueue_record(child_record)?;
+                                    result.total_records_generated += 1;
+                                }
                             }
                         }
                     }
@@ -720,22 +727,25 @@ impl WorkGraphEngine {
                         }
                     }
                     WorkGraphNodeType::Threadgroup => {
-                        while let Some(input_record) = self.scheduler.pop_record(node_id) {
-                            work_done_in_pass = true;
-                            result.total_node_invocations += 1;
-                            result.total_records_consumed += 1;
-                            self.scheduler.stats_mut().threadgroup_dispatches += 1;
+                        let count_to_process = self.scheduler.ring_len(node_id);
+                        for _ in 0..count_to_process {
+                            if let Some(input_record) = self.scheduler.pop_record(node_id) {
+                                work_done_in_pass = true;
+                                result.total_node_invocations += 1;
+                                result.total_records_consumed += 1;
+                                self.scheduler.stats_mut().threadgroup_dispatches += 1;
 
-                            for target in node_desc.output_targets.iter().flatten() {
-                                let child_record = NodeRecord {
-                                    target_node: *target,
-                                    payload_size: input_record.payload_size,
-                                    priority: input_record.priority,
-                                    flags: 0,
-                                    payload: input_record.payload,
-                                };
-                                self.scheduler.enqueue_record(child_record)?;
-                                result.total_records_generated += 1;
+                                for target in node_desc.output_targets.iter().flatten() {
+                                    let child_record = NodeRecord {
+                                        target_node: *target,
+                                        payload_size: input_record.payload_size,
+                                        priority: input_record.priority,
+                                        flags: 0,
+                                        payload: input_record.payload,
+                                    };
+                                    self.scheduler.enqueue_record(child_record)?;
+                                    result.total_records_generated += 1;
+                                }
                             }
                         }
                     }

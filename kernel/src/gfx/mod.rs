@@ -543,3 +543,191 @@ pub fn test_mesh_shader_subsystem() -> bool {
 
     true
 }
+
+/// Comprehensive verification self-test suite for Direct3D 12 Work Graphs and
+/// Autonomous GPU Shader Execution Engine.
+///
+/// Emits sentinel [KNT-GPU-WORKGRAPHS-PASS] upon successful validation.
+pub fn test_work_graphs_subsystem() -> bool {
+    crate::serial_write_str("[KNT-GFX] Testing Direct3D 12 Work Graphs & Autonomous GPU Shader Engine...\r\n");
+
+    // 1. Verify Node Descriptors, validation, and memory requirements
+    let broadcasting_node = WorkGraphNodeDescriptor {
+        node_id: NodeId(1),
+        node_type: WorkGraphNodeType::Broadcasting,
+        shader_identifier: [1u8; 32],
+        threadgroup_size: [8, 8, 1],
+        max_dispatch_grid: [4, 1, 1],
+        max_records_per_threadgroup: 1,
+        input_record_size: 16,
+        output_targets: [Some(NodeId(2)), None, None, None, None, None, None, None],
+        is_entry_point: true,
+    };
+    if broadcasting_node.validate().is_err() {
+        return false;
+    }
+
+    let coalescing_node = WorkGraphNodeDescriptor {
+        node_id: NodeId(2),
+        node_type: WorkGraphNodeType::Coalescing,
+        shader_identifier: [2u8; 32],
+        threadgroup_size: [16, 1, 1],
+        max_dispatch_grid: [1, 1, 1],
+        max_records_per_threadgroup: 4,
+        input_record_size: 16,
+        output_targets: [Some(NodeId(3)), None, None, None, None, None, None, None],
+        is_entry_point: false,
+    };
+    if coalescing_node.validate().is_err() {
+        return false;
+    }
+
+    let threadgroup_node = WorkGraphNodeDescriptor {
+        node_id: NodeId(3),
+        node_type: WorkGraphNodeType::Threadgroup,
+        shader_identifier: [3u8; 32],
+        threadgroup_size: [32, 1, 1],
+        max_dispatch_grid: [1, 1, 1],
+        max_records_per_threadgroup: 1,
+        input_record_size: 16,
+        output_targets: [None; MAX_OUTPUT_RECORD_TARGETS],
+        is_entry_point: false,
+    };
+    if threadgroup_node.validate().is_err() {
+        return false;
+    }
+
+    let invalid_node = WorkGraphNodeDescriptor {
+        threadgroup_size: [0, 8, 1],
+        ..broadcasting_node
+    };
+    if invalid_node.validate() != Err(WorkGraphError::InvalidGridDimensions) {
+        return false;
+    }
+
+    let nodes = [broadcasting_node, coalescing_node, threadgroup_node];
+    let mem_reqs = WorkGraphMemoryRequirements::calculate(&nodes);
+    if mem_reqs.min_backing_memory_bytes == 0 || (mem_reqs.min_backing_memory_bytes % D3D12_WORK_GRAPH_BACKING_MEMORY_ALIGNMENT) != 0 {
+        return false;
+    }
+
+    if WorkGraphBackingStore::new(0x1001, mem_reqs.min_backing_memory_bytes, &mem_reqs)
+        != Err(WorkGraphError::UnalignedBackingMemory(0x1001))
+    {
+        return false;
+    }
+    if WorkGraphBackingStore::new(0x2000, mem_reqs.min_backing_memory_bytes - 1, &mem_reqs).is_ok() {
+        return false;
+    }
+    let backing_store = match WorkGraphBackingStore::new(0x0000_8000_0000, mem_reqs.min_backing_memory_bytes, &mem_reqs) {
+        Ok(bs) => bs,
+        Err(_) => return false,
+    };
+
+    // 2. Verify NodeRecordRing and CoalescingBuffer
+    let mut ring = NodeRecordRing::new(4);
+    if !ring.is_empty() || ring.is_full() {
+        return false;
+    }
+    for i in 0..4 {
+        let rec = NodeRecord::new(NodeId(1), &[i as u8; 16], 0).unwrap();
+        if ring.push(rec).is_err() {
+            return false;
+        }
+    }
+    if !ring.is_full() {
+        return false;
+    }
+    let overflow_rec = NodeRecord::empty(NodeId(1));
+    if ring.push(overflow_rec) != Err(WorkGraphError::RecordRingFull) {
+        return false;
+    }
+    let popped = ring.pop().unwrap();
+    if popped.payload[0] != 0 || ring.len() != 3 {
+        return false;
+    }
+
+    let mut coal_buf = CoalescingBuffer::new(NodeId(2), 3);
+    if coal_buf.add_record(NodeRecord::empty(NodeId(2))) {
+        return false;
+    }
+    if coal_buf.add_record(NodeRecord::empty(NodeId(2))) {
+        return false;
+    }
+    if !coal_buf.add_record(NodeRecord::empty(NodeId(2))) {
+        return false;
+    }
+    if !coal_buf.is_ready() || coal_buf.drain_records().len() != 3 {
+        return false;
+    }
+
+    // 3. Multi-tier Work Graph autonomous GPU execution
+    let mut wg_engine = WorkGraphEngine::new();
+    wg_engine.register_node(broadcasting_node).unwrap();
+    wg_engine.register_node(coalescing_node).unwrap();
+    wg_engine.register_node(threadgroup_node).unwrap();
+
+    let mut entry_records = alloc::vec::Vec::new();
+    for i in 0..4 {
+        let rec = NodeRecord::new(NodeId(1), &[i as u8; 16], 1).unwrap();
+        entry_records.push(rec);
+    }
+
+    let dispatch_desc = DispatchGraphDesc {
+        entry_node_id: NodeId(1),
+        entry_records,
+        backing_store,
+        max_recursion_depth: MAX_WORK_GRAPH_RECURSION_DEPTH,
+    };
+
+    let result = match wg_engine.dispatch_graph(&dispatch_desc) {
+        Ok(res) => res,
+        Err(_) => return false,
+    };
+
+    if result.status != WorkGraphStatus::Completed {
+        return false;
+    }
+    if result.total_node_invocations != 6 {
+        return false;
+    }
+    if result.total_records_generated != 5 {
+        return false;
+    }
+    if result.total_records_consumed != 9 {
+        return false;
+    }
+    if wg_engine.scheduler().has_pending_work() {
+        return false;
+    }
+
+    // 4. Verify recursion depth limiter protection
+    let loop_node = WorkGraphNodeDescriptor {
+        node_id: NodeId(10),
+        node_type: WorkGraphNodeType::Threadgroup,
+        shader_identifier: [10u8; 32],
+        threadgroup_size: [32, 1, 1],
+        max_dispatch_grid: [1, 1, 1],
+        max_records_per_threadgroup: 1,
+        input_record_size: 16,
+        output_targets: [Some(NodeId(10)), None, None, None, None, None, None, None],
+        is_entry_point: true,
+    };
+    let mut loop_engine = WorkGraphEngine::new();
+    loop_engine.register_node(loop_node).unwrap();
+    let loop_dispatch = DispatchGraphDesc {
+        entry_node_id: NodeId(10),
+        entry_records: alloc::vec![NodeRecord::new(NodeId(10), &[0u8; 16], 0).unwrap()],
+        backing_store,
+        max_recursion_depth: 3,
+    };
+    let loop_result = loop_engine.dispatch_graph(&loop_dispatch).unwrap();
+    if loop_result.status != WorkGraphStatus::RecursionLimitExceeded {
+        return false;
+    }
+
+    // 5. Emit deterministic boot sentinel
+    crate::serial_write_str("[KNT-GPU-WORKGRAPHS-PASS] Direct3D 12 work graphs and autonomous GPU shader execution engine verified\r\n");
+
+    true
+}
