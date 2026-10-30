@@ -417,6 +417,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Gyro aiming and motion assist governor self-test failed!\r\n");
     }
 
+    // Initialize and verify Handheld PC Capacitive Touch Controller & Multi-Finger Gesture Engine
+    if !drivers::input::test_touch_and_gesture_subsystem() {
+        serial_write_str("[KNT-PANIC] Touch and gesture subsystem self-test failed!\r\n");
+    }
+
     // Initialize and verify Handheld Ambient Light Sensor (ALS) & HDR Auto-Brightness Governor
     if !drivers::sensor::test_als_and_brightness_subsystem() {
         serial_write_str("[KNT-PANIC] Handheld ALS and auto-brightness governor self-test failed!\r\n");

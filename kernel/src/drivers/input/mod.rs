@@ -10,6 +10,8 @@ pub mod gyro_aim;
 pub mod motion_assist;
 pub mod lra_haptic;
 pub mod haptic_brake;
+pub mod touch;
+pub mod gesture;
 
 pub use imu::*;
 pub use gamepad::*;
@@ -21,6 +23,8 @@ pub use gyro_aim::*;
 pub use motion_assist::*;
 pub use lra_haptic::*;
 pub use haptic_brake::*;
+pub use touch::*;
+pub use gesture::*;
 
 use crate::serial_write_str;
 
@@ -578,5 +582,31 @@ pub fn test_lra_haptics_subsystem() -> bool {
     }
 
     serial_write_str("[KNT-HAPTIC-LRA-PASS] Multi-zone LRA haptics and dynamic braking governor verified\r\n");
+    true
+}
+
+/// Verification self-test suite for Capacitive Touch Controller & Multi-Finger Gesture Engine.
+pub fn test_touch_and_gesture_subsystem() -> bool {
+    serial_write_str("[KNT-INPUT] Testing capacitive touch digitizer & multi-finger gesture engine...\r\n");
+
+    // 1. Verify Capacitive Touch Digitizer Driver and 10-Point Contact Tracker
+    if !verify_touch_digitizer_and_10_point_tracking() {
+        serial_write_str("[KNT-PANIC] Touch digitizer / 10-point contact tracking verification failed!\r\n");
+        return false;
+    }
+
+    // 2. Verify Temporal Low-Pass Jitter Filter and Kinematic Velocity/Acceleration Estimator
+    if !verify_touch_jitter_filter_and_kinematics() {
+        serial_write_str("[KNT-PANIC] Touch jitter filter / kinematic estimation verification failed!\r\n");
+        return false;
+    }
+
+    // 3. Verify Multi-Finger Gesture Recognition State Machine and Edge Swipe Detector
+    if !verify_gesture_recognition_and_edge_swipe() {
+        serial_write_str("[KNT-PANIC] Gesture recognition engine / edge swipe verification failed!\r\n");
+        return false;
+    }
+
+    serial_write_str("[KNT-INPUT-TOUCH-PASS] Capacitive touch digitizer and multi-finger gesture engine verified\r\n");
     true
 }
