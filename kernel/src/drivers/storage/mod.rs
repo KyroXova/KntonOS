@@ -9,11 +9,14 @@ pub mod uring;
 pub mod direct_storage;
 pub mod nvme_zns;
 pub mod copy_offload;
+pub mod sdcard;
+pub mod sdhci;
 
 pub use uring::*;
 pub use direct_storage::*;
 pub use nvme_zns::*;
 pub use copy_offload::*;
+pub use sdhci::*;
 
 pub use nvme::{
     make_aqa, nvme_cq_doorbell, nvme_sq_doorbell, build_identify_controller, build_identify_namespace, build_nvm_read, build_nvm_write,
@@ -439,5 +442,34 @@ pub fn test_direct_storage_subsystem() -> bool {
     // 5. Emit deterministic boot sentinel
     crate::serial_write_str("[KNT-STORAGE-DIRECT-PASS] DirectStorage NVMe-to-GPU DMA streaming and BC texture pipeline verified\r\n");
 
+    true
+}
+
+/// Comprehensive verification self-test suite for Handheld PC MicroSD Card UHS-I/II Host Controller
+/// and Fast Game Storage Driver.
+///
+/// Emits sentinel [KNT-STORAGE-SD-PASS] upon successful validation.
+pub fn test_sdhci_and_microsd_subsystem() -> bool {
+    crate::serial_write_str("[KNT-SDHCI] Testing handheld MicroSD host controller & storage driver...\r\n");
+
+    // 1. Verify SDHCI Host Register Layout, Card State Machine & Command Packets
+    if !verify_sdhci_structures_and_commands() {
+        crate::serial_write_str("[KNT-PANIC] SDHCI structures / command encoding verification failed!\r\n");
+        return false;
+    }
+
+    // 2. Verify SD Card Initialization, UHS-I Bus Tuning (SDR104) & ADMA2 DMA Engine
+    if !verify_card_init_and_adma2() {
+        crate::serial_write_str("[KNT-PANIC] SD card initialization / ADMA2 verification failed!\r\n");
+        return false;
+    }
+
+    // 3. Verify Block Read/Write Interface & Card Hot-Plug Event Handler
+    if !verify_block_io_and_hotplug() {
+        crate::serial_write_str("[KNT-PANIC] SD block I/O / hot-plug handler verification failed!\r\n");
+        return false;
+    }
+
+    crate::serial_write_str("[KNT-STORAGE-SD-PASS] Handheld MicroSD host controller and fast storage driver verified\r\n");
     true
 }
