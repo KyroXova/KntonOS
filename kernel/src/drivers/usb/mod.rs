@@ -245,3 +245,78 @@ pub fn test_usb_hid_subsystem() -> bool {
     serial_write_str("[KNT-USB-HID-PASS] All USB 3.0 xHCI and HID input pipeline checks passed\r\n");
     true
 }
+
+/// Comprehensive verification self-test suite for USB Mass Storage Class Bulk-Only Transport Driver.
+pub fn test_usb_msc_subsystem() -> bool {
+    // 1. Verify BOT CBW / CSW packet structures and serialization
+    if !verify_bot_structures() {
+        return false;
+    }
+
+    // 2. Verify SCSI Primary Commands (INQUIRY, READ CAPACITY, TEST UNIT READY, REQUEST SENSE)
+    if !verify_scsi_commands() {
+        return false;
+    }
+
+    // 3. Verify BOT 3-phase transfer engine and state machine transitions
+    if !verify_bot_transport_engine() {
+        return false;
+    }
+
+    // 4. Verify USB MSC block device abstraction and simulated transfers
+    if !verify_usb_msc_engine() {
+        return false;
+    }
+
+    // 5. Stress loopback sector transfer across multiple 512-byte blocks
+    let transport = BotTransport::new(2, 3, 4, 512);
+    let mut dev = UsbMscBlockDevice::new(transport);
+
+    let mut inq_buf = [0u8; 36];
+    inq_buf[0] = SCSI_DEV_TYPE_DIRECT_ACCESS;
+    inq_buf[1] = 0x80;
+    inq_buf[8..16].copy_from_slice(b"KntonOS ");
+    inq_buf[16..32].copy_from_slice(b"HighSpeed Flash ");
+    inq_buf[32..36].copy_from_slice(b"2.00");
+    let inq = match ScsiInquiryData::parse(&inq_buf) {
+        Some(i) => i,
+        None => return false,
+    };
+
+    let mut rc_buf = [0u8; 8];
+    rc_buf[0..4].copy_from_slice(&0x001F_FFFFu32.to_be_bytes()); // 2,097,152 blocks (1 GiB)
+    rc_buf[4..8].copy_from_slice(&512u32.to_be_bytes());
+    let cap = match ScsiReadCapacity10Data::parse(&rc_buf) {
+        Some(c) => c,
+        None => return false,
+    };
+
+    dev.attach_identified_media(&inq, &cap);
+
+    // 8 KiB storage buffer
+    let mut storage_backing = [0u8; 8192];
+    let mut pattern_buf = [0u8; 2048]; // 4 sectors
+    for i in 0..2048 {
+        pattern_buf[i] = ((i * 31 + 17) & 0xFF) as u8;
+    }
+
+    // Write 4 sectors at LBA 8
+    if dev.execute_simulated_write(&mut storage_backing, 8, 4, &pattern_buf).is_err() {
+        return false;
+    }
+
+    // Read back 4 sectors from LBA 8
+    let mut read_buf = [0u8; 2048];
+    if dev.execute_simulated_read(&storage_backing, 8, 4, &mut read_buf).is_err() {
+        return false;
+    }
+
+    if read_buf != pattern_buf {
+        return false;
+    }
+
+    // 6. Emit boot sentinel
+    serial_write_str("[KNT-USB-MSC-PASS] USB MSC BOT driver, SCSI command block wrappers, and block IO verified\r\n");
+
+    return true;
+}
