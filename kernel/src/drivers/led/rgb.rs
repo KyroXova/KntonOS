@@ -1,7 +1,8 @@
 //! Handheld PC Multi-Zone RGB Lighting Driver: Color Math, Gamma Correction & Layout.
 //!
 //! Provides color primitives, 2.2 perceptual gamma correction, HSV color space
-//! conversion, effect generators, and multi-zone physical layout configurations for handheld gaming PCs.
+//! conversion, effect generators, game-state reactive aura synchronization,
+//! and Embedded Controller (EC) / I2C hardware register mapping for handheld gaming PCs.
 
 use crate::graphics::{sin_f32, TWO_PI};
 
@@ -545,6 +546,226 @@ impl RgbLightingController {
 }
 
 // -----------------------------------------------------------------------------
+// In-Game Reactive Lighting Synchronization Engine
+// -----------------------------------------------------------------------------
+
+/// Telemetry metrics streamed from the active game engine or runtime governor.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GameTelemetry {
+    /// Player health percentage [0..100].
+    pub health_percent: u8,
+    /// Player shield/armor percentage [0..100].
+    pub shield_percent: u8,
+    /// APU/GPU silicon junction temperature in Celsius [0.0 .. 110.0].
+    pub gpu_temp_celsius: f32,
+    /// Cooling blower fan rotational speed in RPM [0 .. 8000].
+    pub fan_rpm: u16,
+}
+
+impl Default for GameTelemetry {
+    fn default() -> Self {
+        Self {
+            health_percent: 100,
+            shield_percent: 100,
+            gpu_temp_celsius: 45.0,
+            fan_rpm: 2200,
+        }
+    }
+}
+
+/// Evaluates APU temperature and maps to a dynamic thermal gradient color.
+///
+/// - <= 45°C: Deep Sapphire Blue (0, 80, 255)
+/// - 45°C..65°C: Neon Cyan to Radiant Gold (0, 255, 255 -> 255, 215, 0)
+/// - >= 85°C: Blazing Crimson Thermal Red (255, 0, 0)
+pub fn evaluate_thermal_heat_gradient(temp_celsius: f32) -> Rgb8 {
+    let t = temp_celsius.clamp(35.0, 90.0);
+    if t <= 50.0 {
+        let frac = (t - 35.0) / 15.0;
+        Rgb8::new(0, 60, 255).lerp(Rgb8::new(0, 255, 255), frac)
+    } else if t <= 70.0 {
+        let frac = (t - 50.0) / 20.0;
+        Rgb8::new(0, 255, 255).lerp(Rgb8::new(255, 215, 0), frac)
+    } else {
+        let frac = ((t - 70.0) / 20.0).min(1.0);
+        Rgb8::new(255, 215, 0).lerp(Rgb8::new(255, 0, 0), frac)
+    }
+}
+
+/// Dynamic game-state reactive lighting governor applying real-time telemetry overlays.
+pub struct GameStateAuraSync {
+    /// Current live game telemetry.
+    pub telemetry: GameTelemetry,
+    /// Remaining duration of critical damage flash in milliseconds.
+    damage_flash_remaining_ms: u32,
+    /// Peak intensity factor of active damage flash.
+    damage_flash_peak: f32,
+    /// Internal accumulator for low-health heartbeat pulse.
+    heartbeat_phase_ms: u32,
+}
+
+impl GameStateAuraSync {
+    /// Initializes reactive game state governor with default nominal telemetry.
+    pub fn new() -> Self {
+        Self {
+            telemetry: GameTelemetry::default(),
+            damage_flash_remaining_ms: 0,
+            damage_flash_peak: 0.0,
+            heartbeat_phase_ms: 0,
+        }
+    }
+
+    /// Triggers an immediate critical damage flash overlay (decays over ~200ms).
+    pub fn trigger_damage_flash(&mut self, intensity: f32) {
+        self.damage_flash_remaining_ms = 200;
+        self.damage_flash_peak = intensity.clamp(0.0, 1.0);
+    }
+
+    /// Updates active game telemetry metrics.
+    pub fn update_telemetry(&mut self, telemetry: GameTelemetry) {
+        self.telemetry = telemetry;
+    }
+
+    /// Applies real-time game state reactive overlays on top of the base rendered frame.
+    pub fn apply_reactive_overlay(
+        &mut self,
+        base_frame: &[Rgb8; LED_ZONE_COUNT],
+        delta_ms: u32,
+        out_frame: &mut [Rgb8; LED_ZONE_COUNT],
+    ) {
+        *out_frame = *base_frame;
+
+        // 1. Thermal heat gradient on rear ergonomic grips
+        let heat_color = evaluate_thermal_heat_gradient(self.telemetry.gpu_temp_celsius).apply_gamma();
+        out_frame[LedZone::LeftGrip as usize] = heat_color;
+        out_frame[LedZone::RightGrip as usize] = heat_color;
+
+        // 2. Health-dependent Aura Ring pulsing
+        if self.telemetry.health_percent < 25 {
+            // Urgent critical low-health heartbeat throb (500ms period)
+            self.heartbeat_phase_ms = (self.heartbeat_phase_ms + delta_ms) % 500;
+            let phase_frac = (self.heartbeat_phase_ms as f32) / 500.0;
+            let pulse = (sin_f32(phase_frac * TWO_PI) + 1.0) * 0.5;
+            let critical_red = Rgb8::RED.scale(0.20 + 0.80 * pulse).apply_gamma();
+            out_frame[LedZone::LeftStickRing as usize] = critical_red;
+            out_frame[LedZone::RightStickRing as usize] = critical_red;
+        } else if self.telemetry.health_percent < 50 {
+            // Warning state: amber breathing
+            let warning_amber = Rgb8::AMBER.scale(0.65).apply_gamma();
+            out_frame[LedZone::LeftStickRing as usize] = warning_amber;
+            out_frame[LedZone::RightStickRing as usize] = warning_amber;
+        }
+
+        // 3. Highest-priority damage flash overlay
+        if self.damage_flash_remaining_ms > 0 {
+            let decay = (self.damage_flash_remaining_ms as f32) / 200.0;
+            let flash_color = Rgb8::WHITE.lerp(Rgb8::RED, 0.35).scale(self.damage_flash_peak * decay);
+            for slot in out_frame.iter_mut() {
+                *slot = slot.lerp(flash_color, decay * self.damage_flash_peak);
+            }
+            self.damage_flash_remaining_ms = self.damage_flash_remaining_ms.saturating_sub(delta_ms);
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Embedded Controller (EC) / I2C Hardware Register Mapping
+// -----------------------------------------------------------------------------
+
+/// Hardware register addresses for Handheld Embedded Controller (EC) / I2C RGB LED Driver.
+pub mod ec_regs {
+    /// I2C 7-bit bus slave address for handheld LED microcontroller.
+    pub const EC_I2C_SLAVE_ADDR: u8 = 0x5A;
+    /// Hardware Chip Identification register (returns 0xA5).
+    pub const REG_CHIP_ID: u8 = 0x00;
+    /// Master power and configuration control register.
+    pub const REG_GLOBAL_CONFIG: u8 = 0x01;
+    /// Master brightness scaling register (0..255).
+    pub const REG_MASTER_BRIGHTNESS: u8 = 0x02;
+    /// Starting register address for per-zone RGB PWM channels.
+    pub const REG_ZONE_BASE: u8 = 0x10;
+    /// Number of bytes allocated per lighting zone in EC register space (R, G, B, flags).
+    pub const BYTES_PER_ZONE: usize = 4;
+    /// Hardware frame latch / commit command register.
+    pub const REG_COMMIT_LATCH: u8 = 0x30;
+    /// Hardware status and fault monitoring register.
+    pub const REG_STATUS: u8 = 0x31;
+
+    /// Command token to commit and latch pending PWM registers to physical LED pins.
+    pub const CMD_LATCH_UPDATE: u8 = 0x01;
+}
+
+/// Serializes a 6-zone RGB frame buffer into an EC I2C register transaction packet.
+///
+/// Output packet layout:
+/// - [0]: Target start register address (REG_ZONE_BASE: 0x10)
+/// - [1..24]: 6 zones * 4 bytes (Red PWM, Green PWM, Blue PWM, Zone flags)
+/// - [25]: Commit command register address (0x30)
+/// - [26]: Commit command byte (0x01)
+pub fn serialize_ec_frame(
+    frame: &[Rgb8; LED_ZONE_COUNT],
+    out_buf: &mut [u8],
+) -> usize {
+    if out_buf.len() < 27 {
+        return 0;
+    }
+
+    out_buf[0] = ec_regs::REG_ZONE_BASE;
+    let mut idx = 1;
+    for &color in frame {
+        out_buf[idx] = color.r;
+        out_buf[idx + 1] = color.g;
+        out_buf[idx + 2] = color.b;
+        out_buf[idx + 3] = 0x01; // Zone enabled flag
+        idx += ec_regs::BYTES_PER_ZONE;
+    }
+
+    out_buf[idx] = ec_regs::REG_COMMIT_LATCH;
+    out_buf[idx + 1] = ec_regs::CMD_LATCH_UPDATE;
+    idx + 2
+}
+
+/// Simulated Handheld Embedded Controller (EC) I2C peripheral for testing hardware register interactions.
+pub struct MockEcDevice {
+    /// 64-byte hardware register bank.
+    pub registers: [u8; 64],
+    /// Latched flag set when commit command is received.
+    pub latched_frame_count: u32,
+}
+
+impl MockEcDevice {
+    pub fn new() -> Self {
+        let mut dev = Self {
+            registers: [0u8; 64],
+            latched_frame_count: 0,
+        };
+        dev.registers[ec_regs::REG_CHIP_ID as usize] = 0xA5;
+        dev.registers[ec_regs::REG_GLOBAL_CONFIG as usize] = 0x01;
+        dev
+    }
+
+    /// Ingests a raw I2C burst write starting at `start_reg`.
+    pub fn write_i2c_burst(&mut self, start_reg: u8, data: &[u8]) {
+        let start = start_reg as usize;
+        for (i, &byte) in data.iter().enumerate() {
+            let addr = start + i;
+            if addr < self.registers.len() {
+                self.registers[addr] = byte;
+                if addr == ec_regs::REG_COMMIT_LATCH as usize && byte == ec_regs::CMD_LATCH_UPDATE {
+                    self.latched_frame_count += 1;
+                }
+            }
+        }
+    }
+
+    /// Reads duty cycle PWM values (R, G, B) for a specific zone from EC register memory.
+    pub fn get_zone_pwm(&self, zone: LedZone) -> (u8, u8, u8) {
+        let offset = ec_regs::REG_ZONE_BASE as usize + (zone as usize) * ec_regs::BYTES_PER_ZONE;
+        (self.registers[offset], self.registers[offset + 1], self.registers[offset + 2])
+    }
+}
+
+// -----------------------------------------------------------------------------
 // Unit Tests & Verification
 // -----------------------------------------------------------------------------
 
@@ -725,6 +946,90 @@ pub fn verify_effects_and_aura_sync() -> bool {
         return false;
     }
     if right_stick.r != 0 || right_stick.g < 200 || right_stick.b < 200 {
+        return false;
+    }
+
+    true
+}
+
+/// Unit test verifying game-state reactive lighting triggers and hardware EC/I2C register mapping.
+pub fn verify_game_state_reactive_and_ec_mapping() -> bool {
+    // 1. Verify Thermal Heat Gradient mapping
+    let cold_color = evaluate_thermal_heat_gradient(35.0);
+    if cold_color.b < 200 || cold_color.r > 20 {
+        return false;
+    }
+
+    let hot_color = evaluate_thermal_heat_gradient(90.0);
+    if hot_color.r != 255 || hot_color.b != 0 {
+        return false;
+    }
+
+    // 2. Verify Game-State Reactive Sync and Health Heartbeat
+    let mut sync = GameStateAuraSync::new();
+    let base_frame = [Rgb8::WHITE; LED_ZONE_COUNT];
+    let mut out_frame = [Rgb8::BLACK; LED_ZONE_COUNT];
+
+    // Low health: 15% -> Critical red heartbeat on stick rings
+    sync.update_telemetry(GameTelemetry {
+        health_percent: 15,
+        shield_percent: 0,
+        gpu_temp_celsius: 40.0,
+        fan_rpm: 3000,
+    });
+    sync.apply_reactive_overlay(&base_frame, 16, &mut out_frame);
+    let stick_red = out_frame[LedZone::LeftStickRing as usize];
+    if stick_red.r == 0 || stick_red.g != 0 || stick_red.b != 0 {
+        return false;
+    }
+
+    // 3. Verify Damage Flash Trigger & Temporal Decay
+    sync.trigger_damage_flash(1.0);
+    sync.apply_reactive_overlay(&base_frame, 0, &mut out_frame);
+    // Immediate frame: dominant flash
+    let flash_stick = out_frame[LedZone::ChassisLogo as usize];
+    if flash_stick.r < 200 {
+        return false;
+    }
+
+    // Step 250ms -> Damage flash decays to 0
+    sync.apply_reactive_overlay(&base_frame, 250, &mut out_frame);
+    let normal_logo = out_frame[LedZone::ChassisLogo as usize];
+    if normal_logo != Rgb8::WHITE {
+        return false;
+    }
+
+    // 4. Verify EC / I2C Register Serialization & Mock EC Device
+    let mut test_frame = [Rgb8::BLACK; LED_ZONE_COUNT];
+    test_frame[LedZone::LeftStickRing as usize] = Rgb8::new(200, 100, 50);
+    test_frame[LedZone::RightStickRing as usize] = Rgb8::new(0, 255, 128);
+
+    let mut packet = [0u8; 32];
+    let packet_len = serialize_ec_frame(&test_frame, &mut packet);
+    if packet_len != 27 {
+        return false;
+    }
+    if packet[0] != ec_regs::REG_ZONE_BASE {
+        return false;
+    }
+
+    // Ingest into Mock EC
+    let mut mock_ec = MockEcDevice::new();
+    mock_ec.write_i2c_burst(packet[0], &packet[1..packet_len]);
+
+    // Check that Mock EC latched the frame
+    if mock_ec.latched_frame_count != 1 {
+        return false;
+    }
+
+    // Check written zone PWMs in Mock EC register memory
+    let (r_left, g_left, b_left) = mock_ec.get_zone_pwm(LedZone::LeftStickRing);
+    if r_left != 200 || g_left != 100 || b_left != 50 {
+        return false;
+    }
+
+    let (r_right, g_right, b_right) = mock_ec.get_zone_pwm(LedZone::RightStickRing);
+    if r_right != 0 || g_right != 255 || b_right != 128 {
         return false;
     }
 
