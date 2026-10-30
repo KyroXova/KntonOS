@@ -469,3 +469,133 @@ pub fn test_demand_paging_engine() -> bool {
         true
     }
 }
+
+
+/// Comprehensive Demand Paging & Copy-on-Write (COW) verification suite emitting [KNT-MEM-COW-PASS].
+pub fn test_cow_and_demand_paging() -> bool {
+    crate::serial_write_str("[KNT-MEM-TEST] Executing Demand Paging & COW Fork verification...\r\n");
+
+    // 1. Verify VMA structures and x86-64 page fault error code decoder
+    if !test_vma_and_error_codes() {
+        crate::serial_write_str("[KNT-PANIC] VMA descriptors or page fault error code decoder failed!\r\n");
+        return false;
+    }
+
+    // 2. Verify COW bitfield definitions
+    if !super::cow::test_cow_bitfields() {
+        crate::serial_write_str("[KNT-PANIC] Copy-on-Write PTE bitfield definitions failed!\r\n");
+        return false;
+    }
+
+    // 3. Verify Demand Paging allocation engine and zero-page fault resolution
+    if !test_demand_paging_engine() {
+        crate::serial_write_str("[KNT-PANIC] Demand paging allocation engine check failed!\r\n");
+        return false;
+    }
+
+    // 4. Verify COW address space cloning and physical frame reference counter
+    if !super::cow::test_cow_fork_and_reference_counter() {
+        crate::serial_write_str("[KNT-PANIC] COW address space fork & refcounter check failed!\r\n");
+        return false;
+    }
+
+    // 5. Multi-page, multi-process memory isolation and demand zeroing verification
+    unsafe {
+        static mut PARENT_PML4: PageTable = PageTable::new();
+        static mut CHILD_PML4: PageTable = PageTable::new();
+        let parent_ptr = core::ptr::addr_of_mut!(PARENT_PML4);
+        let child_ptr = core::ptr::addr_of_mut!(CHILD_PML4);
+        (*parent_ptr).zero();
+        (*child_ptr).zero();
+
+        let mut parent = AddressSpace::new(parent_ptr);
+        let mut pmm = super::PMM.lock();
+
+        let vma = VmArea::new(
+            VirtAddr::new(0x0000_7500_0000_0000),
+            VirtAddr::new(0x0000_7500_0003_0000), // 3 pages: 0x0000, 0x1000, 0x2000
+            VmFlags::VM_READ | VmFlags::VM_WRITE | VmFlags::VM_ANONYMOUS | VmFlags::VM_USER,
+        );
+        assert!(parent.add_vma(vma));
+
+        let page0 = VirtAddr::new(0x0000_7500_0000_0000);
+        let page1 = VirtAddr::new(0x0000_7500_0000_1000);
+        let page2 = VirtAddr::new(0x0000_7500_0000_2000);
+
+        let demand_code = PageFaultErrorCode::new(PageFaultErrorCode::WRITE | PageFaultErrorCode::USER);
+        let cow_code = PageFaultErrorCode::new(PageFaultErrorCode::PRESENT | PageFaultErrorCode::WRITE | PageFaultErrorCode::USER);
+
+        // Demand allocate page 0 and page 2 in parent
+        let res0 = handle_page_fault(&mut parent, page0, demand_code, &mut *pmm).expect("Demand page0 failed");
+        let res2 = handle_page_fault(&mut parent, page2, demand_code, &mut *pmm).expect("Demand page2 failed");
+
+        let phys0 = match res0 { PageFaultResolution::ResolvedDemandPage { phys, .. } => phys, _ => panic!() };
+        let phys2 = match res2 { PageFaultResolution::ResolvedDemandPage { phys, .. } => phys, _ => panic!() };
+
+        // Write pattern data
+        let slice0 = core::slice::from_raw_parts_mut(phys0.0 as *mut u32, PAGE_SIZE / 4);
+        slice0[0] = 0x11223344;
+
+        let slice2 = core::slice::from_raw_parts_mut(phys2.0 as *mut u32, PAGE_SIZE / 4);
+        slice2[0] = 0x55667788;
+
+        super::cow::FRAME_REF_COUNTER.lock().set_ref(phys0, 1);
+        super::cow::FRAME_REF_COUNTER.lock().set_ref(phys2, 1);
+
+        // Fork into child
+        let mut child = super::cow::fork_address_space(&mut parent, child_ptr, &mut *pmm).expect("Fork failed");
+
+        // Both pages must be COW in parent and child
+        assert_eq!(super::cow::FRAME_REF_COUNTER.lock().get_ref(phys0), 2);
+        assert_eq!(super::cow::FRAME_REF_COUNTER.lock().get_ref(phys2), 2);
+
+        // Child writes to page 0 -> triggers COW
+        let child_cow0 = handle_page_fault(&mut child, page0, cow_code, &mut *pmm).expect("Child COW page0 failed");
+        let child_phys0 = match child_cow0 { PageFaultResolution::ResolvedCow { new_phys, .. } => new_phys, _ => panic!() };
+        assert_ne!(child_phys0, phys0);
+
+        let child_slice0 = core::slice::from_raw_parts_mut(child_phys0.0 as *mut u32, PAGE_SIZE / 4);
+        assert_eq!(child_slice0[0], 0x11223344);
+        child_slice0[0] = 0x99AABBCC;
+
+        // Verify parent memory isolation
+        let parent_slice0 = core::slice::from_raw_parts(phys0.0 as *const u32, PAGE_SIZE / 4);
+        assert_eq!(parent_slice0[0], 0x11223344, "Parent memory must remain isolated");
+
+        // Child writes to page 1 (unmapped in both) -> triggers Demand Allocation
+        let child_demand1 = handle_page_fault(&mut child, page1, demand_code, &mut *pmm).expect("Child demand page1 failed");
+        let child_phys1 = match child_demand1 { PageFaultResolution::ResolvedDemandPage { phys, .. } => phys, _ => panic!() };
+
+        let child_slice1 = core::slice::from_raw_parts_mut(child_phys1.0 as *mut u32, PAGE_SIZE / 4);
+        assert_eq!(child_slice1[0], 0, "Demand allocated page must be zeroed");
+        child_slice1[0] = 0xDEADBEEF;
+
+        // Verify page 1 is STILL unmapped in parent
+        assert!(parent.page_table_manager().get_pte(page1).is_none(), "Parent page 1 must remain unmapped");
+
+        // Parent writes to page 2 (shared with child) -> Parent gets new frame
+        let parent_cow2 = handle_page_fault(&mut parent, page2, cow_code, &mut *pmm).expect("Parent COW page2 failed");
+        let parent_phys2 = match parent_cow2 { PageFaultResolution::ResolvedCow { new_phys, .. } => new_phys, _ => panic!() };
+        assert_ne!(parent_phys2, phys2);
+
+        let parent_slice2 = core::slice::from_raw_parts_mut(parent_phys2.0 as *mut u32, PAGE_SIZE / 4);
+        assert_eq!(parent_slice2[0], 0x55667788);
+        parent_slice2[0] = 0xCAFEBABE;
+
+        // Now child is sole owner of original phys2
+        assert_eq!(super::cow::FRAME_REF_COUNTER.lock().get_ref(phys2), 1);
+
+        // Child writes to page 2 -> must be unshared in-place
+        let child_cow2 = handle_page_fault(&mut child, page2, cow_code, &mut *pmm).expect("Child in-place COW page2 failed");
+        match child_cow2 {
+            PageFaultResolution::ResolvedCow { new_phys, .. } => assert_eq!(new_phys, phys2),
+            _ => panic!("Expected in-place unshare"),
+        }
+
+        let child_slice2 = core::slice::from_raw_parts(phys2.0 as *const u32, PAGE_SIZE / 4);
+        assert_eq!(child_slice2[0], 0x55667788, "Child must preserve original page 2 content");
+    }
+
+    crate::serial_write_str("[KNT-MEM-COW-PASS] Demand paging, COW fork engine, and page fault recovery verified\r\n");
+    true
+}

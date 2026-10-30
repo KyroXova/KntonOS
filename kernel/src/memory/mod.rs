@@ -17,7 +17,7 @@ pub use pmm::{BitmapFrameAllocator, FrameAllocator, PhysAddr, PhysFrame, PAGE_SI
 pub use spinlock::Spinlock;
 pub use vmm::{PageTable, PageTableEntry, PageTableFlags, PageTableManager, VirtAddr, VmmError};
 pub use demand_paging::{
-    handle_page_fault, test_demand_paging_engine, test_vma_and_error_codes, AddressSpace,
+    handle_page_fault, test_cow_and_demand_paging, test_demand_paging_engine, test_vma_and_error_codes, AddressSpace,
     PageFaultErrorCode, PageFaultResolution, VmArea, VmFlags,
 };
 pub use cow::{
