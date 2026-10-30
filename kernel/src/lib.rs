@@ -397,6 +397,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Unix domain sockets self-test failed!\r\n");
     }
 
+    // Verify Low-Latency In-Game Bluetooth LE Gamepad & Wireless Headset Audio Streamer (TASK-KNT-106)
+    if !net::test_wireless_ble_subsystem() {
+        serial_write_str("[KNT-PANIC] Wireless BLE gamepad and audio streaming self-test failed!\r\n");
+    }
+
     // Initialize Desktop Shell Compositor & Window Manager
     compositor::init(320, 240);
     if !compositor::test_compositor_subsystem() {

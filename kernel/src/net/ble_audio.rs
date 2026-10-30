@@ -1217,6 +1217,198 @@ impl BleHogGamepadProcessor {
     }
 }
 
+
+// =============================================================================
+// 6. Subsystem Verification Suite & Boot Sentinel
+// =============================================================================
+
+/// Verification self-test suite for Low-Latency BLE Gamepad & Wireless Headset Audio Streamer (TASK-KNT-106).
+pub fn test_wireless_ble_subsystem() -> bool {
+    crate::serial_write_str("[KNT-WIRELESS-BLE-TEST] Running Low-Latency BLE Gamepad & Wireless Headset Audio Streamer verification suite...\r\n");
+
+    // 1. HCI transport packet layer verification
+    let cmd = HciCommandPacket::new(HCI_OPCODE_LE_SET_CIG_PARAMETERS, alloc::vec![0x01, 0x00, 0x06, 0x00]);
+    let cmd_raw = cmd.serialize();
+    let parsed_cmd = match HciCommandPacket::parse(&cmd_raw) {
+        Some(c) => c,
+        None => return false,
+    };
+    if parsed_cmd.opcode != HCI_OPCODE_LE_SET_CIG_PARAMETERS {
+        return false;
+    }
+
+    let evt = HciEventPacket::new(HCI_EVT_LE_META, alloc::vec![HCI_LE_SUBEVT_CIS_ESTABLISHED, 0x00, 0x10]);
+    let evt_raw = evt.serialize();
+    let parsed_evt = match HciEventPacket::parse(&evt_raw) {
+        Some(e) => e,
+        None => return false,
+    };
+    if !parsed_evt.is_le_meta() || parsed_evt.subevent_code() != Some(HCI_LE_SUBEVT_CIS_ESTABLISHED) {
+        return false;
+    }
+
+    let iso_packet = HciIsoDataPacket::new(0x0042, IsoPacketBoundary::CompleteSdu, 1, Some(100_000), alloc::vec![0x11, 0x22, 0x33, 0x44]);
+    let iso_raw = iso_packet.serialize();
+    let parsed_iso = match HciIsoDataPacket::parse(&iso_raw) {
+        Some(p) => p,
+        None => return false,
+    };
+    if parsed_iso.connection_handle != 0x0042 || parsed_iso.packet_seq_num != 1 || parsed_iso.timestamp_us != Some(100_000) {
+        return false;
+    }
+    crate::serial_write_str("  * HCI transport packet framing and serialization verified\r\n");
+
+    // 2. L2CAP protocol channel multiplexer and dynamic MTU negotiation
+    let mut mux = L2capMultiplexer::new();
+    let negotiated_mtu = mux.negotiate_mtu(247);
+    if negotiated_mtu != 247 || mux.att_mtu != 247 {
+        return false;
+    }
+
+    let params = BleConnectionParams::gaming_low_latency_7_5ms();
+    if !params.is_sub_8ms() {
+        return false;
+    }
+    let sig_pdu = mux.create_conn_param_update_req(1, &params);
+    let sig_raw = sig_pdu.serialize();
+    let parsed_sig = match L2capPdu::parse(&sig_raw) {
+        Some(p) => p,
+        None => return false,
+    };
+    if mux.route_incoming_pdu(parsed_sig).is_err() || mux.rx_signaling_queue.len() != 1 {
+        return false;
+    }
+
+    let att_pdu = L2capPdu::new(L2CAP_CID_ATT, alloc::vec![0x01, 0x02, 0x03, 0x04]);
+    if mux.route_incoming_pdu(att_pdu).is_err() || mux.rx_att_queue.len() != 1 {
+        return false;
+    }
+    crate::serial_write_str("  * L2CAP protocol channel multiplexer and dynamic MTU negotiation verified\r\n");
+
+    // 3. Connected Isochronous Stream (CIS) scheduler and 7.5ms/10ms LC3 audio streaming
+    let cis_config = CisStreamConfig::gaming_headset_7_5ms(0x0055);
+    let mut scheduler = CisAudioScheduler::new(cis_config, 1_000_000);
+    scheduler.start_streaming();
+
+    for i in 0..4 {
+        let frame = Lc3Frame::new(
+            Lc3FrameDuration::Duration7_5ms,
+            Lc3SampleRate::Rate48kHz,
+            AudioChannelConfig::Stereo,
+            alloc::vec![0x40 + (i as u8); 100],
+        );
+        if scheduler.enqueue_lc3_frame(frame, 1_000_000 + (i as u64 * 7500)).is_err() {
+            return false;
+        }
+    }
+    if scheduler.tx_iso_queue.len() != 4 {
+        return false;
+    }
+
+    let burst = match scheduler.poll_next_burst(1_000_000) {
+        Some(b) => b,
+        None => return false,
+    };
+    if burst.packet_seq_num != 0 || burst.sdu_len != 100 {
+        return false;
+    }
+    scheduler.advance_anchor_point();
+
+    // Verify PLC
+    let prev_audio = [500i16; 16];
+    let mut concealed_audio = [0i16; 16];
+    CisAudioScheduler::plc_conceal_frame(&prev_audio, &mut concealed_audio);
+    if concealed_audio[0] >= 500 || concealed_audio[15] >= concealed_audio[0] {
+        return false;
+    }
+    crate::serial_write_str("  * Connected Isochronous Stream (CIS) scheduler and 7.5ms/10ms LC3 audio streaming verified\r\n");
+
+    // 4. HID over GATT (HoG) gamepad input processor and adaptive jitter buffer
+    let mut hog = BleHogGamepadProcessor::new();
+    let slow_profile = BleConnectionParams {
+        min_interval: 16,
+        max_interval: 16,
+        latency: 0,
+        timeout: 50,
+    };
+    let enforced = match hog.enforce_sub_8ms_profile(slow_profile) {
+        Some(p) => p,
+        None => return false,
+    };
+    if !enforced.is_sub_8ms() {
+        return false;
+    }
+
+    let mut raw_hid = [0u8; 12];
+    let lx_bytes = 20000i16.to_le_bytes();
+    raw_hid[0] = lx_bytes[0];
+    raw_hid[1] = lx_bytes[1];
+    raw_hid[8] = 200; // Left trigger
+    raw_hid[9] = 255; // Right trigger
+    let buttons = (BLE_BTN_A | BLE_BTN_X | BLE_BTN_START) as u16;
+    let btn_bytes = buttons.to_le_bytes();
+    raw_hid[10] = btn_bytes[0];
+    raw_hid[11] = btn_bytes[1];
+
+    let state = match hog.parse_input_report(&raw_hid, 2_000_000) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    if state.left_stick_x <= 0.5 || !state.is_button_pressed(BLE_BTN_A) || !state.is_button_pressed(BLE_BTN_START) {
+        return false;
+    }
+
+    let popped = match hog.jitter_buffer.pop_sample() {
+        Some(s) => s,
+        None => return false,
+    };
+    if popped.sequence != 1 {
+        return false;
+    }
+    crate::serial_write_str("  * HID over GATT (HoG) gamepad input processor and adaptive jitter buffer verified\r\n");
+
+    // 5. End-to-end simultaneous wireless gamepad and LE Audio streaming
+    let mut concurrent_scheduler = CisAudioScheduler::new(CisStreamConfig::gaming_headset_10ms(0x0088), 3_000_000);
+    concurrent_scheduler.start_streaming();
+    let mut concurrent_hog = BleHogGamepadProcessor::new();
+
+    let audio_payload = alloc::vec![0xAA; 155];
+    let audio_frame = Lc3Frame::new(
+        Lc3FrameDuration::Duration10ms,
+        Lc3SampleRate::Rate48kHz,
+        AudioChannelConfig::Stereo,
+        audio_payload,
+    );
+    if concurrent_scheduler.enqueue_lc3_frame(audio_frame, 3_000_000).is_err() {
+        return false;
+    }
+
+    let mut pad_report = [0u8; 12];
+    pad_report[8] = 128;
+    let dpad_bytes = (BLE_BTN_DPAD_UP as u16).to_le_bytes();
+    pad_report[10] = dpad_bytes[0];
+    pad_report[11] = dpad_bytes[1];
+    if concurrent_hog.parse_input_report(&pad_report, 3_000_000).is_err() {
+        return false;
+    }
+
+    let iso_out = match concurrent_scheduler.poll_next_burst(3_000_000) {
+        Some(p) => p,
+        None => return false,
+    };
+    let pad_out = match concurrent_hog.jitter_buffer.pop_sample() {
+        Some(s) => s,
+        None => return false,
+    };
+    if iso_out.sdu_len != 155 || !pad_out.is_button_pressed(BLE_BTN_DPAD_UP) {
+        return false;
+    }
+    crate::serial_write_str("  * End-to-end simultaneous wireless gamepad and LE Audio streaming verified\r\n");
+
+    crate::serial_write_str("[KNT-WIRELESS-BLE-PASS] Low-latency BLE gamepad and wireless headset audio streamer operational\r\n");
+    true
+}
+
 // -----------------------------------------------------------------------------
 // Unit Tests for Commit 1
 // -----------------------------------------------------------------------------
