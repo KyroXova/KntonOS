@@ -541,4 +541,236 @@ impl SparseVirtualTexture {
     pub const fn total_virtual_tiles(&self) -> usize {
         self.mapping_table.total_virtual_tiles
     }
+
+    /// Transparently remaps any virtual references pointing to `old_physical_id`
+    /// to point to `new_physical_id`.
+    ///
+    /// Returns the number of virtual tile entries updated.
+    pub fn remap_physical_tile(&mut self, old_physical_id: u32, new_physical_id: u32) -> usize {
+        let mut count = 0;
+        for entry in self.mapping_table.mappings.iter_mut() {
+            match entry {
+                TileResidencyState::Resident { physical_tile_id } if *physical_tile_id == old_physical_id => {
+                    *physical_tile_id = new_physical_id;
+                    count += 1;
+                }
+                TileResidencyState::Aliased { physical_tile_id } if *physical_tile_id == old_physical_id => {
+                    *physical_tile_id = new_physical_id;
+                    count += 1;
+                }
+                _ => {}
+            }
+        }
+        count
+    }
 }
+
+// -----------------------------------------------------------------------------
+// Tile Pool Dynamic Memory Compactor & Physical Page Relocation
+// -----------------------------------------------------------------------------
+
+/// Report on fragmentation and contiguous allocation headroom in the physical tile pool.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TilePoolFragmentationReport {
+    /// Total 64KB physical tile capacity.
+    pub total_tiles: usize,
+    /// Number of allocated physical tiles.
+    pub allocated_tiles: usize,
+    /// Number of free physical tiles.
+    pub free_tiles: usize,
+    /// Number of free slots that precede allocated slots (compaction candidates / holes).
+    pub hole_count: usize,
+    /// Size of the largest contiguous sequence of free 64KB tiles.
+    pub max_contiguous_free: usize,
+    /// Fragmentation ratio in `[0.0, 1.0]`. 0.0 indicates perfect contiguous allocation.
+    pub fragmentation_index: f32,
+}
+
+/// Audit log record for a relocated physical 64KB tile during compaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TileRelocationRecord {
+    /// Original physical tile index before compaction.
+    pub src_physical_tile_id: u32,
+    /// New compact physical tile index after relocation.
+    pub dst_physical_tile_id: u32,
+    /// Owner texture ID.
+    pub owner_texture_id: u32,
+    /// Virtual coordinate in the owning sparse virtual texture.
+    pub virtual_coord: TileCoordinate,
+    /// Number of virtual references that aliased this physical tile.
+    pub reference_count: u32,
+}
+
+/// Detailed outcome of a dynamic compaction sweep.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompactionResult {
+    /// Number of 64KB physical tiles relocated to lower indices.
+    pub tiles_relocated: usize,
+    /// Total bytes of GPU memory payload relocated.
+    pub bytes_relocated: usize,
+    /// Number of fragmentation holes before compaction.
+    pub initial_holes: usize,
+    /// Number of remaining fragmentation holes after compaction (0 unless pinned tiles blocked movement).
+    pub remaining_holes: usize,
+    /// Largest contiguous run of free physical tiles after compaction.
+    pub max_contiguous_free_after: usize,
+    /// List of physical tile relocations performed.
+    pub relocations: Vec<TileRelocationRecord>,
+}
+
+/// Direct3D 12 Tile Pool Dynamic Memory Compactor.
+///
+/// Implements two-pointer zero-fragmentation compaction:
+/// Relocates allocated 64KB physical tiles from high addresses into low unallocated holes,
+/// transparently remapping all virtual texture page tables without coordinate disruption.
+pub struct TilePoolCompactor;
+
+impl TilePoolCompactor {
+    /// Analyzes the physical tile pool to calculate fragmentation and contiguous run statistics.
+    pub fn analyze_fragmentation(pool: &PhysicalTilePool) -> TilePoolFragmentationReport {
+        let total_tiles = pool.capacity;
+        let allocated_tiles = pool.allocated_count;
+        let free_tiles = pool.free_tile_count();
+
+        if total_tiles == 0 || allocated_tiles == 0 || free_tiles == 0 {
+            return TilePoolFragmentationReport {
+                total_tiles,
+                allocated_tiles,
+                free_tiles,
+                hole_count: 0,
+                max_contiguous_free: free_tiles,
+                fragmentation_index: 0.0,
+            };
+        }
+
+        // Find the index of the last allocated physical tile
+        let mut last_allocated_idx = None;
+        for (i, tile) in pool.tiles.iter().enumerate().rev() {
+            if tile.is_allocated {
+                last_allocated_idx = Some(i);
+                break;
+            }
+        }
+
+        let hole_count = match last_allocated_idx {
+            Some(last_idx) => pool.tiles[..last_idx]
+                .iter()
+                .filter(|t| !t.is_allocated)
+                .count(),
+            None => 0,
+        };
+
+        // Compute maximum contiguous free run
+        let mut max_contiguous_free = 0;
+        let mut current_free_run = 0;
+        for tile in pool.tiles.iter() {
+            if !tile.is_allocated {
+                current_free_run += 1;
+                if current_free_run > max_contiguous_free {
+                    max_contiguous_free = current_free_run;
+                }
+            } else {
+                current_free_run = 0;
+            }
+        }
+
+        let fragmentation_index = if free_tiles > 0 {
+            (hole_count as f32) / (free_tiles as f32)
+        } else {
+            0.0
+        };
+
+        TilePoolFragmentationReport {
+            total_tiles,
+            allocated_tiles,
+            free_tiles,
+            hole_count,
+            max_contiguous_free,
+            fragmentation_index,
+        }
+    }
+
+    /// Performs dynamic memory compaction on the physical tile pool, updating all
+    /// sparse virtual textures' residency page tables transparently.
+    pub fn compact(
+        pool: &mut PhysicalTilePool,
+        textures: &mut [SparseVirtualTexture],
+    ) -> CompactionResult {
+        let initial_report = Self::analyze_fragmentation(pool);
+        let mut relocations = Vec::new();
+
+        if initial_report.hole_count == 0 {
+            return CompactionResult {
+                tiles_relocated: 0,
+                bytes_relocated: 0,
+                initial_holes: 0,
+                remaining_holes: 0,
+                max_contiguous_free_after: initial_report.max_contiguous_free,
+                relocations,
+            };
+        }
+
+        let mut free_cursor = 0;
+        let mut alloc_cursor = pool.capacity.saturating_sub(1);
+
+        while free_cursor < alloc_cursor {
+            // Advance free_cursor to next unallocated slot
+            while free_cursor < alloc_cursor && pool.tiles[free_cursor].is_allocated {
+                free_cursor += 1;
+            }
+
+            // Move alloc_cursor backward to next allocated slot
+            while alloc_cursor > free_cursor && !pool.tiles[alloc_cursor].is_allocated {
+                alloc_cursor -= 1;
+            }
+
+            if free_cursor >= alloc_cursor {
+                break;
+            }
+
+            // Pinned tiles cannot be relocated; skip and keep searching downward
+            if pool.tiles[alloc_cursor].is_pinned {
+                alloc_cursor -= 1;
+                continue;
+            }
+
+            let src_id = alloc_cursor as u32;
+            let dst_id = free_cursor as u32;
+
+            // Move physical descriptor
+            let mut desc = pool.tiles[alloc_cursor];
+            desc.physical_tile_id = dst_id;
+            pool.tiles[free_cursor] = desc;
+            pool.tiles[alloc_cursor] = PhysicalTileDescriptor::empty(src_id);
+
+            // Transparently update all referencing sparse virtual texture page tables
+            let mut total_remapped = 0;
+            for tex in textures.iter_mut() {
+                total_remapped += tex.remap_physical_tile(src_id, dst_id);
+            }
+
+            relocations.push(TileRelocationRecord {
+                src_physical_tile_id: src_id,
+                dst_physical_tile_id: dst_id,
+                owner_texture_id: desc.owner_texture_id,
+                virtual_coord: desc.virtual_coord,
+                reference_count: total_remapped as u32,
+            });
+
+            free_cursor += 1;
+            alloc_cursor -= 1;
+        }
+
+        let post_report = Self::analyze_fragmentation(pool);
+
+        CompactionResult {
+            tiles_relocated: relocations.len(),
+            bytes_relocated: relocations.len() * D3D12_TILED_RESOURCE_TILE_SIZE_IN_BYTES,
+            initial_holes: initial_report.hole_count,
+            remaining_holes: post_report.hole_count,
+            max_contiguous_free_after: post_report.max_contiguous_free,
+            relocations,
+        }
+    }
+}
+
