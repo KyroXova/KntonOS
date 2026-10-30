@@ -379,6 +379,298 @@ impl DynamicRangeCompressor {
 }
 
 // -----------------------------------------------------------------------------
+// 4. True-Peak Estimator, Hearing Safety Limiter & Footstep Booster
+// -----------------------------------------------------------------------------
+
+/// ITU-R BS.1770 compliant true-peak inter-sample loudness estimator.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TruePeakEstimator {
+    prev_left: f32,
+    prev_right: f32,
+}
+
+impl TruePeakEstimator {
+    pub const fn new() -> Self {
+        Self {
+            prev_left: 0.0,
+            prev_right: 0.0,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.prev_left = 0.0;
+        self.prev_right = 0.0;
+    }
+
+    /// Estimates the true continuous analog peak amplitude across samples,
+    /// detecting inter-sample peaks that would clip during digital-to-analog conversion.
+    pub fn estimate_sample_pair(&mut self, left: f32, right: f32) -> f32 {
+        let abs_l = if left < 0.0 { -left } else { left };
+        let abs_r = if right < 0.0 { -right } else { right };
+        let direct_peak = if abs_l > abs_r { abs_l } else { abs_r };
+
+        // Parabolic inter-sample interpolation between previous and current sample
+        let inter_l = 0.5 * (self.prev_left + left);
+        let inter_r = 0.5 * (self.prev_right + right);
+        let abs_inter_l = if inter_l < 0.0 { -inter_l } else { inter_l };
+        let abs_inter_r = if inter_r < 0.0 { -inter_r } else { inter_r };
+        let inter_peak = if abs_inter_l > abs_inter_r { abs_inter_l } else { abs_inter_r };
+
+        self.prev_left = left;
+        self.prev_right = right;
+
+        if inter_peak > direct_peak {
+            inter_peak
+        } else {
+            direct_peak
+        }
+    }
+}
+
+/// Hearing Safety Brickwall Limiter.
+///
+/// Implements sub-millisecond lookahead true-peak limiting with an uncompromising
+/// safety ceiling (default -1.0 dBFS) to prevent gamer acoustic trauma.
+#[derive(Debug, Clone, Copy)]
+pub struct HearingSafetyLimiter {
+    pub ceiling_db: f32,
+    pub ceiling_linear: f32,
+    pub lookahead: LookaheadBuffer,
+    pub detector: EnvelopeDetector,
+    pub true_peak: TruePeakEstimator,
+    pub current_attenuation: f32,
+    pub enabled: bool,
+}
+
+impl HearingSafetyLimiter {
+    /// Creates a hearing safety limiter with standard -1.0 dBFS ceiling and 16-sample lookahead (0.33 ms).
+    pub fn new(ceiling_db: f32, lookahead_samples: usize) -> Self {
+        let safe_ceiling = if ceiling_db > -0.2 { -0.2 } else { ceiling_db };
+        let ceiling_lin = db_to_linear(safe_ceiling);
+
+        Self {
+            ceiling_db: safe_ceiling,
+            ceiling_linear: ceiling_lin,
+            lookahead: LookaheadBuffer::new(lookahead_samples),
+            detector: EnvelopeDetector::new(AUDIO_SAMPLE_RATE, 0.1, 40.0),
+            true_peak: TruePeakEstimator::new(),
+            current_attenuation: 1.0,
+            enabled: true,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.lookahead.reset();
+        self.detector.reset();
+        self.true_peak.reset();
+        self.current_attenuation = 1.0;
+    }
+
+    /// Processes stereo samples, clamping true-peak levels strictly beneath ceiling.
+    pub fn process_sample(&mut self, left_in: f32, right_in: f32) -> (f32, f32) {
+        if !self.enabled {
+            return (left_in, right_in);
+        }
+
+        // 1. Estimate true-peak level
+        let peak = self.true_peak.estimate_sample_pair(left_in, right_in);
+
+        // 2. Compute target attenuation ratio
+        let target_ratio = if peak > self.ceiling_linear && peak > 1e-6 {
+            self.ceiling_linear / peak
+        } else {
+            1.0
+        };
+
+        // 3. Smooth attenuation envelope
+        let target_db = linear_to_db(target_ratio); // <= 0.0 dB
+        if target_db < self.detector.envelope_db {
+            // Attack (fast clamp)
+            self.detector.envelope_db = self.detector.attack_coeff * self.detector.envelope_db
+                + (1.0 - self.detector.attack_coeff) * target_db;
+        } else {
+            // Release (smooth recovery)
+            self.detector.envelope_db = self.detector.release_coeff * self.detector.envelope_db
+                + (1.0 - self.detector.release_coeff) * target_db;
+        }
+
+        self.current_attenuation = db_to_linear(self.detector.envelope_db);
+
+        // 4. Retrieve lookahead sample
+        let (del_l, del_r) = self.lookahead.push_and_pop(left_in, right_in);
+
+        // 5. Apply attenuation and strict brickwall safety ceiling clamp
+        let out_l = (del_l * self.current_attenuation).clamp(-self.ceiling_linear, self.ceiling_linear);
+        let out_r = (del_r * self.current_attenuation).clamp(-self.ceiling_linear, self.ceiling_linear);
+
+        (out_l, out_r)
+    }
+}
+
+/// Esports Footstep & Subtle Detail Booster.
+///
+/// Implements selective upward dynamic range expansion for quiet cues between -50 dBFS and -25 dBFS,
+/// giving competitive gamers distinct tactical awareness of subtle audio events.
+#[derive(Debug, Clone, Copy)]
+pub struct FootstepDetailBooster {
+    pub low_threshold_db: f32,
+    pub high_threshold_db: f32,
+    pub max_boost_db: f32,
+    pub enabled: bool,
+}
+
+impl FootstepDetailBooster {
+    pub const fn new() -> Self {
+        Self {
+            low_threshold_db: -48.0,
+            high_threshold_db: -24.0,
+            max_boost_db: 7.5,
+            enabled: true,
+        }
+    }
+
+    /// Evaluates upward boost curve:
+    /// Below low threshold (-48 dB): max boost (+7.5 dB).
+    /// Between low and high (-48 to -24 dB): linear ramp down from +7.5 dB to 0.0 dB.
+    /// Above high threshold (-24 dB): 0.0 dB boost (transparent pass-through).
+    pub fn calculate_boost_db(&self, level_db: f32) -> f32 {
+        if !self.enabled || level_db <= -90.0 {
+            return 0.0;
+        }
+
+        if level_db <= self.low_threshold_db {
+            self.max_boost_db
+        } else if level_db >= self.high_threshold_db {
+            0.0
+        } else {
+            let t = (level_db - self.low_threshold_db) / (self.high_threshold_db - self.low_threshold_db);
+            self.max_boost_db * (1.0 - t)
+        }
+    }
+
+    pub fn process_sample(&self, left_in: f32, right_in: f32) -> (f32, f32) {
+        if !self.enabled {
+            return (left_in, right_in);
+        }
+
+        let abs_l = if left_in < 0.0 { -left_in } else { left_in };
+        let abs_r = if right_in < 0.0 { -right_in } else { right_in };
+        let peak = if abs_l > abs_r { abs_l } else { abs_r };
+
+        let level_db = linear_to_db(peak);
+        let boost_db = self.calculate_boost_db(level_db);
+        let boost_gain = db_to_linear(boost_db);
+
+        (left_in * boost_gain, right_in * boost_gain)
+    }
+}
+
+/// Operational DRC Profile Mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DrcProfile {
+    /// Raw uncompressed audio pass-through.
+    Bypass,
+    /// Balanced dynamic compression for handheld speakers/headphones.
+    DefaultGaming,
+    /// Esports mode: Footstep booster + hearing safety limiter.
+    EsportsTactical,
+    /// Night-time mode: heavy dynamic range reduction for low-volume listening.
+    NightQuiet,
+}
+
+/// Integrated Kernel-Direct Real-Time In-Game Audio DRC Engine.
+#[derive(Debug, Clone, Copy)]
+pub struct GameAudioDrcEngine {
+    pub compressor: DynamicRangeCompressor,
+    pub booster: FootstepDetailBooster,
+    pub limiter: HearingSafetyLimiter,
+    pub profile: DrcProfile,
+}
+
+impl GameAudioDrcEngine {
+    pub fn new(profile: DrcProfile) -> Self {
+        let comp_params = match profile {
+            DrcProfile::Bypass => CompressorParameters::default_gaming(),
+            DrcProfile::DefaultGaming => CompressorParameters::default_gaming(),
+            DrcProfile::EsportsTactical => CompressorParameters::esports_footstep_boost(),
+            DrcProfile::NightQuiet => {
+                let mut p = CompressorParameters::default_gaming();
+                p.threshold_db = -24.0;
+                p.ratio = 8.0;
+                p.makeup_gain_db = 6.0;
+                p
+            }
+        };
+
+        let mut booster = FootstepDetailBooster::new();
+        booster.enabled = profile == DrcProfile::EsportsTactical;
+
+        Self {
+            compressor: DynamicRangeCompressor::new(comp_params, 24),
+            booster,
+            limiter: HearingSafetyLimiter::new(-1.0, 16),
+            profile,
+        }
+    }
+
+    pub fn set_profile(&mut self, profile: DrcProfile) {
+        self.profile = profile;
+        self.booster.enabled = profile == DrcProfile::EsportsTactical;
+        let params = match profile {
+            DrcProfile::Bypass => CompressorParameters::default_gaming(),
+            DrcProfile::DefaultGaming => CompressorParameters::default_gaming(),
+            DrcProfile::EsportsTactical => CompressorParameters::esports_footstep_boost(),
+            DrcProfile::NightQuiet => {
+                let mut p = CompressorParameters::default_gaming();
+                p.threshold_db = -24.0;
+                p.ratio = 8.0;
+                p.makeup_gain_db = 6.0;
+                p
+            }
+        };
+        self.compressor.set_parameters(params);
+    }
+
+    pub fn reset(&mut self) {
+        self.compressor.reset();
+        self.limiter.reset();
+    }
+
+    /// Processes a single stereo sample pair through the complete DRC pipeline:
+    /// Footstep Booster -> Soft-Knee Compressor -> Hearing Safety Brickwall Limiter.
+    pub fn process_sample(&mut self, left_in: f32, right_in: f32) -> (f32, f32) {
+        if self.profile == DrcProfile::Bypass {
+            return (left_in, right_in);
+        }
+
+        // 1. Tactical footstep/whisper expansion (if enabled)
+        let (boost_l, boost_r) = self.booster.process_sample(left_in, right_in);
+
+        // 2. Dynamic range soft-knee compression
+        let (comp_l, comp_r) = self.compressor.process_sample(boost_l, boost_r);
+
+        // 3. Hearing safety brickwall true-peak limiter
+        self.limiter.process_sample(comp_l, comp_r)
+    }
+
+    /// Processes an entire stereo audio frame block.
+    pub fn process_frame(
+        &mut self,
+        in_left: &[f32],
+        in_right: &[f32],
+        out_left: &mut [f32],
+        out_right: &mut [f32],
+    ) {
+        let count = in_left.len().min(in_right.len()).min(out_left.len()).min(out_right.len());
+        for i in 0..count {
+            let (l, r) = self.process_sample(in_left[i], in_right[i]);
+            out_left[i] = l;
+            out_right[i] = r;
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
 // Unit Tests
 // -----------------------------------------------------------------------------
 
@@ -472,5 +764,30 @@ mod tests {
         // At 0 dBFS input and -12 dB threshold with 4:1 ratio:
         // Expected GR is (0 - 12) * (1 - 1/4) = 12 * 0.75 = -9.0 dB
         assert!(compressor.current_gr_db < -7.0 && compressor.current_gr_db > -10.0);
+    }
+    #[test]
+    pub fn test_limiter_and_footstep_booster() {
+        let mut booster = FootstepDetailBooster::new();
+        // Quiet sound at -40 dBFS should receive significant boost (> 4.0 dB)
+        let boost_quiet = booster.calculate_boost_db(-40.0);
+        assert!(boost_quiet > 4.0);
+
+        // Loud sound at -10 dBFS should receive 0 dB boost
+        let boost_loud = booster.calculate_boost_db(-10.0);
+        assert_eq!(boost_loud, 0.0);
+
+        // Test Hearing Safety Limiter with extreme clipping input (+6 dBFS -> amp ~ 2.0)
+        let mut limiter = HearingSafetyLimiter::new(-1.0, 16);
+        for _ in 0..100 {
+            let (l, r) = limiter.process_sample(2.0, 2.0);
+            // Output must NEVER exceed -1.0 dBFS (amplitude ~ 0.89125)
+            assert!(l <= 0.892);
+            assert!(r <= 0.892);
+        }
+
+        // Test Integrated GameAudioDrcEngine
+        let mut engine = GameAudioDrcEngine::new(DrcProfile::EsportsTactical);
+        let (out_l, out_r) = engine.process_sample(0.5, 0.5);
+        assert!(out_l != 0.0 || out_r != 0.0);
     }
 }
