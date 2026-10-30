@@ -1,5 +1,4 @@
 //! Path Normalization and Segment Parsing
-//!
 //! Handles canonical path resolution, normalizing '.', '..', and duplicate slashes.
 
 use alloc::vec::Vec;
@@ -9,11 +8,7 @@ pub struct Path;
 
 impl Path {
     /// Normalize a hierarchical path into clean component segments.
-    ///
     /// Examples:
-    /// - `"/a/b/c"` -> `["a", "b", "c"]`
-    /// - `"/a/./b/../c"` -> `["a", "c"]`
-    /// - `"///"` -> `[]`
     pub fn parse_segments(path: &str) -> Result<Vec<&str>, FsError> {
         let mut segments = Vec::new();
 
