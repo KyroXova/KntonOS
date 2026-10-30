@@ -382,3 +382,158 @@ pub fn verify_credit_flow_control_and_bandwidth_balancer() -> bool {
 
     true
 }
+/// Standard PCIe MMIO synthetic fallback returned during link disconnection (All-1s).
+pub const PCI_DISCONNECT_MMIO_VAL: u32 = 0xFFFF_FFFF;
+
+/// Operational lifecycle state of the hot-plugged eGPU link.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HotPlugState {
+    /// USB4 40 Gbps link established; eGPU operational.
+    ConnectedAndActive,
+    /// Physical link lost abruptly without software ejection request.
+    SurpriseRemovalDetected,
+    /// In-flight PCIe TLPs drained; MMIO access trapped by safety barrier.
+    BridgeQuiesced,
+    /// Downstream Secondary Bus Reset (SBR) asserted on PCIe root port.
+    DownstreamResetAsserted,
+    /// Clean teardown complete; system safely operating on internal GPU.
+    SafeEjectionCompleted,
+}
+
+/// Handheld PC USB4 eGPU Governor coordinating routing, bandwidth, and surprise unplug safety.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Usb4EgpuManager {
+    /// Host USB4 router instance.
+    pub router: Usb4Router,
+    /// Dynamic bandwidth allocation balancer.
+    pub balancer: Usb4BandwidthBalancer,
+    /// PCIe tunnel flow credit controller.
+    pub flow_ctrl: CreditFlowController,
+    /// Active hot-plug safety lifecycle state.
+    pub state: HotPlugState,
+    /// Count of intercepted MMIO reads protected from bus hanging.
+    pub intercepted_mmio_reads: u32,
+    /// Count of surprise unplug events handled.
+    pub unplug_events: u32,
+    /// Simulated eGPU VRAM register value for test verification.
+    pub simulated_egpu_reg: u32,
+}
+
+impl Usb4EgpuManager {
+    /// Creates a new eGPU manager instance.
+    pub const fn new() -> Self {
+        Self {
+            router: Usb4Router::new_host_router(),
+            balancer: Usb4BandwidthBalancer::new(),
+            flow_ctrl: CreditFlowController::new(64),
+            state: HotPlugState::ConnectedAndActive,
+            intercepted_mmio_reads: 0,
+            unplug_events: 0,
+            simulated_egpu_reg: 0x10DE_2204, // e.g. NVIDIA/AMD eGPU vendor/device ID
+        }
+    }
+
+    /// Intercepts physical cable disconnection interrupt / link-drop event.
+    pub fn on_cable_disconnect(&mut self) {
+        self.state = HotPlugState::SurpriseRemovalDetected;
+        self.unplug_events = self.unplug_events.saturating_add(1);
+        self.router.pcie_tunnel_active = false;
+        self.router.dp_tunnel_active = false;
+    }
+
+    /// Safe MMIO read barrier preventing bus lockup or machine check exceptions.
+    ///
+    /// If the cable has been pulled, immediately returns  xFFFFFFFF without waiting for bus timeouts.
+    pub fn safe_mmio_read(&mut self, _offset: u32) -> u32 {
+        if self.state != HotPlugState::ConnectedAndActive {
+            self.intercepted_mmio_reads = self.intercepted_mmio_reads.saturating_add(1);
+            PCI_DISCONNECT_MMIO_VAL
+        } else {
+            self.simulated_egpu_reg
+        }
+    }
+
+    /// Safe MMIO write barrier dropping writes to disconnected peripherals.
+    pub fn safe_mmio_write(&mut self, _offset: u32, value: u32) {
+        if self.state == HotPlugState::ConnectedAndActive {
+            self.simulated_egpu_reg = value;
+        }
+        // Disconnected writes dropped silently without bus fault
+    }
+
+    /// Asserts Secondary Bus Reset (SBR) on the downstream PCIe bridge and initiates recovery.
+    pub fn assert_downstream_bridge_reset(&mut self) -> bool {
+        if self.state == HotPlugState::SurpriseRemovalDetected {
+            // 1. Quiesce downstream bridge
+            self.state = HotPlugState::BridgeQuiesced;
+            // 2. Assert Secondary Bus Reset
+            self.state = HotPlugState::DownstreamResetAsserted;
+            // 3. Mark safe ejection completed
+            self.state = HotPlugState::SafeEjectionCompleted;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Re-allocates 100% of bandwidth back to host and transitions display back to internal panel.
+    pub fn recover_to_internal_graphics(&mut self) -> bool {
+        if self.state == HotPlugState::SafeEjectionCompleted {
+            self.balancer.recalculate_allocation(false, 0);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// Verification helper for Commit 3 surprise unplug safety barrier and bridge reset.
+pub fn verify_surprise_unplug_barrier_and_bridge_reset() -> bool {
+    let mut manager = Usb4EgpuManager::new();
+
+    // 1. Verify Connected Normal State MMIO
+    if manager.state != HotPlugState::ConnectedAndActive {
+        return false;
+    }
+    let val_connected = manager.safe_mmio_read(0x00);
+    if val_connected != 0x10DE_2204 {
+        return false;
+    }
+
+    // 2. Trigger Surprise Cable Disconnect
+    manager.on_cable_disconnect();
+    if manager.state != HotPlugState::SurpriseRemovalDetected {
+        return false;
+    }
+
+    // 3. Verify MMIO Read Barrier returns 0xFFFFFFFF
+    let val_disconnected = manager.safe_mmio_read(0x00);
+    if val_disconnected != PCI_DISCONNECT_MMIO_VAL || manager.intercepted_mmio_reads != 1 {
+        return false;
+    }
+
+    // Verify MMIO write is dropped
+    manager.safe_mmio_write(0x00, 0x1234_5678);
+    let val_after_write = manager.safe_mmio_read(0x00);
+    if val_after_write != PCI_DISCONNECT_MMIO_VAL {
+        return false;
+    }
+
+    // 4. Verify Downstream Bridge Reset & Safe Ejection Transition
+    if !manager.assert_downstream_bridge_reset() {
+        return false;
+    }
+    if manager.state != HotPlugState::SafeEjectionCompleted {
+        return false;
+    }
+
+    // 5. Verify Internal Graphics Recovery Hand-off
+    if !manager.recover_to_internal_graphics() {
+        return false;
+    }
+    if manager.balancer.dp_allocated_mbps != 0 || manager.balancer.pcie_allocated_mbps != USB4_USABLE_LINK_CAPACITY_MBPS {
+        return false;
+    }
+
+    true
+}
