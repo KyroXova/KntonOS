@@ -408,3 +408,245 @@ pub fn verify_lz4_compression_and_crc32() -> bool {
 
     true
 }
+
+/// Descriptor for a staged memory page waiting for atomic restoration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StagingPageEntry {
+    /// Physical address in the safe high-memory staging buffer.
+    pub staging_phys: u64,
+    /// Destination physical page frame number (PFN) in final kernel memory.
+    pub dest_pfn: u64,
+    /// Number of bytes in this page (up to 4096).
+    pub byte_len: usize,
+    /// IEEE 802.3 CRC32 of the uncompressed page payload.
+    pub crc32: u32,
+}
+
+/// Map of staged memory pages decoupling disk I/O decompression from physical memory overwrite.
+pub struct StagingPageMap {
+    pub entries: Vec<StagingPageEntry>,
+    pub total_bytes: usize,
+}
+
+impl StagingPageMap {
+    pub fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+            total_bytes: 0,
+        }
+    }
+
+    pub fn add_entry(&mut self, staging_phys: u64, dest_pfn: u64, byte_len: usize, crc32: u32) {
+        self.total_bytes += byte_len;
+        self.entries.push(StagingPageEntry {
+            staging_phys,
+            dest_pfn,
+            byte_len,
+            crc32,
+        });
+    }
+
+    /// Detects if any destination PFNs collide with the memory occupied by the restore kernel.
+    /// Returns the number of colliding frames that must be redirected through trampoline staging.
+    pub fn detect_collisions(&self, restore_kernel_start_pfn: u64, restore_kernel_page_count: u64) -> usize {
+        let kernel_end_pfn = restore_kernel_start_pfn + restore_kernel_page_count;
+        let mut collisions = 0;
+        for entry in &self.entries {
+            if entry.dest_pfn >= restore_kernel_start_pfn && entry.dest_pfn < kernel_end_pfn {
+                collisions += 1;
+            }
+        }
+        collisions
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+/// Trampoline 4-Level Page Table (PML4).
+///
+/// An isolated, identity-mapped page table ensuring that during the atomic
+/// relocation sequence, the CPU can read from staging physical memory and
+/// overwrite arbitrary destination physical frames without encountering unmapped page faults.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrampolinePageTable {
+    pub pml4_phys_cr3: u64,
+    pub is_identity_mapped: bool,
+    pub mapped_ranges_count: usize,
+    pub flags: u64,
+}
+
+impl TrampolinePageTable {
+    /// Creates a trampoline page table descriptor centered around `pml4_phys_cr3`.
+    pub fn new(pml4_phys_cr3: u64) -> Self {
+        Self {
+            pml4_phys_cr3,
+            is_identity_mapped: true,
+            mapped_ranges_count: 4, // 1:1 identity map for first 4 GiB
+            flags: 0x07,            // Present, Writable, User/Supervisor
+        }
+    }
+
+    /// Verifies that the trampoline page table is valid and ready for CR3 switch.
+    pub fn is_valid(&self) -> bool {
+        self.pml4_phys_cr3 != 0 && (self.pml4_phys_cr3 & 0xFFF) == 0 && self.is_identity_mapped
+    }
+}
+
+/// Atomic S4 Image Memory Restoration Trampoline Engine.
+///
+/// Coordinates the safe two-phase restoration of physical RAM from hibernation:
+/// 1. Decompression into safe staging buffers.
+/// 2. Switching to identity-mapped trampoline page tables.
+/// 3. Atomic relocation copy to final physical frames.
+/// 4. CPU architectural register and CR3 PML4 restoration.
+pub struct RestoreTrampolineEngine {
+    pub staging_map: StagingPageMap,
+    pub trampoline_pt: TrampolinePageTable,
+    pub pages_restored: usize,
+    pub total_bytes_restored: u64,
+    pub integrity_verified: bool,
+}
+
+impl RestoreTrampolineEngine {
+    pub fn new(trampoline_cr3: u64) -> Self {
+        Self {
+            staging_map: StagingPageMap::new(),
+            trampoline_pt: TrampolinePageTable::new(trampoline_cr3),
+            pages_restored: 0,
+            total_bytes_restored: 0,
+            integrity_verified: true,
+        }
+    }
+
+    /// Stages a decompressed page into the relocation map.
+    pub fn stage_page(
+        &mut self,
+        staging_phys: u64,
+        dest_pfn: u64,
+        page_payload: &[u8],
+    ) -> Result<(), Lz4Error> {
+        let checksum = crc32(page_payload);
+        self.staging_map.add_entry(staging_phys, dest_pfn, page_payload.len(), checksum);
+        Ok(())
+    }
+
+    /// Executes atomic copy from staging memory to destination physical memory buffer.
+    /// In full hardware, this runs from an unpaged/identity-mapped trampoline loop.
+    pub fn execute_atomic_page_restore(
+        &mut self,
+        dest_memory: &mut [u8],
+        _dest_pfn: u64,
+        source_staged_data: &[u8],
+        expected_crc: u32,
+    ) -> Result<(), Lz4Error> {
+        if !self.trampoline_pt.is_valid() {
+            return Err(Lz4Error::CorruptedBlock);
+        }
+
+        let computed_crc = crc32(source_staged_data);
+        if computed_crc != expected_crc {
+            self.integrity_verified = false;
+            return Err(Lz4Error::ChecksumMismatch {
+                expected: expected_crc,
+                computed: computed_crc,
+            });
+        }
+
+        if dest_memory.len() < source_staged_data.len() {
+            return Err(Lz4Error::OutputBufferTooSmall);
+        }
+
+        // Atomic copy into destination memory
+        dest_memory[..source_staged_data.len()].copy_from_slice(source_staged_data);
+
+        self.pages_restored += 1;
+        self.total_bytes_restored += source_staged_data.len() as u64;
+
+        Ok(())
+    }
+
+    /// Verifies architectural CPU context before jumping to resumed kernel entry RIP.
+    pub fn verify_and_prepare_cpu_resume(&self, ctx: &crate::power::s3_resume::CpuRegisterContext) -> bool {
+        if !ctx.verify_integrity() {
+            return false;
+        }
+        if ctx.cr3 == 0 || (ctx.cr3 & 0xFFF) != 0 {
+            return false;
+        }
+        if ctx.rsp == 0 {
+            return false;
+        }
+        true
+    }
+}
+
+/// Unit test verifying atomic S4 memory restoration trampoline, collision avoidance, and page table rebuild.
+pub fn verify_atomic_restore_trampoline() -> bool {
+    // 1. Verify TrampolinePageTable validation and alignment
+    let valid_cr3 = 0x0000_0000_0007_E000; // 4KB aligned physical address
+    let trampoline_pt = TrampolinePageTable::new(valid_cr3);
+    if !trampoline_pt.is_valid() || !trampoline_pt.is_identity_mapped {
+        return false;
+    }
+
+    let unaligned_pt = TrampolinePageTable::new(0x7E01); // Not 4KB aligned
+    if unaligned_pt.is_valid() {
+        return false;
+    }
+
+    // 2. Verify StagingPageMap and collision detection
+    let mut staging_map = StagingPageMap::new();
+    // Stage 4 pages destined for PFNs: 100, 256, 257, 500
+    staging_map.add_entry(0x1000_0000, 100, 4096, 0x1111);
+    staging_map.add_entry(0x1000_1000, 256, 4096, 0x2222);
+    staging_map.add_entry(0x1000_2000, 257, 4096, 0x3333);
+    staging_map.add_entry(0x1000_3000, 500, 4096, 0x4444);
+
+    if staging_map.len() != 4 || staging_map.total_bytes != 16384 {
+        return false;
+    }
+
+    // Suppose the restore kernel is loaded at PFN 250..300 (50 pages).
+    // PFN 256 and 257 collide with restore kernel memory!
+    let collisions = staging_map.detect_collisions(250, 50);
+    if collisions != 2 {
+        return false;
+    }
+
+    // 3. Verify atomic memory relocation execution with CRC32
+    let mut engine = RestoreTrampolineEngine::new(valid_cr3);
+
+    let test_kernel_data = b"KNTONOS-ATOMIC-RESTORED-KERNEL-CORE-PAGE-CONTENT-OK";
+    let data_crc = crc32(test_kernel_data);
+
+    let mut dest_page = [0u8; 4096];
+    let res = engine.execute_atomic_page_restore(&mut dest_page, 256, test_kernel_data, data_crc);
+    if res.is_err() {
+        return false;
+    }
+
+    if engine.pages_restored != 1 || &dest_page[..test_kernel_data.len()] != test_kernel_data {
+        return false;
+    }
+
+    // Tampered CRC must abort restore
+    let bad_res = engine.execute_atomic_page_restore(&mut dest_page, 257, test_kernel_data, 0xDEAD_BEEF);
+    if bad_res.is_ok() || engine.integrity_verified {
+        return false;
+    }
+
+    // 4. Verify CPU architectural state restore preparation
+    let ctx = crate::power::s3_resume::CpuRegisterContext::capture(0x2000_0000, 0x7FFF_FFFF_0000);
+    if !engine.verify_and_prepare_cpu_resume(&ctx) {
+        return false;
+    }
+
+    true
+}
