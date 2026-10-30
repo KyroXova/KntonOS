@@ -1,17 +1,8 @@
-//! Dynamic Auto-Brightness, Backlight Slewing & HDR Contrast Governor.
-//!
-//! Implements human perception luminance scaling based on Stevens' Power Law:
-//! - Multi-point piecewise logarithmic brightness curves
-//! - Target luminance (nits) to PWM duty permille translation
-//! - Asymmetric temporal slewing (fast ramp-up 50%/s, slow dark-adaptation ramp-down 20%/s)
-//! - Display backlight technology profiles (Standard LCD, Mini-LED FALD, OLED)
-//! - Ambient-adaptive HDR tone-mapping contrast governor and glare compensation
+//! Dynamic auto-brightness, backlight slewing, and HDR contrast governor.
 
 use crate::drivers::sensor::als::{AlsDriver, AlsHardwareInterface, LuxCategory};
 
-// -----------------------------------------------------------------------------
-// Backlight Profiles & Curve Structures
-// -----------------------------------------------------------------------------
+// Backlight profiles and curve structures.
 
 /// Display backlight technology profile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -206,9 +197,7 @@ impl AutoBrightnessCurve {
     }
 }
 
-// -----------------------------------------------------------------------------
-// HDR Tone-Mapping Profile & Contrast Governor
-// -----------------------------------------------------------------------------
+// HDR tone-mapping profile and contrast governor.
 
 /// Ambient-adaptive HDR tone-mapping parameters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -255,9 +244,7 @@ impl HdrToneMappingProfile {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Unified Handheld Brightness Governor with Smooth Slewing
-// -----------------------------------------------------------------------------
+// Unified handheld brightness governor with smooth slewing.
 
 /// Unified Handheld Auto-Brightness & HDR Contrast Governor.
 #[derive(Debug, Clone)]
@@ -341,9 +328,7 @@ impl HandheldBrightnessGovernor {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Unit Tests & Verification
-// -----------------------------------------------------------------------------
+// Unit tests and verification.
 
 /// Unit test verifying Stevens power law brightness curve, logarithmic interpolation, and PWM duty.
 pub fn verify_brightness_curve_and_pwm_table() -> bool {
@@ -364,9 +349,7 @@ pub fn verify_brightness_curve_and_pwm_table() -> bool {
         return false;
     }
 
-    // 2. Midpoint interpolation: between 200 Lux (150 nits, 380 permille) and 500 Lux (250 nits, 550 permille)
-    // At 350 Lux (halfway): nits = 150 + 150 * 100 / 300 = 150 + 50 = 200 nits
-    // duty = 380 + 150 * 170 / 300 = 380 + 85 = 465 permille
+    // Midpoint interpolation between 200 Lux (150 nits) and 500 Lux (250 nits).
     let mid_nits = curve.evaluate_nits(350);
     let mid_duty = curve.evaluate_pwm_duty(350);
     if mid_nits != 200 || mid_duty != 465 {
@@ -417,9 +400,7 @@ pub fn verify_slewing_and_hdr_contrast_governor() -> bool {
     // Initial state: current_pwm_duty = 100
     gov.current_pwm_duty = 100;
 
-    // 1. Test fast brighten slewing (ramp up at 50% / sec = 500 permille/sec)
-    // Step to bright outdoor daylight (10,000 Lux -> target duty = 950 permille)
-    // Over 500ms, should advance by 500 * 0.5 = 250 permille -> current = 100 + 250 = 350
+    // Test fast brighten slewing (ramp up at 50% / sec = 500 permille/sec).
     let (duty_up, _hdr) = gov.step(10_000, 500, 500);
     if duty_up != 350 {
         return false;
