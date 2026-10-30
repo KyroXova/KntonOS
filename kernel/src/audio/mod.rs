@@ -11,8 +11,10 @@ pub mod bass_boost;
 pub mod client_ring;
 pub mod simd_mix;
 pub mod voice_dsp;
+pub mod spatial_ear;
 
 pub use hrtf::*;
+pub use spatial_ear::*;
 pub use spatializer::*;
 pub use eq::*;
 pub use bass_boost::*;

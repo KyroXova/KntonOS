@@ -581,6 +581,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Game voice DSP and noise cancellation self-test failed!\r\n");
     }
 
+    // Initialize and verify Low-Latency Spatial Audio Virtualizer & Ear-Canal Impedance Compensator (TASK-KNT-118)
+    if !audio::test_spatial_audio_virtualizer_subsystem() {
+        serial_write_str("[KNT-PANIC] Spatial audio virtualizer and ear-canal compensator self-test failed!\r\n");
+    }
+
     // Initialize and verify Hardware RNG & ChaCha20 Cryptographic Entropy Pool
     crypto::init_kernel_rng();
     if !crypto::test_crypto_rng_subsystem() {
