@@ -1,10 +1,5 @@
 //! Head-Related Transfer Function (HRTF) Dataset, ITD Delay Line & ILD Filtering.
-//!
 //! Implements binaural acoustic modeling for headphone gaming and immersive 3D sound:
-//! - Interaural Time Difference (ITD) fractional delay line using circular buffer linear interpolation.
-//! - Interaural Level Difference (ILD) head-shadow acoustic attenuation filter.
-//! - Synthetic 16-tap HRIR (Head-Related Impulse Response) dataset indexed by azimuth and elevation.
-//! - Direct FIR convolution engine for spatialized binaural audio rendering.
 
 use crate::graphics::types::{sin_f32, PI, HALF_PI};
 
@@ -30,9 +25,7 @@ pub const MAX_ITD_SAMPLES: f32 = 48.0;
 /// Number of azimuth bins in the discrete HRTF database (every 15° around 360°).
 pub const AZIMUTH_BINS: usize = 24;
 
-// -----------------------------------------------------------------------------
 // Interaural Time Difference (ITD) Delay Line
-// -----------------------------------------------------------------------------
 
 /// Circular delay line supporting fractional-sample delay with linear interpolation.
 #[derive(Clone, Copy)]
@@ -89,9 +82,7 @@ impl EarDelayLine {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Interaural Level Difference (ILD) Head-Shadow Filter
-// -----------------------------------------------------------------------------
 
 /// 1-pole dynamic IIR low-pass and attenuation filter modeling head acoustic shadow.
 #[derive(Clone, Copy, Default)]
@@ -106,7 +97,6 @@ impl IldFilter {
 
     /// Processes one sample through head-shadow attenuation and low-pass filtering.
     /// `alpha`: Low-pass filter coefficient in range [0.05, 1.0]. (1.0 = full bandwidth / transparent).
-    /// `gain`: Amplitude gain factor in range [0.0, 1.0].
     #[inline]
     pub fn process(&mut self, input: i16, alpha: f32, gain: f32) -> i16 {
         let clamped_alpha = if alpha < 0.05 {
@@ -139,9 +129,7 @@ impl IldFilter {
     }
 }
 
-// -----------------------------------------------------------------------------
 // HRIR Impulse Response & Dataset
-// -----------------------------------------------------------------------------
 
 /// Pair of 16-tap FIR impulse response filters (Left & Right ears).
 #[derive(Clone, Copy)]
@@ -195,14 +183,10 @@ impl FirConvolver {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Woodworth ITD & ILD Mathematical Modeling
-// -----------------------------------------------------------------------------
 
 /// Computes the Woodworth ITD (Interaural Time Difference) in samples at 48 kHz.
 /// `azimuth_rad`: Angle in radians from listener's forward heading (-PI to +PI).
-/// Positive azimuth is to the RIGHT, negative azimuth is to the LEFT.
-/// Returns `(left_ear_delay, right_ear_delay)` in samples.
 pub fn calculate_itd_samples(azimuth_rad: f32) -> (f32, f32) {
     let abs_angle = if azimuth_rad < 0.0 { -azimuth_rad } else { azimuth_rad };
     let clamped_angle = if abs_angle > PI { PI } else { abs_angle };
@@ -263,9 +247,7 @@ pub fn calculate_ild_parameters(azimuth_rad: f32) -> ((f32, f32), (f32, f32)) {
     }
 }
 
-// -----------------------------------------------------------------------------
 // HRTF Dataset Lookup
-// -----------------------------------------------------------------------------
 
 /// Generates a synthesized 16-tap impulse response for a given ear based on incidence angle.
 /// Models the direct wave arrival, pinna reflection notch (pinna notch cue), and head diffraction.
@@ -340,9 +322,7 @@ impl HrtfDataset {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Unit Tests
-// -----------------------------------------------------------------------------
 
 /// Unit test verifying HRTF delay line, ILD filter, and dataset lookup.
 pub fn test_hrtf_dsp_core() -> bool {
