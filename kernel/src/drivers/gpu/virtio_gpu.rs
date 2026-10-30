@@ -1,9 +1,4 @@
-//! VirtIO GPU 2D/3D Hardware Acceleration & Scanout Display Driver Protocol.
-//!
-//! Implements OASIS VirtIO 1.0+ GPU device specifications (Section 5.7):
-//! - Control queue (Queue 0) & Cursor queue (Queue 1) packet wire formats
-//! - 2D resource allocation and host backing memory attachment
-//! - Display scanout configuration, EDID mode discovery, and dirty rect flushing
+//! VirtIO GPU 2D/3D hardware acceleration and scanout display driver protocol.
 
 use core::mem::size_of;
 
@@ -20,9 +15,7 @@ pub const VIRTIO_GPU_CURSOR_QUEUE: u16 = 1;
 /// Maximum number of scanouts supported by VirtIO GPU display response.
 pub const VIRTIO_GPU_MAX_SCANOUTS: usize = 16;
 
-// -----------------------------------------------------------------------------
-// VirtIO GPU Command Types (2D / 3D / Cursor)
-// -----------------------------------------------------------------------------
+// VirtIO GPU Command Types (2D / 3D / Cursor).
 
 pub const VIRTIO_GPU_CMD_GET_DISPLAY_INFO: u32 = 0x0100;
 pub const VIRTIO_GPU_CMD_RESOURCE_CREATE_2D: u32 = 0x0101;
@@ -39,9 +32,7 @@ pub const VIRTIO_GPU_CMD_GET_EDID: u32 = 0x010A;
 pub const VIRTIO_GPU_CMD_UPDATE_CURSOR: u32 = 0x0300;
 pub const VIRTIO_GPU_CMD_MOVE_CURSOR: u32 = 0x0301;
 
-// -----------------------------------------------------------------------------
-// VirtIO GPU Response Types
-// -----------------------------------------------------------------------------
+// VirtIO GPU Response Types.
 
 pub const VIRTIO_GPU_RESP_OK_NODATA: u32 = 0x1100;
 pub const VIRTIO_GPU_RESP_OK_DISPLAY_INFO: u32 = 0x1101;
@@ -56,9 +47,7 @@ pub const VIRTIO_GPU_RESP_ERR_INVALID_RESOURCE_ID: u32 = 0x1203;
 pub const VIRTIO_GPU_RESP_ERR_INVALID_CONTEXT_ID: u32 = 0x1204;
 pub const VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER: u32 = 0x1205;
 
-// -----------------------------------------------------------------------------
-// VirtIO GPU Formats
-// -----------------------------------------------------------------------------
+// VirtIO GPU Formats.
 
 pub const VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM: u32 = 1;
 pub const VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM: u32 = 2;
@@ -67,15 +56,11 @@ pub const VIRTIO_GPU_FORMAT_X8R8G8B8_UNORM: u32 = 4;
 pub const VIRTIO_GPU_FORMAT_R8G8B8A8_UNORM: u32 = 67;
 pub const VIRTIO_GPU_FORMAT_X8B8G8R8_UNORM: u32 = 68;
 
-// -----------------------------------------------------------------------------
-// VirtIO GPU Flags
-// -----------------------------------------------------------------------------
+// VirtIO GPU Flags.
 
 pub const VIRTIO_GPU_FLAG_FENCE: u32 = 1 << 0;
 
-// -----------------------------------------------------------------------------
-// Wire Protocol Packet Structures
-// -----------------------------------------------------------------------------
+// Wire Protocol Packet Structures.
 
 /// Standard 24-byte control header present on all request and response packets.
 #[repr(C)]
@@ -357,9 +342,7 @@ pub struct VirtioGpuRespEdid {
     pub edid: [u8; 1024],
 }
 
-// -----------------------------------------------------------------------------
-// Unit Tests for Protocol Structures
-// -----------------------------------------------------------------------------
+// Unit Tests for Protocol Structures.
 
 /// Verification unit test for VirtIO GPU protocol structures, layout, and commands.
 pub fn test_virtio_gpu_packet_structures() -> bool {

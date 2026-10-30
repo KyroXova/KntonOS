@@ -1,13 +1,8 @@
-//! Hardware Variable Refresh Rate (VRR / FreeSync / Adaptive-Sync) Subsystem.
-//!
-//! Provides EDID range limits parsing, dynamic refresh rate range calculation,
-//! and dynamic VBLANK timing state management.
+//! Hardware Variable Refresh Rate (VRR / FreeSync / Adaptive-Sync) subsystem.
 
 use super::drm::DrmModeInfo;
 
-// -----------------------------------------------------------------------------
-// EDID Range Limits & VRR Capability Descriptors
-// -----------------------------------------------------------------------------
+// EDID Range Limits & VRR Capability Descriptors.
 
 pub const EDID_BLOCK_SIZE: usize = 128;
 pub const EDID_DESCRIPTOR_RANGE_LIMITS_TAG: u8 = 0xFD;
@@ -99,9 +94,7 @@ pub fn parse_edid_vrr_descriptor(edid: &[u8]) -> Option<EdidRangeLimits> {
     None
 }
 
-// -----------------------------------------------------------------------------
-// VRR Dynamic Refresh Rate Range
-// -----------------------------------------------------------------------------
+// VRR Dynamic Refresh Rate Range.
 
 /// Variable Refresh Rate range boundary constraints for a video mode and display panel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -204,9 +197,7 @@ impl VrrRange {
     }
 }
 
-// -----------------------------------------------------------------------------
-// VRR Timing State
-// -----------------------------------------------------------------------------
+// VRR Timing State.
 
 /// Dynamic hardware timing state modulated across frames during VRR presentation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -268,9 +259,7 @@ impl VrrTimingState {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Unit Verification for EDID VRR Descriptor & Dynamic Ranges
-// -----------------------------------------------------------------------------
+// Unit Verification for EDID VRR Descriptor & Dynamic Ranges.
 
 /// Unit test verifying EDID Range Limits parsing and VRR dynamic refresh range calculations.
 pub fn verify_vrr_descriptor_and_ranges() -> bool {
@@ -374,9 +363,7 @@ pub fn verify_vrr_descriptor_and_ranges() -> bool {
 }
 
 
-// -----------------------------------------------------------------------------
-// Low Framerate Compensation (LFC) Engine
-// -----------------------------------------------------------------------------
+// Low Framerate Compensation (LFC) Engine.
 
 /// Pacing decision produced by the Low Framerate Compensation (LFC) engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -501,9 +488,7 @@ impl LfcEngine {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Unit Verification for Low Framerate Compensation (LFC)
-// -----------------------------------------------------------------------------
+// Unit Verification for Low Framerate Compensation (LFC).
 
 /// Unit test verifying LFC frame doubling, tripling, and sub-threshold tear-free pacing decisions.
 pub fn verify_lfc_engine() -> bool {
