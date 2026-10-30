@@ -1,8 +1,4 @@
-//! DMI / ACPI Chassis and Display Panel Orientation Detection for Handheld Mobile Panels.
-//!
-//! Provides automatic detection and compensation for native portrait mobile display panels
-//! commonly mounted in PC gaming handhelds (Steam Deck, ASUS ROG Ally, Lenovo Legion Go,
-//! GPD Win, AYANEO, OneXPlayer) and convertibles.
+//! DMI and ACPI chassis and display panel orientation detection.
 
 use super::drm::{
     DRM_MODE_ROTATE_0, DRM_MODE_ROTATE_90, DRM_MODE_ROTATE_180, DRM_MODE_ROTATE_270,
@@ -332,9 +328,7 @@ impl PanelDetector {
     }
 }
 
-// -----------------------------------------------------------------------------
-// String Helper Functions for no_std DMI Matching
-// -----------------------------------------------------------------------------
+// String helper functions for no_std DMI matching.
 
 fn str_equals_ignore_case(a: &str, b: &str) -> bool {
     if a.len() != b.len() {
@@ -368,18 +362,9 @@ fn str_contains_ignore_case(haystack: &str, needle: &str) -> bool {
     false
 }
 
-// -----------------------------------------------------------------------------
-// Touchscreen & Digitizer Coordinate Normalization Transform
-// -----------------------------------------------------------------------------
+// Touchscreen and digitizer coordinate normalization transform.
 
-/// Touchscreen Coordinate Transformation Matrix (CTM).
-///
-/// Implements standard 3x3 affine transformation for digitizer normalization:
-///   [X']   [c0 c1 c2] [X]
-///   [Y'] = [c3 c4 c5] [Y]
-///   [1 ]   [0  0  1 ] [1]
-///
-/// Where X, Y are normalized input coordinates in [0.0, 1.0].
+/// Touchscreen Coordinate Transformation Matrix (CTM) for digitizer normalization.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TouchCalibrationMatrix {
     pub c: [f32; 6],

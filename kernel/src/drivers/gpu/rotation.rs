@@ -1,17 +1,8 @@
-//! Hardware Display Controller Scanout Matrix Rotation Subsystem (Zero-Copy Overhead).
-//!
-//! Implements hardware plane scanout address generation, affine transformation matrices,
-//! and stride step vectors for 0, 90, 180, and 270 degree display rotations.
-//! Enables native landscape rendering into standard framebuffers with zero memory copies
-//! and zero GPU shader passes on portrait mobile panels.
+//! Hardware display controller scanout matrix rotation subsystem.
 
 use super::panel::PanelOrientation;
 
 /// 2x3 Affine Coordinate Transformation Matrix for display scanouts.
-///
-/// Maps panel physical scan coordinates [x_p, y_p]^T to framebuffer logical coordinates [x_l, y_l]^T:
-///   x_l = m00 * x_p + m01 * y_p + tx
-///   y_l = m10 * x_p + m11 * y_p + ty
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ScanoutTransformMatrix {
     pub m00: f32,
@@ -35,11 +26,7 @@ impl ScanoutTransformMatrix {
         m10: 0.0, m11: 1.0, ty: 0.0,
     };
 
-    /// Constructs the scanout affine matrix given panel orientation and dimensions.
-    ///
-    /// - `orientation`: Hardware rotation of the display panel.
-    /// - `log_w`: Logical width of the framebuffer (e.g. 1280).
-    /// - `log_h`: Logical height of the framebuffer (e.g. 800).
+    /// Constructs scanout affine matrix given panel orientation and dimensions.
     pub fn for_orientation(orientation: PanelOrientation, log_w: u32, log_h: u32) -> Self {
         let w = log_w as f32;
         let h = log_h as f32;
@@ -94,10 +81,7 @@ impl ScanoutTransformMatrix {
     }
 }
 
-/// Hardware display controller scanout configuration.
-///
-/// Encapsulates the DMA fetch parameters programmed into the display pipe (CRTC / Plane)
-/// to fetch scanout pixels directly in rotated orientation without memory copies.
+/// Hardware display controller scanout DMA configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HardwareScanoutConfig {
     /// Base memory address of the framebuffer.
@@ -190,9 +174,7 @@ impl HardwareScanoutConfig {
         }
     }
 
-    /// Computes the exact framebuffer memory offset for a physical display raster coordinate (phys_x, phys_y).
-    ///
-    /// Runs in O(1) time without branching or memory lookups.
+    /// Computes the exact framebuffer memory offset for a physical display raster coordinate.
     #[inline(always)]
     pub fn calculate_pixel_offset(&self, phys_x: u32, phys_y: u32) -> u64 {
         let x_delta = (phys_x as i64) * (self.pixel_stride_bytes as i64);
@@ -226,9 +208,7 @@ impl HardwareScanoutConfig {
     }
 }
 
-/// Zero-Overhead Scanout Controller.
-///
-/// Simulates or drives hardware scanout DMA pipelines with matrix rotation.
+/// Zero-overhead scanout controller driving hardware scanout DMA with matrix rotation.
 pub struct ScanoutRotationController {
     pub config: HardwareScanoutConfig,
     pub matrix: ScanoutTransformMatrix,
@@ -256,9 +236,7 @@ impl ScanoutRotationController {
         Self { config, matrix }
     }
 
-    /// Reads a 32-bit pixel value from the logical framebuffer at physical panel coordinate (phys_x, phys_y).
-    ///
-    /// Directly accesses framebuffer memory via hardware scanout offset without copying or allocating.
+    /// Reads a 32-bit pixel value from logical framebuffer at physical panel coordinate.
     pub fn fetch_pixel_u32(&self, fb_slice: &[u8], phys_x: u32, phys_y: u32) -> Option<u32> {
         let offset = self.config.calculate_pixel_offset(phys_x, phys_y) as usize;
         if offset + 4 <= fb_slice.len() {

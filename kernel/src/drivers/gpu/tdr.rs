@@ -1,16 +1,10 @@
-//! GPU Timeout Detection and Recovery (TDR) Subsystem.
-//!
-//! Implements GPU watchdog monitoring, execution fence progression tracking,
-//! hang detection, non-destructive context recovery, orphan resource reclamation,
-//! and ring buffer re-initialization.
+//! GPU Timeout Detection and Recovery (TDR) subsystem.
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use crate::drivers::pci::flr::{MockPciConfigSpace, PciLinkState, PcieResetError};
 
-// -----------------------------------------------------------------------------
-// Constants and Timing Thresholds
-// -----------------------------------------------------------------------------
+// Constants and Timing Thresholds.
 
 /// Default GPU execution timeout before declaring engine hang (2,000 ms / 2.0s).
 pub const GPU_TDR_DEFAULT_TIMEOUT_MS: u64 = 2000;
@@ -21,9 +15,7 @@ pub const GPU_TDR_MAX_CONSECUTIVE_RESETS: u32 = 5;
 /// Rolling window for rapid recovery failure thresholding (60,000 ms / 60s).
 pub const GPU_TDR_WINDOW_MS: u64 = 60_000;
 
-// -----------------------------------------------------------------------------
-// GPU Engine & Fence Progression Data Structures
-// -----------------------------------------------------------------------------
+// GPU Engine & Fence Progression Data Structures.
 
 /// GPU hardware execution engine identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -136,9 +128,7 @@ impl GpuEngineWatchdog {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Non-Destructive Context Recovery & Resource Reclamation
-// -----------------------------------------------------------------------------
+// Non-Destructive Context Recovery & Resource Reclamation.
 
 /// State of a userland or compositor graphics context.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -266,12 +256,7 @@ impl GpuTdrManager {
         );
     }
 
-    /// Executes complete TDR recovery sequence following a detected hang:
-    /// 1. Trigger hardware reset (via PCIe FLR mock or real PCI manager).
-    /// 2. Isolate guilty context (mark GuiltyReset) while preserving innocent contexts.
-    /// 3. Reclaim private resources owned by guilty context without disrupting shared/scanout buffers.
-    /// 4. Re-initialize hardware submission ring buffers (zero head/tail pointers, increment sequence).
-    /// 5. Reset engine watchdog timer and re-enable command processing.
+    /// Executes complete TDR recovery sequence following a detected hang.
     pub fn recover_from_hang(
         &mut self,
         hung_fence: EngineFence,
@@ -352,12 +337,9 @@ impl GpuTdrManager {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Unit Tests / Verification for TDR Recovery & Context Isolation
-// -----------------------------------------------------------------------------
+// Unit Tests / Verification for TDR Recovery & Context Isolation.
 
-/// Unit test verifying non-destructive context recovery, orphan resource reclamation,
-/// and ring buffer re-initialization.
+/// Unit test verifying non-destructive context recovery and ring buffer re-initialization.
 /// Unit test verifying watchdog fence progression, timeout detection, and status updates.
 pub fn verify_gpu_watchdog_progression() -> bool {
     let mut watchdog = GpuEngineWatchdog::new(GpuEngineType::Render3D, 2000, 1000);
