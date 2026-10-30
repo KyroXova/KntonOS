@@ -4,6 +4,8 @@
 //! - Dual touchpad management (Left & Right thumb touchpads)
 //! - Non-linear ballistic velocity curves (1:1 precision at micro-speeds, scaling up to 3.5x for flick turns)
 //! - Capacitive touch contact and normalized displacement tracking
+//! - Dual-stage click emulation (distinguishing capacitive hover from physical pressure click actuation)
+//! - Tactile haptic tick generation for rolling surface emulation
 
 use crate::graphics::sqrt_f32;
 
@@ -25,6 +27,53 @@ pub enum TouchpadShape {
     Square,
     /// Circular surface with radial boundary clamping.
     Circular,
+}
+
+/// Operating stage of the dual-stage touchpad contact sensor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TouchpadClickStage {
+    /// Thumb is hovering or released; no surface contact.
+    Hover,
+    /// Capacitive contact active (thumb resting or gliding on surface), below physical click pressure.
+    CapacitiveTouch,
+    /// Surface pressure exceeded mechanical actuation threshold (virtual physical switch pressed).
+    PressureClick,
+}
+
+/// Discrete transition edge between dual-stage contact and pressure states.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClickTransition {
+    /// No change in contact or click state.
+    None,
+    /// Capacitive touch contact engaged (Hover -> CapacitiveTouch).
+    TouchContactDown,
+    /// Capacitive touch contact released (CapacitiveTouch -> Hover).
+    TouchContactUp,
+    /// Physical pressure click actuated (CapacitiveTouch -> PressureClick).
+    PressureClickDown,
+    /// Physical pressure click released (PressureClick -> CapacitiveTouch).
+    PressureClickUp,
+}
+
+/// Configuration thresholds for dual-stage capacitive touch & pressure click detection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DualStageClickConfig {
+    /// Raw ADC pressure threshold to detect capacitive touch presence (0..4095).
+    pub touch_threshold: u16,
+    /// Raw ADC pressure threshold required to actuate physical pressure click (0..4095).
+    pub click_press_threshold: u16,
+    /// Raw ADC pressure threshold below which physical click releases (hysteresis gap).
+    pub click_release_threshold: u16,
+}
+
+impl DualStageClickConfig {
+    pub const fn default_handheld() -> Self {
+        Self {
+            touch_threshold: 50,
+            click_press_threshold: 2048,   // ~50% maximum surface pressure
+            click_release_threshold: 1600, // ~39% hysteresis release to prevent flutter
+        }
+    }
 }
 
 /// Raw sensor sample from the touchpad capacitive controller.
@@ -65,6 +114,12 @@ pub struct TouchpadMotion {
     pub touch_active: bool,
     /// Measured pressure level [0.0 .. 1.0].
     pub pressure_normalized: f32,
+    /// Current dual-stage contact and pressure stage.
+    pub click_stage: TouchpadClickStage,
+    /// Edge transition in click or contact status.
+    pub click_transition: ClickTransition,
+    /// Number of discrete tactile haptic ticks triggered during this sample.
+    pub haptic_ticks: u32,
 }
 
 impl TouchpadMotion {
@@ -79,6 +134,9 @@ impl TouchpadMotion {
             ballistic_multiplier: 1.0,
             touch_active: false,
             pressure_normalized: 0.0,
+            click_stage: TouchpadClickStage::Hover,
+            click_transition: ClickTransition::None,
+            haptic_ticks: 0,
         }
     }
 }
@@ -135,6 +193,14 @@ pub struct SingleTouchpad {
     pub pad_id: TouchpadId,
     /// Ballistic configuration.
     pub config: BallisticConfig,
+    /// Dual-stage click threshold configuration.
+    pub click_config: DualStageClickConfig,
+    /// Current dual-stage click state.
+    pub click_stage: TouchpadClickStage,
+    /// Displacement interval per haptic tick (units).
+    pub haptic_tick_interval: f32,
+    /// Accumulated distance towards next haptic tick.
+    pub haptic_tick_accumulator: f32,
     /// Previous raw X position.
     prev_x: f32,
     /// Previous raw Y position.
@@ -154,6 +220,10 @@ impl SingleTouchpad {
         Self {
             pad_id,
             config,
+            click_config: DualStageClickConfig::default_handheld(),
+            click_stage: TouchpadClickStage::Hover,
+            haptic_tick_interval: 2.0,
+            haptic_tick_accumulator: 0.0,
             prev_x: 0.0,
             prev_y: 0.0,
             prev_timestamp_us: 0,
@@ -182,9 +252,53 @@ impl SingleTouchpad {
         }
     }
 
-    /// Ingests a raw touchpad sample and computes ballistic motion deltas.
+    /// Updates the dual-stage click state machine and returns any transition edge.
+    fn update_click_stage(&mut self, touch_detected: bool, pressure: u16) -> ClickTransition {
+        let has_contact = touch_detected && (pressure >= self.click_config.touch_threshold);
+
+        match self.click_stage {
+            TouchpadClickStage::Hover => {
+                if has_contact {
+                    if pressure >= self.click_config.click_press_threshold {
+                        self.click_stage = TouchpadClickStage::PressureClick;
+                        ClickTransition::PressureClickDown
+                    } else {
+                        self.click_stage = TouchpadClickStage::CapacitiveTouch;
+                        ClickTransition::TouchContactDown
+                    }
+                } else {
+                    ClickTransition::None
+                }
+            }
+            TouchpadClickStage::CapacitiveTouch => {
+                if !has_contact {
+                    self.click_stage = TouchpadClickStage::Hover;
+                    ClickTransition::TouchContactUp
+                } else if pressure >= self.click_config.click_press_threshold {
+                    self.click_stage = TouchpadClickStage::PressureClick;
+                    ClickTransition::PressureClickDown
+                } else {
+                    ClickTransition::None
+                }
+            }
+            TouchpadClickStage::PressureClick => {
+                if !has_contact {
+                    self.click_stage = TouchpadClickStage::Hover;
+                    ClickTransition::TouchContactUp
+                } else if pressure < self.click_config.click_release_threshold {
+                    self.click_stage = TouchpadClickStage::CapacitiveTouch;
+                    ClickTransition::PressureClickUp
+                } else {
+                    ClickTransition::None
+                }
+            }
+        }
+    }
+
+    /// Ingests a raw touchpad sample and computes ballistic motion deltas, dual-stage clicks, and haptic ticks.
     pub fn process_sample(&mut self, sample: RawTouchpadSample) -> TouchpadMotion {
         let pressure_norm = (sample.pressure as f32) / 4095.0;
+        let transition = self.update_click_stage(sample.touch_detected, sample.pressure);
 
         // Convert raw -32768..32767 to normalized unit range [-100.0 .. 100.0]
         let current_x = (sample.raw_x as f32) / 327.67;
@@ -194,6 +308,7 @@ impl SingleTouchpad {
             self.was_touching = false;
             self.filtered_vx = 0.0;
             self.filtered_vy = 0.0;
+            self.haptic_tick_accumulator = 0.0;
             return TouchpadMotion {
                 pad_id: self.pad_id,
                 dx: 0.0,
@@ -204,6 +319,9 @@ impl SingleTouchpad {
                 ballistic_multiplier: 1.0,
                 touch_active: false,
                 pressure_normalized: pressure_norm,
+                click_stage: self.click_stage,
+                click_transition: transition,
+                haptic_ticks: 0,
             };
         }
 
@@ -215,6 +333,7 @@ impl SingleTouchpad {
             self.was_touching = true;
             self.filtered_vx = 0.0;
             self.filtered_vy = 0.0;
+            self.haptic_tick_accumulator = 0.0;
 
             return TouchpadMotion {
                 pad_id: self.pad_id,
@@ -226,6 +345,9 @@ impl SingleTouchpad {
                 ballistic_multiplier: 1.0,
                 touch_active: true,
                 pressure_normalized: pressure_norm,
+                click_stage: self.click_stage,
+                click_transition: transition,
+                haptic_ticks: 0,
             };
         }
 
@@ -238,6 +360,15 @@ impl SingleTouchpad {
         self.prev_y = current_y;
         self.prev_timestamp_us = sample.timestamp_us;
 
+        // Calculate travel distance and haptic ticks
+        let step_dist = sqrt_f32(raw_dx * raw_dx + raw_dy * raw_dy);
+        self.haptic_tick_accumulator += step_dist;
+        let mut ticks = 0u32;
+        if self.haptic_tick_interval > 0.0 && self.haptic_tick_accumulator >= self.haptic_tick_interval {
+            ticks = (self.haptic_tick_accumulator / self.haptic_tick_interval) as u32;
+            self.haptic_tick_accumulator -= (ticks as f32) * self.haptic_tick_interval;
+        }
+
         if dt_sec < 0.0005 {
             return TouchpadMotion {
                 pad_id: self.pad_id,
@@ -249,6 +380,9 @@ impl SingleTouchpad {
                 ballistic_multiplier: 1.0,
                 touch_active: true,
                 pressure_normalized: pressure_norm,
+                click_stage: self.click_stage,
+                click_transition: transition,
+                haptic_ticks: ticks,
             };
         }
 
@@ -276,6 +410,9 @@ impl SingleTouchpad {
             ballistic_multiplier: multiplier,
             touch_active: true,
             pressure_normalized: pressure_norm,
+            click_stage: self.click_stage,
+            click_transition: transition,
+            haptic_ticks: ticks,
         }
     }
 
@@ -287,6 +424,8 @@ impl SingleTouchpad {
         self.was_touching = false;
         self.filtered_vx = 0.0;
         self.filtered_vy = 0.0;
+        self.click_stage = TouchpadClickStage::Hover;
+        self.haptic_tick_accumulator = 0.0;
     }
 }
 
@@ -416,6 +555,128 @@ pub fn verify_dual_touchpad_and_ballistic_curve() -> bool {
     // Left pad should still be untouched and idle
     let left_pad = controller.get_pad(TouchpadId::Left);
     if left_pad.was_touching || left_pad.filtered_vx != 0.0 {
+        return false;
+    }
+
+    true
+}
+
+/// Unit test verifying dual-stage pressure click threshold, hysteresis, and haptic click tick generation.
+pub fn verify_dual_stage_click_and_haptic_ticks() -> bool {
+    let mut pad = SingleTouchpad::new(TouchpadId::Right, BallisticConfig::default_precision_aiming());
+    pad.haptic_tick_interval = 2.0;
+
+    // 1. Initial Hover state
+    if pad.click_stage != TouchpadClickStage::Hover {
+        return false;
+    }
+
+    // 2. Light touch (pressure = 400 > touch_threshold: 50, but < click_press: 2048)
+    // Must transition to CapacitiveTouch with TouchContactDown
+    let s_touch = RawTouchpadSample {
+        pad_id: TouchpadId::Right,
+        raw_x: 0,
+        raw_y: 0,
+        pressure: 400,
+        touch_detected: true,
+        timestamp_us: 10_000,
+    };
+    let m_touch = pad.process_sample(s_touch);
+    if m_touch.click_stage != TouchpadClickStage::CapacitiveTouch {
+        return false;
+    }
+    if m_touch.click_transition != ClickTransition::TouchContactDown {
+        return false;
+    }
+
+    // 3. Movement generating haptic click ticks:
+    // Move 10.0 normalized units (raw_x = 3277 = 10.0 units) over 10ms with interval = 2.0 units
+    // Should trigger exactly 5 ticks (10.0 / 2.0)
+    let s_move = RawTouchpadSample {
+        pad_id: TouchpadId::Right,
+        raw_x: 3277,
+        raw_y: 0,
+        pressure: 400,
+        touch_detected: true,
+        timestamp_us: 20_000,
+    };
+    let m_move = pad.process_sample(s_move);
+    if m_move.haptic_ticks != 5 {
+        return false;
+    }
+    if m_move.click_stage != TouchpadClickStage::CapacitiveTouch {
+        return false;
+    }
+
+    // 4. Heavy thumb squeeze (pressure = 2500 >= 2048 click_press_threshold)
+    // Must actuate physical click with PressureClickDown
+    let s_press = RawTouchpadSample {
+        pad_id: TouchpadId::Right,
+        raw_x: 3277,
+        raw_y: 0,
+        pressure: 2500,
+        touch_detected: true,
+        timestamp_us: 30_000,
+    };
+    let m_press = pad.process_sample(s_press);
+    if m_press.click_stage != TouchpadClickStage::PressureClick {
+        return false;
+    }
+    if m_press.click_transition != ClickTransition::PressureClickDown {
+        return false;
+    }
+
+    // 5. Hysteresis test: pressure drops to 1800 (below 2048, but above release threshold 1600)
+    // Must remain in PressureClick with NO release transition
+    let s_hyst = RawTouchpadSample {
+        pad_id: TouchpadId::Right,
+        raw_x: 3277,
+        raw_y: 0,
+        pressure: 1800,
+        touch_detected: true,
+        timestamp_us: 40_000,
+    };
+    let m_hyst = pad.process_sample(s_hyst);
+    if m_hyst.click_stage != TouchpadClickStage::PressureClick {
+        return false;
+    }
+    if m_hyst.click_transition != ClickTransition::None {
+        return false;
+    }
+
+    // 6. Release click: pressure drops to 1200 (< 1600 release threshold)
+    // Must transition to CapacitiveTouch with PressureClickUp
+    let s_rel_click = RawTouchpadSample {
+        pad_id: TouchpadId::Right,
+        raw_x: 3277,
+        raw_y: 0,
+        pressure: 1200,
+        touch_detected: true,
+        timestamp_us: 50_000,
+    };
+    let m_rel_click = pad.process_sample(s_rel_click);
+    if m_rel_click.click_stage != TouchpadClickStage::CapacitiveTouch {
+        return false;
+    }
+    if m_rel_click.click_transition != ClickTransition::PressureClickUp {
+        return false;
+    }
+
+    // 7. Lift thumb completely off touchpad surface
+    // Must transition to Hover with TouchContactUp
+    let s_lift = RawTouchpadSample {
+        pad_id: TouchpadId::Right,
+        raw_x: 3277,
+        raw_y: 0,
+        pressure: 0,
+        touch_detected: false,
+        timestamp_us: 60_000,
+    };
+    let m_lift = pad.process_sample(s_lift);
+    if m_lift.click_stage != TouchpadClickStage::Hover {
+        return false;
+    }
+    if m_lift.click_transition != ClickTransition::TouchContactUp {
         return false;
     }
 
