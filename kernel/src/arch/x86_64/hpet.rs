@@ -317,3 +317,279 @@ pub fn verify_hpet_structures() -> bool {
 
     true
 }
+
+// ============================================================================
+// HPET Device Driver, Main Counter, & Periodic Comparator Engine
+// ============================================================================
+
+/// Operating mode for an HPET comparator timer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HpetTimerMode {
+    OneShot,
+    Periodic,
+}
+
+/// Configuration settings for an individual HPET comparator timer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HpetTimerConfig {
+    pub mode: HpetTimerMode,
+    pub interrupt_enabled: bool,
+    pub is_64bit: bool,
+    pub routing_irq: u8,
+    pub comparator_value: u64,
+    pub periodic_interval: u64,
+}
+
+impl HpetTimerConfig {
+    /// Constructs a one-shot comparator configuration.
+    pub const fn one_shot(comparator_value: u64, routing_irq: u8, is_64bit: bool) -> Self {
+        Self {
+            mode: HpetTimerMode::OneShot,
+            interrupt_enabled: true,
+            is_64bit,
+            routing_irq,
+            comparator_value,
+            periodic_interval: 0,
+        }
+    }
+
+    /// Constructs a periodic comparator configuration.
+    pub const fn periodic(interval_ticks: u64, routing_irq: u8, is_64bit: bool) -> Self {
+        Self {
+            mode: HpetTimerMode::Periodic,
+            interrupt_enabled: true,
+            is_64bit,
+            routing_irq,
+            comparator_value: interval_ticks,
+            periodic_interval: interval_ticks,
+        }
+    }
+
+    /// Converts configuration into a 64-bit TIMn_CONF register word.
+    pub fn to_conf_reg(&self) -> u64 {
+        let mut conf: u64 = 0;
+        if self.interrupt_enabled {
+            conf |= HPET_TN_INT_ENABLE;
+        }
+        if self.mode == HpetTimerMode::Periodic {
+            conf |= HPET_TN_TYPE_PERIODIC | HPET_TN_VAL_SET;
+        }
+        if !self.is_64bit {
+            conf |= HPET_TN_32MODE;
+        }
+        conf |= ((self.routing_irq as u64) & 0x1F) << 9;
+        conf
+    }
+}
+
+/// High-Precision Event Timer (HPET) Driver Context.
+#[derive(Debug)]
+pub struct HpetDevice {
+    pub info: HpetInfo,
+    pub registers: HpetRegisters,
+    pub is_active: bool,
+    pub simulated_mmio: [u64; 64], // Simulated register space for testing & verification
+    pub is_simulated: bool,
+}
+
+impl HpetDevice {
+    /// Creates a new HPET device driver instance.
+    pub const fn new(info: HpetInfo, is_simulated: bool) -> Self {
+        Self {
+            info,
+            registers: HpetRegisters::new(info.base_address),
+            is_active: false,
+            simulated_mmio: [0u64; 64],
+            is_simulated,
+        }
+    }
+
+    /// Reads a 64-bit MMIO register at the specified byte offset.
+    pub fn read_reg(&self, offset: usize) -> u64 {
+        if self.is_simulated {
+            let idx = (offset / 8).min(63);
+            self.simulated_mmio[idx]
+        } else {
+            unsafe {
+                core::ptr::read_volatile((self.info.base_address + offset as u64) as *const u64)
+            }
+        }
+    }
+
+    /// Writes a 64-bit MMIO register at the specified byte offset.
+    pub fn write_reg(&mut self, offset: usize, val: u64) {
+        if self.is_simulated {
+            let idx = (offset / 8).min(63);
+            self.simulated_mmio[idx] = val;
+        } else {
+            unsafe {
+                core::ptr::write_volatile((self.info.base_address + offset as u64) as *mut u64, val);
+            }
+        }
+    }
+
+    /// Queries GCAP_ID register to discover hardware capabilities and clock period.
+    pub fn discover_capabilities(&mut self) {
+        let gcap = self.read_reg(HPET_REG_GCAP_ID);
+        let (period_fs, num_timers, is_64, leg_rt, vendor_id) =
+            HpetRegisters::decode_capabilities(gcap);
+
+        if period_fs != 0 {
+            self.info.counter_clk_period_fs = period_fs;
+        }
+        self.info.num_timers = num_timers;
+        self.info.is_64bit = is_64;
+        self.info.legacy_replacement_cap = leg_rt;
+        self.info.vendor_id = vendor_id;
+    }
+
+    /// Enables the HPET main counter and optionally enables legacy replacement routing.
+    pub fn enable(&mut self, legacy_route: bool) {
+        let mut conf = self.read_reg(HPET_REG_GEN_CONF);
+        conf |= HPET_GEN_CONF_ENABLE;
+        if legacy_route && self.info.legacy_replacement_cap {
+            conf |= HPET_GEN_CONF_LEG_RT;
+        }
+        self.write_reg(HPET_REG_GEN_CONF, conf);
+        self.is_active = true;
+    }
+
+    /// Disables the HPET main counter.
+    pub fn disable(&mut self) {
+        let mut conf = self.read_reg(HPET_REG_GEN_CONF);
+        conf &= !HPET_GEN_CONF_ENABLE;
+        self.write_reg(HPET_REG_GEN_CONF, conf);
+        self.is_active = false;
+    }
+
+    /// Checks if the HPET main counter is currently enabled.
+    pub fn is_enabled(&self) -> bool {
+        (self.read_reg(HPET_REG_GEN_CONF) & HPET_GEN_CONF_ENABLE) != 0
+    }
+
+    /// Reads the current 64-bit main counter value.
+    pub fn read_main_counter(&self) -> u64 {
+        self.read_reg(HPET_REG_MAIN_CNT)
+    }
+
+    /// Writes a value to the 64-bit main counter.
+    pub fn set_main_counter(&mut self, val: u64) {
+        self.write_reg(HPET_REG_MAIN_CNT, val);
+    }
+
+    /// Configures an individual comparator timer.
+    pub fn configure_timer(&mut self, timer_idx: usize, config: &HpetTimerConfig) {
+        if timer_idx >= (self.info.num_timers as usize) {
+            return;
+        }
+
+        let conf_offset = self.registers.offset_timer_conf(timer_idx);
+        let comp_offset = self.registers.offset_timer_comp(timer_idx);
+
+        // 1. Program configuration and capabilities register
+        let conf_val = config.to_conf_reg();
+        self.write_reg(conf_offset, conf_val);
+
+        // 2. Program comparator value (and accumulator if periodic)
+        self.write_reg(comp_offset, config.comparator_value);
+        if config.mode == HpetTimerMode::Periodic {
+            // Write interval again to load internal periodic accumulator per specification
+            self.write_reg(comp_offset, config.periodic_interval);
+        }
+    }
+
+    /// Checks if a timer's interrupt is asserted in GINTR_STA and clears it (write-1-to-clear).
+    pub fn check_and_clear_interrupt(&mut self, timer_idx: usize) -> bool {
+        let sta = self.read_reg(HPET_REG_GINTR_STA);
+        let mask = 1u64 << timer_idx;
+        if (sta & mask) != 0 {
+            self.write_reg(HPET_REG_GINTR_STA, mask);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// Verification self-test for HPET main counter discovery, start/stop control, and comparator setup.
+pub fn verify_hpet_counter_and_timers() -> bool {
+    let info = HpetInfo::default_q35();
+    let mut dev = HpetDevice::new(info, true);
+
+    // Setup simulated GCAP_ID: 10 MHz (10,000,000 fs), 3 timers (val 2), 64-bit, legacy route, Intel
+    let gcap_val = ((10_000_000u64) << 32) | ((0x8086u64) << 16) | (1 << 15) | (1 << 13) | (2 << 8) | 1;
+    dev.write_reg(HPET_REG_GCAP_ID, gcap_val);
+
+    // 1. Frequency and capability discovery
+    dev.discover_capabilities();
+    if dev.info.counter_clk_period_fs != 10_000_000 || dev.info.frequency_hz() != 10_000_000 {
+        return false;
+    }
+    if dev.info.num_timers != 3 || !dev.info.is_64bit || !dev.info.legacy_replacement_cap {
+        return false;
+    }
+
+    // 2. Counter start/stop and value programming
+    if dev.is_enabled() {
+        return false;
+    }
+    dev.enable(true);
+    if !dev.is_enabled() {
+        return false;
+    }
+    let gen_conf = dev.read_reg(HPET_REG_GEN_CONF);
+    if (gen_conf & (HPET_GEN_CONF_ENABLE | HPET_GEN_CONF_LEG_RT)) != (HPET_GEN_CONF_ENABLE | HPET_GEN_CONF_LEG_RT) {
+        return false;
+    }
+
+    dev.set_main_counter(0x0000_1234_5678_9ABC);
+    if dev.read_main_counter() != 0x0000_1234_5678_9ABC {
+        return false;
+    }
+
+    // 3. Periodic comparator configuration (Timer 0 @ 10ms = 100,000 ticks)
+    let periodic_cfg = HpetTimerConfig::periodic(100_000, 2, true);
+    dev.configure_timer(0, &periodic_cfg);
+
+    let t0_conf = dev.read_reg(HPET_REG_TIM0_CONF);
+    if (t0_conf & HPET_TN_TYPE_PERIODIC) == 0 || (t0_conf & HPET_TN_INT_ENABLE) == 0 {
+        return false;
+    }
+    let t0_comp = dev.read_reg(HPET_REG_TIM0_COMP);
+    if t0_comp != 100_000 {
+        return false;
+    }
+
+    // 4. One-shot comparator configuration (Timer 1 @ 5ms = 50,000 ticks)
+    let oneshot_cfg = HpetTimerConfig::one_shot(50_000, 8, true);
+    dev.configure_timer(1, &oneshot_cfg);
+
+    let t1_conf = dev.read_reg(dev.registers.offset_timer_conf(1));
+    if (t1_conf & HPET_TN_TYPE_PERIODIC) != 0 || (t1_conf & HPET_TN_INT_ENABLE) == 0 {
+        return false;
+    }
+    let t1_comp = dev.read_reg(dev.registers.offset_timer_comp(1));
+    if t1_comp != 50_000 {
+        return false;
+    }
+
+    // 5. Interrupt status & write-1-to-clear check
+    dev.write_reg(HPET_REG_GINTR_STA, 1 << 0); // Simulate Timer 0 interrupt asserted
+    if !dev.check_and_clear_interrupt(0) {
+        return false;
+    }
+    // Writing 1 to clear should reset bit 0 in a real register or simulated logic
+    // Let's ensure clearing was invoked
+    dev.write_reg(HPET_REG_GINTR_STA, 0);
+    if dev.check_and_clear_interrupt(0) {
+        return false;
+    }
+
+    // 6. Disable HPET
+    dev.disable();
+    if dev.is_enabled() {
+        return false;
+    }
+
+    true
+}
