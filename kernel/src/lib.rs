@@ -458,6 +458,10 @@ pub extern "C" fn kmain() -> ! {
     if !drivers::input::test_touchpad_trackball_subsystem() {
         serial_write_str("[KNT-PANIC] Touchpad and virtual trackball emulation self-test failed!\r\n");
     }
+    // Initialize and verify Handheld PC Hall Effect Magnetic Joystick & Trigger Calibration Engine
+    if !drivers::input::test_hall_effect_subsystem() {
+        serial_write_str("[KNT-PANIC] Hall effect magnetic joystick and trigger calibration self-test failed!\r\n");
+    }
 
     // Initialize and verify Handheld PC Multi-Zone RGB Lighting Controller & Aura Sync Engine
     if !drivers::led::test_rgb_lighting_subsystem() {
