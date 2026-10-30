@@ -1137,3 +1137,325 @@ pub fn verify_jitter_filter_and_contact_tracking() -> bool {
 
     true
 }
+/// Discrete haptic feedback pulse types emitted on gesture threshold transitions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HapticPulseType {
+    /// No haptic actuation.
+    None,
+    /// Subtle high-frequency tick emitted on incremental scroll step (e.g. 20 px boundary).
+    LightScrollTick,
+    /// Medium detent pulse emitted on pinch-to-zoom step threshold.
+    PinchStepDetent,
+    /// Sharp tactile click on discrete tap or physical pressure click.
+    TapClick,
+    /// Strong crisp snap on 3-finger workspace/task switch gesture.
+    SwipeSnap,
+}
+
+/// Comprehensive Multi-Finger Gesture Recognizer and Haptic Event Synthesizer.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TouchpadGestureRecognizer {
+    /// Active contact tracking and jitter filtering engine.
+    pub tracker: TouchpadTrackingEngine,
+    /// Initial two-finger pinch distance at gesture onset.
+    pub initial_pinch_dist: f32,
+    /// Accumulated vertical scroll distance since last haptic tick.
+    pub scroll_accum_y: f32,
+    /// Touch-down timestamp for tap recognition (in us).
+    pub touch_down_us: u64,
+    /// Most recent haptic pulse synthesized.
+    pub last_haptic_pulse: HapticPulseType,
+}
+
+impl TouchpadGestureRecognizer {
+    /// Creates a new gesture recognizer instance.
+    pub const fn new() -> Self {
+        Self {
+            tracker: TouchpadTrackingEngine::new(),
+            initial_pinch_dist: 0.0,
+            scroll_accum_y: 0.0,
+            touch_down_us: 0,
+            last_haptic_pulse: HapticPulseType::None,
+        }
+    }
+
+    /// Processes a new multi-touch frame, recognizes gestures, and synthesizes haptic feedback pulses.
+    pub fn process_frame(
+        &mut self,
+        frame: &TouchpadFrame,
+    ) -> (Option<TouchpadGestureEvent>, HapticPulseType) {
+        self.last_haptic_pulse = HapticPulseType::None;
+
+        // 1. Update tracking engine with jitter filtering
+        self.tracker.process_frame(frame);
+
+        let active_count = frame.contact_count;
+
+        // Track touch down timestamp for tap detection
+        if active_count == 1 && self.touch_down_us == 0 {
+            self.touch_down_us = frame.timestamp_us;
+        }
+
+        // 2. Gesture evaluation based on active finger count
+        match active_count {
+            0 => {
+                // Check if a finger just lifted for SingleTap (held < 250ms, moved < 10px)
+                if self.touch_down_us > 0 {
+                    let duration_ms = (frame.timestamp_us.saturating_sub(self.touch_down_us)) / 1000;
+                    self.touch_down_us = 0;
+                    self.initial_pinch_dist = 0.0;
+                    self.scroll_accum_y = 0.0;
+
+                    let c0 = &self.tracker.contacts[0];
+                    if duration_ms < 250 && c0.total_distance < 10.0 {
+                        self.last_haptic_pulse = HapticPulseType::TapClick;
+                        let event = TouchpadGestureEvent {
+                            gesture_type: TouchpadGestureType::SingleTap { x: c0.filtered_x, y: c0.filtered_y },
+                            state: TouchpadGestureState::Ended,
+                            finger_count: 1,
+                            timestamp_us: frame.timestamp_us,
+                        };
+                        return (Some(event), self.last_haptic_pulse);
+                    }
+                }
+                (None, HapticPulseType::None)
+            }
+
+            1 => {
+                // 1-Finger drag motion
+                let c0 = &self.tracker.contacts[0];
+                if c0.active && (c0.dx.abs() > 0.01 || c0.dy.abs() > 0.01) {
+                    let event = TouchpadGestureEvent {
+                        gesture_type: TouchpadGestureType::SingleDrag { dx: c0.dx, dy: c0.dy },
+                        state: TouchpadGestureState::Changed,
+                        finger_count: 1,
+                        timestamp_us: frame.timestamp_us,
+                    };
+                    (Some(event), HapticPulseType::None)
+                } else {
+                    (None, HapticPulseType::None)
+                }
+            }
+
+            2 => {
+                self.touch_down_us = 0; // Cancel tap
+                let c0 = &self.tracker.contacts[0];
+                let c1 = &self.tracker.contacts[1];
+
+                if c0.active && c1.active {
+                    let dx = c1.filtered_x - c0.filtered_x;
+                    let dy = c1.filtered_y - c0.filtered_y;
+                    let current_dist = sqrt_f32(dx * dx + dy * dy);
+
+                    if self.initial_pinch_dist == 0.0 {
+                        self.initial_pinch_dist = current_dist;
+                    }
+
+                    let dist_delta = current_dist - self.initial_pinch_dist;
+
+                    // If distance delta is significant (> 12px) and fingers move in opposite directions -> Pinch
+                    if dist_delta.abs() > 12.0 {
+                        let scale_delta = current_dist / self.initial_pinch_dist.max(1.0);
+                        self.initial_pinch_dist = current_dist;
+                        self.last_haptic_pulse = HapticPulseType::PinchStepDetent;
+
+                        let event = TouchpadGestureEvent {
+                            gesture_type: TouchpadGestureType::TwoFingerPinchZoom {
+                                scale_delta,
+                                center_x: (c0.filtered_x + c1.filtered_x) / 2.0,
+                                center_y: (c0.filtered_y + c1.filtered_y) / 2.0,
+                            },
+                            state: TouchpadGestureState::Changed,
+                            finger_count: 2,
+                            timestamp_us: frame.timestamp_us,
+                        };
+                        return (Some(event), self.last_haptic_pulse);
+                    } else {
+                        // Parallel 2-finger scroll
+                        let avg_dx = (c0.dx + c1.dx) / 2.0;
+                        let avg_dy = (c0.dy + c1.dy) / 2.0;
+
+                        self.scroll_accum_y += avg_dy;
+                        if self.scroll_accum_y.abs() >= 20.0 {
+                            self.last_haptic_pulse = HapticPulseType::LightScrollTick;
+                            self.scroll_accum_y = 0.0;
+                        }
+
+                        let event = TouchpadGestureEvent {
+                            gesture_type: TouchpadGestureType::TwoFingerScroll {
+                                delta_x: avg_dx,
+                                delta_y: avg_dy,
+                                is_inertial: false,
+                            },
+                            state: TouchpadGestureState::Changed,
+                            finger_count: 2,
+                            timestamp_us: frame.timestamp_us,
+                        };
+                        return (Some(event), self.last_haptic_pulse);
+                    }
+                }
+                (None, HapticPulseType::None)
+            }
+
+            3 => {
+                // 3-Finger fast horizontal or vertical gesture swipe
+                self.touch_down_us = 0;
+                let c0 = &self.tracker.contacts[0];
+                let c1 = &self.tracker.contacts[1];
+                let c2 = &self.tracker.contacts[2];
+
+                if c0.active && c1.active && c2.active {
+                    let avg_dx = (c0.dx + c1.dx + c2.dx) / 3.0;
+                    let avg_dy = (c0.dy + c1.dy + c2.dy) / 3.0;
+
+                    if avg_dx.abs() > 30.0 && avg_dx.abs() > avg_dy.abs() * 1.5 {
+                        self.last_haptic_pulse = HapticPulseType::SwipeSnap;
+                        let event = TouchpadGestureEvent {
+                            gesture_type: TouchpadGestureType::ThreeFingerSwipeHorizontal {
+                                swipe_left: avg_dx < 0.0,
+                            },
+                            state: TouchpadGestureState::Ended,
+                            finger_count: 3,
+                            timestamp_us: frame.timestamp_us,
+                        };
+                        return (Some(event), self.last_haptic_pulse);
+                    } else if avg_dy.abs() > 30.0 && avg_dy.abs() > avg_dx.abs() * 1.5 {
+                        self.last_haptic_pulse = HapticPulseType::SwipeSnap;
+                        let event = TouchpadGestureEvent {
+                            gesture_type: TouchpadGestureType::ThreeFingerSwipeVertical {
+                                swipe_up: avg_dy < 0.0,
+                            },
+                            state: TouchpadGestureState::Ended,
+                            finger_count: 3,
+                            timestamp_us: frame.timestamp_us,
+                        };
+                        return (Some(event), self.last_haptic_pulse);
+                    }
+                }
+                (None, HapticPulseType::None)
+            }
+
+            _ => (None, HapticPulseType::None),
+        }
+    }
+}
+
+/// Verification helper for Commit 3 multi-finger gestures and haptic pulse synthesis.
+pub fn verify_multi_finger_gestures_and_haptics() -> bool {
+    let mut recognizer = TouchpadGestureRecognizer::new();
+
+    // 1. Verify Single Tap Gesture (touch down and up in 50ms, 0 displacement)
+    let mut frame_down = TouchpadFrame::empty(100_000);
+    frame_down.contact_count = 1;
+    frame_down.contacts[0] = TouchpadContact {
+        contact_id: 0,
+        state: TouchpadContactState::TouchDown,
+        x: 400.0,
+        y: 400.0,
+        pressure_z: 1000,
+        major_axis: 10,
+        minor_axis: 10,
+        orientation_deg: 0,
+        timestamp_us: 100_000,
+    };
+    recognizer.process_frame(&frame_down);
+
+    let frame_up = TouchpadFrame::empty(150_000); // 50ms later, 0 contacts
+    let (tap_event, haptic_tap) = recognizer.process_frame(&frame_up);
+
+    if haptic_tap != HapticPulseType::TapClick {
+        return false;
+    }
+    match tap_event {
+        Some(ev) => {
+            if ev.finger_count != 1 || ev.state != TouchpadGestureState::Ended {
+                return false;
+            }
+            match ev.gesture_type {
+                TouchpadGestureType::SingleTap { x, y } => {
+                    if x != 400.0 || y != 400.0 {
+                        return false;
+                    }
+                }
+                _ => return false,
+            }
+        }
+        None => return false,
+    }
+
+    // 2. Verify 2-Finger Scroll and Scroll Haptic Tick
+    let mut frame_2f_0 = TouchpadFrame::empty(200_000);
+    frame_2f_0.contact_count = 2;
+    frame_2f_0.contacts[0] = TouchpadContact {
+        contact_id: 0,
+        state: TouchpadContactState::TouchDown,
+        x: 300.0,
+        y: 300.0,
+        pressure_z: 1000,
+        major_axis: 10,
+        minor_axis: 10,
+        orientation_deg: 0,
+        timestamp_us: 200_000,
+    };
+    frame_2f_0.contacts[1] = TouchpadContact {
+        contact_id: 1,
+        state: TouchpadContactState::TouchDown,
+        x: 400.0,
+        y: 300.0,
+        pressure_z: 1000,
+        major_axis: 10,
+        minor_axis: 10,
+        orientation_deg: 0,
+        timestamp_us: 200_000,
+    };
+    recognizer.process_frame(&frame_2f_0);
+
+    // Move both fingers downward by 25.0 px (exceeds 20 px scroll haptic tick)
+    let mut frame_2f_1 = TouchpadFrame::empty(210_000);
+    frame_2f_1.contact_count = 2;
+    frame_2f_1.contacts[0] = TouchpadContact {
+        contact_id: 0,
+        state: TouchpadContactState::Moving,
+        x: 300.0,
+        y: 325.0,
+        pressure_z: 1000,
+        major_axis: 10,
+        minor_axis: 10,
+        orientation_deg: 0,
+        timestamp_us: 210_000,
+    };
+    frame_2f_1.contacts[1] = TouchpadContact {
+        contact_id: 1,
+        state: TouchpadContactState::Moving,
+        x: 400.0,
+        y: 325.0,
+        pressure_z: 1000,
+        major_axis: 10,
+        minor_axis: 10,
+        orientation_deg: 0,
+        timestamp_us: 210_000,
+    };
+    let (scroll_event, haptic_scroll) = recognizer.process_frame(&frame_2f_1);
+
+    if haptic_scroll != HapticPulseType::LightScrollTick {
+        return false;
+    }
+    match scroll_event {
+        Some(ev) => {
+            if ev.finger_count != 2 {
+                return false;
+            }
+            match ev.gesture_type {
+                TouchpadGestureType::TwoFingerScroll { delta_y, .. } => {
+                    if delta_y <= 0.0 {
+                        return false;
+                    }
+                }
+                _ => return false,
+            }
+        }
+        None => return false,
+    }
+
+    true
+}
