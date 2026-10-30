@@ -236,3 +236,164 @@ impl ReorderTable {
         self.entries.clear();
     }
 }
+
+
+// -----------------------------------------------------------------------------
+// Radix Hit-Sort Accelerator Engine
+// -----------------------------------------------------------------------------
+
+/// Hardware-assisted 8-bit Radix Sort engine operating on 64-bit composite ReorderKey.
+#[derive(Debug, Clone, Default)]
+pub struct RadixHitSorter {
+    pub total_sort_passes: u64,
+    pub total_rays_sorted: u64,
+}
+
+impl RadixHitSorter {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sorts a slice of HitObjects in-place by their 64-bit composite ReorderKey
+    /// using an 8-pass 256-bucket Least Significant Digit (LSD) Radix Sort.
+    pub fn sort(&mut self, items: &mut [HitObject]) {
+        let n = items.len();
+        if n <= 1 {
+            return;
+        }
+
+        let mut scratch = alloc::vec::Vec::with_capacity(n);
+        scratch.resize(n, HitObject::default());
+
+        let mut source: &mut [HitObject] = items;
+        let mut target: &mut [HitObject] = &mut scratch;
+
+        // 8 passes for 64-bit keys (8 bits per pass)
+        for pass in 0..8 {
+            let shift = pass * 8;
+            let mut counts = [0usize; 256];
+
+            // 1. Compute histogram
+            for item in source.iter() {
+                let bucket = ((item.reorder_key.0 >> shift) & 0xFF) as usize;
+                counts[bucket] += 1;
+            }
+
+            // 2. Compute prefix sum (starting offsets)
+            let mut offsets = [0usize; 256];
+            let mut total = 0;
+            for i in 0..256 {
+                offsets[i] = total;
+                total += counts[i];
+            }
+
+            // 3. Scatter items into target buffer
+            for item in source.iter() {
+                let bucket = ((item.reorder_key.0 >> shift) & 0xFF) as usize;
+                target[offsets[bucket]] = *item;
+                offsets[bucket] += 1;
+            }
+
+            // 4. Swap source and target references
+            core::mem::swap(&mut source, &mut target);
+        }
+
+        // If the final result ended up in scratch (even number of passes = 8, so source is items again),
+        // we verify and copy if needed. Since 8 is even, source is items, so items already contains sorted data!
+        self.total_sort_passes += 8;
+        self.total_rays_sorted += n as u64;
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Threadgroup / SIMD Divergence Estimator
+// -----------------------------------------------------------------------------
+
+/// Coherence and SIMD lane efficiency metrics for a ray batch.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct DivergenceMetrics {
+    /// Total number of rays evaluated.
+    pub total_rays: usize,
+    /// Number of simulated hardware waves/warps.
+    pub wave_count: usize,
+    /// Total distinct shader invocations across all waves.
+    pub total_wave_shader_invocations: usize,
+    /// Average distinct shaders executed per wave.
+    pub avg_shaders_per_wave: f32,
+    /// SIMD lane utilization ratio (1.0 = 100% full wave lockstep, 0.25 = 25% due to 4-way divergence).
+    pub lane_utilization: f32,
+    /// Normalized spatial coherence index [0.0, 1.0].
+    pub spatial_coherence: f32,
+}
+
+/// Hardware wave divergence estimator analyzing SIMD branch efficiency.
+pub struct DivergenceEstimator;
+
+impl DivergenceEstimator {
+    /// Computes SIMD lane utilization and spatial coherence for a set of HitObjects
+    /// grouped into hardware waves of size `wave_size`.
+    pub fn analyze(items: &[HitObject], wave_size: u32) -> DivergenceMetrics {
+        if items.is_empty() {
+            return DivergenceMetrics::default();
+        }
+
+        let w_size = wave_size.max(1) as usize;
+        let mut total_shader_invocations = 0;
+        let mut total_waves = 0;
+
+        // Track spatial Morton code delta for spatial coherence
+        let mut total_morton_delta: u64 = 0;
+        let mut delta_comparisons: u64 = 0;
+
+        for chunk in items.chunks(w_size) {
+            total_waves += 1;
+            // Identify distinct shader targets within this wave
+            let mut distinct_shaders = alloc::vec::Vec::with_capacity(chunk.len());
+            for item in chunk {
+                let shader = item.reorder_key.shader_index();
+                if !distinct_shaders.contains(&shader) {
+                    distinct_shaders.push(shader);
+                }
+            }
+            total_shader_invocations += distinct_shaders.len();
+
+            // Compute pairwise spatial delta within wave
+            for i in 1..chunk.len() {
+                let d = (chunk[i].reorder_key.morton_code() as i64 - chunk[i - 1].reorder_key.morton_code() as i64).abs() as u64;
+                total_morton_delta += d;
+                delta_comparisons += 1;
+            }
+        }
+
+        let avg_shaders = if total_waves > 0 {
+            total_shader_invocations as f32 / total_waves as f32
+        } else {
+            1.0
+        };
+
+        // Lane utilization is reciprocal of average serialized passes per wave
+        let lane_utilization = if avg_shaders >= 1.0 {
+            (1.0 / avg_shaders).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+
+        // Normalized spatial coherence: lower Morton delta = higher spatial clustering
+        let avg_delta = if delta_comparisons > 0 {
+            total_morton_delta as f32 / delta_comparisons as f32
+        } else {
+            0.0
+        };
+        // Normalize against 30-bit Morton range (1 << 30)
+        let spatial_coherence = (1.0 - (avg_delta / (1u32 << 26) as f32)).clamp(0.0, 1.0);
+
+        DivergenceMetrics {
+            total_rays: items.len(),
+            wave_count: total_waves,
+            total_wave_shader_invocations: total_shader_invocations,
+            avg_shaders_per_wave: avg_shaders,
+            lane_utilization,
+            spatial_coherence,
+        }
+    }
+}
