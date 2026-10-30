@@ -17,6 +17,7 @@ pub mod shell;
 pub mod ipc;
 pub mod loader;
 pub mod graphics;
+pub mod gfx;
 pub mod terminal;
 pub mod power;
 pub mod mm;
