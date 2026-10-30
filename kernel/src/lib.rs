@@ -20,6 +20,7 @@ pub mod graphics;
 pub mod terminal;
 pub mod power;
 pub mod mm;
+pub mod trace;
 
 pub use memory::ALLOCATOR;
 
