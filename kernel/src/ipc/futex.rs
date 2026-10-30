@@ -1,7 +1,5 @@
 //! Fast User-Space Locking (Futex) Engine with Hash Buckets and Wait Queues.
-//!
 //! Provides lockless fast-path and kernel-mediated sleep/wake synchronization
-//! for threads and processes sharing physical memory addresses.
 
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};

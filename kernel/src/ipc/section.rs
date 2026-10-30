@@ -1,7 +1,5 @@
 //! NT Shared Memory Sections (Section Objects) for Zero-Copy IPC.
-//!
 //! Provides creation and mapping of contiguous physical frame backed
-//! memory sections shareable across virtual address spaces.
 
 use alloc::string::String;
 use alloc::vec::Vec;
