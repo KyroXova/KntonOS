@@ -614,3 +614,29 @@ pub fn test_touch_and_gesture_subsystem() -> bool {
     serial_write_str("[KNT-INPUT-TOUCH-PASS] Capacitive touch digitizer and multi-finger gesture engine verified\r\n");
     true
 }
+
+/// Verification self-test suite for Handheld PC Capacitive Touchpad & Virtual Trackball Emulation Engine.
+pub fn test_touchpad_trackball_subsystem() -> bool {
+    serial_write_str("[KNT-INPUT] Testing dual capacitive touchpad & virtual trackball emulation engine...\r\n");
+
+    // 1. Verify Dual Capacitive Thumb Touchpad Driver & Ballistic Velocity Curve
+    if !verify_dual_touchpad_and_ballistic_curve() {
+        serial_write_str("[KNT-PANIC] Dual touchpad / ballistic curve verification failed!\r\n");
+        return false;
+    }
+
+    // 2. Verify Virtual Trackball Physics Model, Viscous Friction Damping & Kinetic Spin
+    if !verify_virtual_trackball_physics() {
+        serial_write_str("[KNT-PANIC] Virtual trackball physics model / kinetic spin verification failed!\r\n");
+        return false;
+    }
+
+    // 3. Verify Dual-Stage Pressure Click Threshold, Hysteresis & Tactile Haptic Ticks
+    if !verify_dual_stage_click_and_haptic_ticks() {
+        serial_write_str("[KNT-PANIC] Dual-stage pressure click / haptic ticks verification failed!\r\n");
+        return false;
+    }
+
+    serial_write_str("[KNT-INPUT-TOUCHPAD-PASS] Capacitive touchpad and virtual trackball emulation verified\r\n");
+    true
+}
