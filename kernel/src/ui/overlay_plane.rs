@@ -99,10 +99,6 @@ pub struct OverlayPlaneDescriptor {
 
 impl OverlayPlaneDescriptor {
     pub fn new(plane_id: u32, width: u32, height: u32, screen_width: u32, screen_height: u32) -> Self {
-        let size = (width * height) as usize;
-        let mut buffer = Vec::with_capacity(size);
-        buffer.resize(size, 0); // Transparent black
-
         // Right-docked sidebar positioning
         let dest_x = (screen_width.saturating_sub(width)) as i32;
         let dest_rect = PlaneRect::new(dest_x, 0, width, screen_height);
@@ -119,8 +115,14 @@ impl OverlayPlaneDescriptor {
             pixel_format: DRM_FORMAT_ARGB8888,
             stride_bytes: (width as usize) * 4,
             framebuffer_phys_addr: 0,
-            buffer,
+            buffer: Vec::new(),
         }
+    }
+
+    /// Allocates or resizes software backing buffer when required.
+    pub fn allocate_buffer(&mut self, width: u32, height: u32) {
+        let size = (width * height) as usize;
+        self.buffer.resize(size, 0);
     }
 
     /// Sets the on-screen global opacity (0.0 to 1.0).
@@ -496,7 +498,7 @@ impl AlphaBlendPipeline {
         out[..copy_len].copy_from_slice(&primary[..copy_len]);
 
         // 1. Blend Overlay Plane if enabled
-        if overlay.enabled {
+        if overlay.enabled && !overlay.buffer.is_empty() {
             let ox = overlay.dest_rect.x;
             let oy = overlay.dest_rect.y;
             let ow = overlay.dest_rect.width as usize;
@@ -773,6 +775,157 @@ impl QuickSettingsManager {
             },
         }
     }
+}
+
+
+// =============================================================================
+// 6. Subsystem Verification Suite & Boot Sentinel
+// =============================================================================
+
+/// Verification test suite for Unified Game State Overlay Compositor & Zero-Copy Hardware Cursor Plane Subsystem (TASK-KNT-109).
+pub fn test_game_overlay_and_cursor_subsystem() -> bool {
+    crate::serial_write_str("[KNT-UI-OVERLAY-PLANE-TEST] Running Game State Overlay Compositor & Hardware Cursor Plane verification suite...\r\n");
+
+    // 1. DRM display plane descriptors, FourCC formats, and QAM layout
+    let mut overlay = OverlayPlaneDescriptor::new(101, 340, 800, 1280, 800);
+    if overlay.plane_id != 101 || overlay.zpos != PLANE_ZPOS_OVERLAY || overlay.pixel_format != DRM_FORMAT_ARGB8888 {
+        return false;
+    }
+    if overlay.dest_rect.x != 1280 - 340 || overlay.dest_rect.width != 340 || overlay.dest_rect.height != 800 {
+        return false;
+    }
+    overlay.set_opacity_f32(0.85);
+    if (overlay.opacity_f32() - 0.85).abs() > 0.02 {
+        return false;
+    }
+    crate::serial_write_str("  * DRM display plane descriptors, FourCC formats, and QAM layout verified\r\n");
+
+    // 2. Zero-copy hardware cursor plane, sub-pixel positioning, and hotspot alignment
+    let mut cursor = HardwareCursorPlane::new(102, 64);
+    if cursor.plane_id != 102 || cursor.width != 64 || cursor.height != 64 {
+        return false;
+    }
+    cursor.set_subpixel_position(240.25, 360.75);
+    let (cx, cy) = cursor.screen_coords();
+    if cx != 240 || cy != 361 {
+        return false;
+    }
+    cursor.set_cursor_type(CursorType::Crosshair);
+    if cursor.hotspot_x != 32 || cursor.hotspot_y != 32 {
+        return false;
+    }
+    let (chx, chy) = cursor.screen_coords();
+    if chx != 240 - 32 || chy != 361 - 32 {
+        return false;
+    }
+    crate::serial_write_str("  * Zero-copy hardware cursor plane, sub-pixel positioning, and hotspot alignment verified\r\n");
+
+    // 3. Fixed-point Porter-Duff Over alpha blending pipeline
+    let bg = 0xFF102030; // Solid background
+    let fg = 0x80FFFFFF; // 50% translucent white
+    let blended = AlphaBlendPipeline::blend_pixel(bg, fg, 0xFFFF);
+    let r = (blended >> 16) & 0xFF;
+    let g = (blended >> 8) & 0xFF;
+    let b = blended & 0xFF;
+    if r < 130 || r > 145 || g < 135 || g > 155 || b < 145 || b > 165 {
+        return false;
+    }
+    crate::serial_write_str("  * Fixed-point Porter-Duff Over alpha blending pipeline verified\r\n");
+
+    // 4. Quick settings manager (TDP slider, FPS limiter, fan curve, brightness)
+    let mut qsm = QuickSettingsManager::new();
+    qsm.set_tdp(25);
+    if qsm.tdp_watts != 25 {
+        return false;
+    }
+    qsm.set_tdp(40); // Clamped to 30
+    if qsm.tdp_watts != 30 {
+        return false;
+    }
+    qsm.handle_action(QuickSettingAction::SelectNext); // FpsLimiter
+    qsm.handle_action(QuickSettingAction::AdjustRight); // 60 -> 120
+    if qsm.fps_limit != FpsLimit::Fps120 || qsm.fps_limit.target_frametime_us() != 8333 {
+        return false;
+    }
+    qsm.handle_action(QuickSettingAction::SelectNext); // FanProfile
+    qsm.handle_action(QuickSettingAction::AdjustRight); // Balanced -> Performance
+    if qsm.fan_mode != FanAcousticMode::Performance || qsm.fan_mode.target_dba() != 45 {
+        return false;
+    }
+    qsm.set_brightness(90);
+    if qsm.brightness_pwm_value() != 229 {
+        return false;
+    }
+    qsm.set_overlay_opacity(80);
+    if qsm.global_alpha_u16() < 50000 {
+        return false;
+    }
+    crate::serial_write_str("  * Quick settings manager (TDP slider, FPS limiter, fan curve, brightness) verified\r\n");
+
+    // 5. Handheld QAM button trigger and cubic ease-out slide animation
+    let mut layout = QuickAccessMenuLayout::new(1280, 800);
+    layout.handle_button_press(HandheldButton::SteamQuickAccess);
+    if !matches!(layout.visibility, OverlayVisibilityState::Opening { .. }) {
+        return false;
+    }
+    let x_mid = layout.tick_animation(0.075);
+    if x_mid <= 940 || x_mid >= 1280 {
+        return false;
+    }
+    let x_open = layout.tick_animation(0.08);
+    if x_open != 1280 - 340 || layout.visibility != OverlayVisibilityState::Visible {
+        return false;
+    }
+    layout.handle_button_press(HandheldButton::RogArmouryCrate);
+    if !matches!(layout.visibility, OverlayVisibilityState::Closing { .. }) {
+        return false;
+    }
+    let x_closed = layout.tick_animation(0.16);
+    if x_closed != 1280 || layout.visibility != OverlayVisibilityState::Hidden {
+        return false;
+    }
+    crate::serial_write_str("  * Handheld QAM button trigger and cubic ease-out slide animation verified\r\n");
+
+    // 6. End-to-end 3-plane hardware overlay and cursor composition
+    let screen_w = 120;
+    let screen_h = 40;
+    let total = screen_w * screen_h;
+    let primary_frame = alloc::vec![0xFF0000FF; total]; // Blue game scene
+    let mut comp_overlay = OverlayPlaneDescriptor::new(201, 30, screen_h as u32, screen_w as u32, screen_h as u32);
+    comp_overlay.enabled = true;
+    comp_overlay.dest_rect = PlaneRect::new((screen_w - 30) as i32, 0, 30, screen_h as u32);
+    comp_overlay.allocate_buffer(30, screen_h as u32);
+    comp_overlay.buffer.fill(0xC0FF0000); // 75% red overlay sidebar
+    comp_overlay.global_alpha = 0xFFFF;
+
+    let mut comp_cursor = HardwareCursorPlane::new(202, 16);
+    comp_cursor.enabled = true;
+    comp_cursor.set_subpixel_position((screen_w - 15) as f32, 10.0);
+    comp_cursor.set_cursor_type(CursorType::Arrow);
+
+    let mut output_frame = alloc::vec![0u32; total];
+    AlphaBlendPipeline::compose_3planes(
+        &primary_frame,
+        &comp_overlay,
+        &comp_cursor,
+        &mut output_frame,
+        screen_w,
+        screen_h,
+    );
+
+    if output_frame[10] != 0xFF0000FF {
+        return false;
+    }
+    let ov_pixel = output_frame[screen_w - 10];
+    let ov_r = (ov_pixel >> 16) & 0xFF;
+    let ov_b = ov_pixel & 0xFF;
+    if ov_r < 180 || ov_b > 80 {
+        return false;
+    }
+    crate::serial_write_str("  * End-to-end 3-plane hardware overlay and cursor composition verified\r\n");
+
+    crate::serial_write_str("[KNT-UI-OVERLAY-PLANE-PASS] Unified game state overlay compositor and hardware cursor plane operational\r\n");
+    true
 }
 
 // -----------------------------------------------------------------------------

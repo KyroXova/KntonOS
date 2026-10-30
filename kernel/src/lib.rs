@@ -408,6 +408,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Wireless BLE gamepad and audio streaming self-test failed!\r\n");
     }
 
+    // Verify Unified Game State Overlay Compositor & Zero-Copy Hardware Cursor Plane Subsystem (TASK-KNT-109)
+    if !ui::test_game_overlay_and_cursor_subsystem() {
+        serial_write_str("[KNT-PANIC] Game state overlay compositor and cursor plane self-test failed!\r\n");
+    }
+
     // Initialize Desktop Shell Compositor & Window Manager
     compositor::init(320, 240);
     if !compositor::test_compositor_subsystem() {
