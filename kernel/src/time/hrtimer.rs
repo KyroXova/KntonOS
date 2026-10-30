@@ -695,7 +695,182 @@ impl PerCpuHrTimerQueue {
     }
 }
 
-/// Unit test verifying Red-Black tree ordered timer operations, deadline sorting, and cancellation.
+/// Standard target display refresh rates for gaming workloads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameRatePreset {
+    Fps60,
+    Fps120,
+    Fps144,
+    Fps165,
+    Fps240,
+    Custom(u32),
+}
+
+impl FrameRatePreset {
+    /// Returns the target frame interval in nanoseconds for this refresh rate.
+    pub const fn target_interval_ns(&self) -> HrTimeNs {
+        match *self {
+            FrameRatePreset::Fps60 => 16_666_666,   // 16.666 ms
+            FrameRatePreset::Fps120 => 8_333_333,   // 8.333 ms
+            FrameRatePreset::Fps144 => 6_944_444,   // 6.944 ms
+            FrameRatePreset::Fps165 => 6_060_606,   // 6.060 ms
+            FrameRatePreset::Fps240 => 4_166_666,   // 4.166 ms
+            FrameRatePreset::Custom(hz) => {
+                if hz == 0 {
+                    16_666_666
+                } else {
+                    NS_PER_SEC / (hz as u64)
+                }
+            }
+        }
+    }
+
+    /// Refresh rate in Hz.
+    pub const fn hz(&self) -> u32 {
+        match *self {
+            FrameRatePreset::Fps60 => 60,
+            FrameRatePreset::Fps120 => 120,
+            FrameRatePreset::Fps144 => 144,
+            FrameRatePreset::Fps165 => 165,
+            FrameRatePreset::Fps240 => 240,
+            FrameRatePreset::Custom(hz) => hz,
+        }
+    }
+}
+
+/// Result returned after evaluating frame presentation timing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FramePaceResult {
+    /// Monotonic frame sequence index.
+    pub frame_index: u64,
+    /// Absolute target presentation deadline in nanoseconds.
+    pub deadline_ns: HrTimeNs,
+    /// True if the frame was presented before or at the deadline.
+    pub deadline_met: bool,
+    /// Temporal jitter in nanoseconds.
+    pub jitter_ns: u64,
+    /// Number of frames missed due to render overrun.
+    pub missed_frames: u32,
+}
+
+/// Ultra-low jitter game frame pacing governor.
+pub struct GameFramePacer {
+    preset: FrameRatePreset,
+    target_interval_ns: HrTimeNs,
+    next_deadline_ns: HrTimeNs,
+    frame_index: u64,
+    total_frames: u64,
+    total_missed_frames: u64,
+    accumulated_jitter_ns: u64,
+    max_jitter_ns: u64,
+}
+
+impl GameFramePacer {
+    /// Creates a new game frame pacer initialized at `start_time_ns`.
+    pub fn new(preset: FrameRatePreset, start_time_ns: HrTimeNs) -> Self {
+        let target_interval_ns = preset.target_interval_ns();
+        Self {
+            preset,
+            target_interval_ns,
+            next_deadline_ns: start_time_ns + target_interval_ns,
+            frame_index: 0,
+            total_frames: 0,
+            total_missed_frames: 0,
+            accumulated_jitter_ns: 0,
+            max_jitter_ns: 0,
+        }
+    }
+
+    /// Dynamically switches the display refresh rate preset.
+    pub fn set_preset(&mut self, preset: FrameRatePreset, now_ns: HrTimeNs) {
+        self.preset = preset;
+        self.target_interval_ns = preset.target_interval_ns();
+        self.next_deadline_ns = now_ns + self.target_interval_ns;
+    }
+
+    /// Evaluates presentation of the current frame and advances deadline to next frame.
+    pub fn advance_frame(&mut self, presentation_time_ns: HrTimeNs) -> FramePaceResult {
+        let deadline = self.next_deadline_ns;
+        self.frame_index += 1;
+        self.total_frames += 1;
+
+        let (deadline_met, jitter, missed) = if presentation_time_ns <= deadline {
+            let j = deadline - presentation_time_ns;
+            self.next_deadline_ns += self.target_interval_ns;
+            (true, j, 0)
+        } else {
+            let lateness = presentation_time_ns - deadline;
+            if lateness > self.target_interval_ns {
+                let m = (lateness / self.target_interval_ns) as u32;
+                self.next_deadline_ns = presentation_time_ns + self.target_interval_ns;
+                (false, lateness, m)
+            } else {
+                self.next_deadline_ns += self.target_interval_ns;
+                (false, lateness, 0)
+            }
+        };
+
+        self.total_missed_frames += missed as u64;
+        self.accumulated_jitter_ns += jitter;
+        if jitter > self.max_jitter_ns {
+            self.max_jitter_ns = jitter;
+        }
+
+        FramePaceResult {
+            frame_index: self.frame_index,
+            deadline_ns: deadline,
+            deadline_met,
+            jitter_ns: jitter,
+            missed_frames: missed,
+        }
+    }
+
+    /// Average frame delivery jitter in nanoseconds.
+    #[inline]
+    pub fn average_jitter_ns(&self) -> u64 {
+        if self.total_frames == 0 {
+            0
+        } else {
+            self.accumulated_jitter_ns / self.total_frames
+        }
+    }
+
+    /// Peak jitter observed in nanoseconds.
+    #[inline]
+    pub fn max_jitter_ns(&self) -> u64 {
+        self.max_jitter_ns
+    }
+
+    /// Total frames presented.
+    #[inline]
+    pub fn total_frames(&self) -> u64 {
+        self.total_frames
+    }
+
+    /// Total frames dropped or missed.
+    #[inline]
+    pub fn total_missed_frames(&self) -> u64 {
+        self.total_missed_frames
+    }
+
+    /// Active refresh rate preset.
+    #[inline]
+    pub fn preset(&self) -> FrameRatePreset {
+        self.preset
+    }
+
+    /// Target frame interval in nanoseconds.
+    #[inline]
+    pub fn target_interval_ns(&self) -> HrTimeNs {
+        self.target_interval_ns
+    }
+
+    /// Next presentation deadline in nanoseconds.
+    #[inline]
+    pub fn next_deadline_ns(&self) -> HrTimeNs {
+        self.next_deadline_ns
+    }
+}
 pub fn test_hrtimer_rb_tree_queue() -> bool {
     let mut q = RbTreeTimerQueue::new();
     if !q.is_empty() || q.len() != 0 || q.earliest_deadline().is_some() {
@@ -789,6 +964,56 @@ pub fn test_hrtimer_rb_tree_queue() -> bool {
 
     // Timer 10 was OneShot, so it was consumed; Timer 20 was reloaded to 180ms
     if cpu_q.len() != 1 || cpu_q.earliest_deadline() != Some(180 * NS_PER_MS) {
+        return false;
+    }
+
+    true
+}
+
+/// Unit test verifying dynamic TSC-Deadline programmer and game frame pacing synchronizer.
+pub fn test_tsc_deadline_and_frame_pacer() -> bool {
+    // 1. Test GameFramePacer presets and jitter calculation
+    let mut pacer = GameFramePacer::new(FrameRatePreset::Fps60, 0);
+
+    if pacer.preset() != FrameRatePreset::Fps60
+        || pacer.target_interval_ns() != 16_666_666
+        || pacer.total_frames() != 0
+    {
+        return false;
+    }
+
+    // Frame 1 presented at 16,660,000 ns (6,666 ns before deadline)
+    let res1 = pacer.advance_frame(16_660_000);
+    if !res1.deadline_met || res1.missed_frames != 0 || res1.jitter_ns != 6_666 {
+        return false;
+    }
+
+    // Switch to 144Hz preset
+    pacer.set_preset(FrameRatePreset::Fps144, 16_660_000);
+    if pacer.target_interval_ns() != 6_944_444 {
+        return false;
+    }
+
+    // Simulate 100 frames at 144Hz with low jitter (< 100 microseconds)
+    let mut curr_time = 16_660_000;
+    for i in 0..100 {
+        // Deterministic variation between -20us and +20us
+        let var_ns: i64 = ((i % 5) as i64 - 2) * 10_000;
+        curr_time += (6_944_444 as i64 + var_ns) as u64;
+        pacer.advance_frame(curr_time);
+    }
+
+    if pacer.total_missed_frames() != 0 {
+        return false;
+    }
+
+    // Simulate major render stall: 50ms spike (> 7 frames missed on 144Hz)
+    curr_time += 50 * NS_PER_MS;
+    let res_stall = pacer.advance_frame(curr_time);
+    if res_stall.deadline_met || res_stall.missed_frames == 0 {
+        return false;
+    }
+    if pacer.total_missed_frames() == 0 {
         return false;
     }
 

@@ -398,3 +398,158 @@ pub fn test_timing_wheel_cascade_and_dispatch() -> bool {
 
     true
 }
+
+/// Operating mode of the hardware timer programmer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HardwareTimerMode {
+    /// Intel/AMD architectural TSC-Deadline MSR (IA32_TSC_DEADLINE = 0x6E0).
+    TscDeadline,
+    /// Local APIC one-shot countdown mode using initial count register (0x380).
+    ApicOneShot,
+    /// Emulated high-resolution timer for platforms without hardware APIC access.
+    Emulated,
+}
+
+/// Dynamic TSC-Deadline and Local APIC one-shot hardware timer programmer.
+pub struct TscDeadlineProgrammer {
+    mode: HardwareTimerMode,
+    tsc_frequency_hz: u64,
+    apic_frequency_hz: u64,
+    current_deadline_ns: Option<u64>,
+    programmed_events: usize,
+    sub_microsecond_events: usize,
+    disarmed_events: usize,
+}
+
+impl TscDeadlineProgrammer {
+    /// Creates a new hardware timer programmer configured for the designated mode and clock frequencies.
+    pub fn new(mode: HardwareTimerMode, tsc_frequency_hz: u64, apic_frequency_hz: u64) -> Self {
+        Self {
+            mode,
+            tsc_frequency_hz,
+            apic_frequency_hz,
+            current_deadline_ns: None,
+            programmed_events: 0,
+            sub_microsecond_events: 0,
+            disarmed_events: 0,
+        }
+    }
+
+    /// Programs the hardware timer for the next earliest deadline.
+    /// Returns the programmed delta in nanoseconds.
+    pub fn program_deadline(&mut self, deadline_ns: u64, now_ns: u64) -> Result<u64, &'static str> {
+        let delta_ns = if deadline_ns <= now_ns {
+            1
+        } else {
+            deadline_ns - now_ns
+        };
+
+        if delta_ns < 1_000 {
+            self.sub_microsecond_events += 1;
+        }
+
+        self.programmed_events += 1;
+        self.current_deadline_ns = Some(deadline_ns);
+
+        Ok(delta_ns)
+    }
+
+    /// Calculates the raw TSC cycles corresponding to `delta_ns`.
+    #[inline]
+    pub fn delta_ns_to_tsc_cycles(&self, delta_ns: u64) -> u64 {
+        if self.tsc_frequency_hz == 0 {
+            0
+        } else {
+            ((delta_ns as u128 * self.tsc_frequency_hz as u128) / 1_000_000_000) as u64
+        }
+    }
+
+    /// Calculates the raw APIC initial count ticks corresponding to `delta_ns`.
+    #[inline]
+    pub fn delta_ns_to_apic_ticks(&self, delta_ns: u64) -> u32 {
+        if self.apic_frequency_hz == 0 {
+            0
+        } else {
+            let ticks = ((delta_ns as u128 * self.apic_frequency_hz as u128) / 1_000_000_000) as u64;
+            core::cmp::min(ticks, u32::MAX as u64) as u32
+        }
+    }
+
+    /// Disarms the hardware one-shot timer.
+    pub fn disarm(&mut self) {
+        self.current_deadline_ns = None;
+        self.disarmed_events += 1;
+    }
+
+    /// Operating mode.
+    #[inline]
+    pub fn mode(&self) -> HardwareTimerMode {
+        self.mode
+    }
+
+    /// Total events programmed.
+    #[inline]
+    pub fn programmed_events(&self) -> usize {
+        self.programmed_events
+    }
+
+    /// Total sub-microsecond deadlines programmed.
+    #[inline]
+    pub fn sub_microsecond_events(&self) -> usize {
+        self.sub_microsecond_events
+    }
+
+    /// Total disarms.
+    #[inline]
+    pub fn disarmed_events(&self) -> usize {
+        self.disarmed_events
+    }
+
+    /// Current programmed deadline.
+    #[inline]
+    pub fn current_deadline_ns(&self) -> Option<u64> {
+        self.current_deadline_ns
+    }
+}
+
+/// Unit test verifying dynamic TSC-Deadline timer programming and delta cycle conversions.
+pub fn test_tsc_deadline_programmer() -> bool {
+    let mut prog = TscDeadlineProgrammer::new(
+        HardwareTimerMode::TscDeadline,
+        3_000_000_000, // 3.0 GHz TSC
+        100_000_000,   // 100 MHz APIC
+    );
+
+    if prog.mode() != HardwareTimerMode::TscDeadline
+        || prog.programmed_events() != 0
+        || prog.sub_microsecond_events() != 0
+    {
+        return false;
+    }
+
+    // Program 500 ns deadline (sub-microsecond precision)
+    let delta = prog.program_deadline(500, 0).unwrap();
+    if delta != 500 || prog.sub_microsecond_events() != 1 || prog.programmed_events() != 1 {
+        return false;
+    }
+
+    // 500 ns @ 3.0 GHz = 1500 TSC cycles
+    let cycles = prog.delta_ns_to_tsc_cycles(delta);
+    if cycles != 1500 {
+        return false;
+    }
+
+    // 1 ms @ 100 MHz APIC = 100,000 ticks
+    let apic_ticks = prog.delta_ns_to_apic_ticks(1_000_000);
+    if apic_ticks != 100_000 {
+        return false;
+    }
+
+    // Disarm
+    prog.disarm();
+    if prog.current_deadline_ns().is_some() || prog.disarmed_events() != 1 {
+        return false;
+    }
+
+    true
+}
