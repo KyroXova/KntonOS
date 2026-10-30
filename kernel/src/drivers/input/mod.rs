@@ -14,6 +14,7 @@ pub mod touch;
 pub mod gesture;
 pub mod touchpad;
 pub mod trackball;
+pub mod hall_effect;
 
 pub use imu::*;
 pub use gamepad::*;
@@ -29,6 +30,7 @@ pub use touch::*;
 pub use gesture::*;
 pub use touchpad::*;
 pub use trackball::*;
+pub use hall_effect::*;
 
 use crate::serial_write_str;
 
