@@ -9,6 +9,7 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 use super::nvme::{NvmeSubmissionEntry, NVME_NVM_READ};
 
 /// Error states encountered during DirectStorage operations.
@@ -390,6 +391,262 @@ pub fn verify_direct_storage_queue_and_bar_mapping() -> bool {
     // 5. Mark completion and verify byte counting
     let comp = ds_queue.mark_completed(id2);
     if comp.is_none() || ds_queue.completed_count() != 1 || ds_queue.total_bytes_streamed != 8192 * 512 {
+        return false;
+    }
+
+    true
+}
+
+
+/// Direct3D 12-style asynchronous GPU/storage synchronization fence.
+#[derive(Debug)]
+pub struct DirectStorageFence {
+    pub fence_id: u32,
+    pub current_value: AtomicU64,
+}
+
+impl DirectStorageFence {
+    pub const fn new(fence_id: u32, initial_value: u64) -> Self {
+        Self {
+            fence_id,
+            current_value: AtomicU64::new(initial_value),
+        }
+    }
+
+    /// Signals the fence to a new value (strictly monotonically increasing).
+    pub fn signal(&self, value: u64) {
+        let mut cur = self.current_value.load(Ordering::Acquire);
+        while value > cur {
+            match self.current_value.compare_exchange_weak(cur, value, Ordering::Release, Ordering::Relaxed) {
+                Ok(_) => break,
+                Err(actual) => cur = actual,
+            }
+        }
+    }
+
+    /// Checks if the fence has reached or exceeded a target value.
+    pub fn is_reached(&self, target_value: u64) -> bool {
+        self.current_value.load(Ordering::Acquire) >= target_value
+    }
+
+    pub fn value(&self) -> u64 {
+        self.current_value.load(Ordering::Acquire)
+    }
+}
+
+/// Represents an aggregated batch of NVMe DMA requests linked to a completion fence.
+#[derive(Debug, Clone)]
+pub struct BatchDescriptor {
+    pub batch_id: u64,
+    pub fence_id: u32,
+    pub fence_value_to_signal: u64,
+    pub request_ids: Vec<u64>,
+    pub completed_requests: u32,
+    pub total_bytes: u64,
+    pub is_completed: bool,
+    pub submission_timestamp_ns: u64,
+    pub completion_timestamp_ns: u64,
+}
+
+/// Batched Asynchronous I/O Completion Dispatcher.
+///
+/// Tracks in-flight NVMe-to-GPU DirectStorage batches, handles out-of-order CQE arrivals,
+/// aggregates batch completion, and signals Direct3D 12 GPU synchronization fences.
+pub struct BatchedCompletionDispatcher {
+    pub batches: Vec<BatchDescriptor>,
+    pub fences: Vec<DirectStorageFence>,
+    next_batch_id: u64,
+    pub total_completed_batches: u64,
+    pub total_bytes_completed: u64,
+    pub total_latency_ns: u64,
+}
+
+impl BatchedCompletionDispatcher {
+    pub fn new() -> Self {
+        Self {
+            batches: Vec::new(),
+            fences: Vec::new(),
+            next_batch_id: 1,
+            total_completed_batches: 0,
+            total_bytes_completed: 0,
+            total_latency_ns: 0,
+        }
+    }
+
+    /// Registers a synchronization fence with an initial value.
+    pub fn register_fence(&mut self, fence_id: u32, initial_value: u64) {
+        if !self.fences.iter().any(|f| f.fence_id == fence_id) {
+            self.fences.push(DirectStorageFence::new(fence_id, initial_value));
+        }
+    }
+
+    /// Submits a batch of requests tied to a fence value to be signaled upon complete transfer.
+    pub fn submit_batch(
+        &mut self,
+        request_ids: Vec<u64>,
+        total_bytes: u64,
+        fence_id: u32,
+        fence_value_to_signal: u64,
+        submission_timestamp_ns: u64,
+    ) -> u64 {
+        let batch_id = self.next_batch_id;
+        self.next_batch_id += 1;
+
+        let batch = BatchDescriptor {
+            batch_id,
+            fence_id,
+            fence_value_to_signal,
+            request_ids,
+            completed_requests: 0,
+            total_bytes,
+            is_completed: false,
+            submission_timestamp_ns,
+            completion_timestamp_ns: 0,
+        };
+
+        self.batches.push(batch);
+        batch_id
+    }
+
+    /// Processes an individual NVMe request completion (from CQE).
+    /// If all requests in the batch are satisfied, signals the associated fence.
+    /// Returns `Some((batch_id, fence_id, signaled_value))` when a batch fully finishes.
+    pub fn process_completion(
+        &mut self,
+        request_id: u64,
+        completion_timestamp_ns: u64,
+    ) -> Option<(u64, u32, u64)> {
+        for batch in self.batches.iter_mut() {
+            if !batch.is_completed && batch.request_ids.contains(&request_id) {
+                batch.completed_requests += 1;
+                if batch.completed_requests == batch.request_ids.len() as u32 {
+                    batch.is_completed = true;
+                    batch.completion_timestamp_ns = completion_timestamp_ns;
+
+                    let latency = completion_timestamp_ns.saturating_sub(batch.submission_timestamp_ns);
+                    self.total_latency_ns += latency;
+                    self.total_completed_batches += 1;
+                    self.total_bytes_completed += batch.total_bytes;
+
+                    let fence_id = batch.fence_id;
+                    let fence_val = batch.fence_value_to_signal;
+                    let batch_id = batch.batch_id;
+
+                    // Signal the associated fence
+                    if let Some(fence) = self.fences.iter().find(|f| f.fence_id == fence_id) {
+                        fence.signal(fence_val);
+                    }
+
+                    return Some((batch_id, fence_id, fence_val));
+                }
+                break;
+            }
+        }
+        None
+    }
+
+    pub fn is_fence_reached(&self, fence_id: u32, target_value: u64) -> bool {
+        self.fences
+            .iter()
+            .find(|f| f.fence_id == fence_id)
+            .map(|f| f.is_reached(target_value))
+            .unwrap_or(false)
+    }
+
+    pub fn get_fence_value(&self, fence_id: u32) -> u64 {
+        self.fences
+            .iter()
+            .find(|f| f.fence_id == fence_id)
+            .map(|f| f.value())
+            .unwrap_or(0)
+    }
+
+    pub fn average_batch_latency_ns(&self) -> u64 {
+        if self.total_completed_batches == 0 {
+            0
+        } else {
+            self.total_latency_ns / self.total_completed_batches
+        }
+    }
+}
+
+/// Unit test verifying batched asynchronous I/O completion and fence dispatching.
+pub fn verify_batched_completion_fence_dispatcher() -> bool {
+    let mut dispatcher = BatchedCompletionDispatcher::new();
+
+    // 1. Register two Direct3D 12 fences: Fence 10 (Scene Assets) and Fence 20 (Player Character)
+    dispatcher.register_fence(10, 0);
+    dispatcher.register_fence(20, 0);
+
+    if dispatcher.get_fence_value(10) != 0 || dispatcher.get_fence_value(20) != 0 {
+        return false;
+    }
+
+    // 2. Submit Batch 1: requests [1, 2, 3, 4], 4 MiB total, signals Fence 10 -> 100
+    let b1_reqs = alloc::vec![1u64, 2, 3, 4];
+    let b1_id = dispatcher.submit_batch(b1_reqs, 4 * 1024 * 1024, 10, 100, 1_000_000);
+
+    // Submit Batch 2: requests [5, 6, 7, 8], 2 MiB total, signals Fence 20 -> 200
+    let b2_reqs = alloc::vec![5u64, 6, 7, 8];
+    let b2_id = dispatcher.submit_batch(b2_reqs, 2 * 1024 * 1024, 20, 200, 1_050_000);
+
+    if b1_id != 1 || b2_id != 2 {
+        return false;
+    }
+
+    // 3. Process out-of-order request completions:
+    // Complete requests 2, 4, 1 (Batch 1 has 3/4 done)
+    let _ = dispatcher.process_completion(2, 1_100_000);
+    let _ = dispatcher.process_completion(4, 1_120_000);
+    let _ = dispatcher.process_completion(1, 1_150_000);
+
+    // Fence 10 must NOT be signaled yet
+    if dispatcher.is_fence_reached(10, 100) {
+        return false;
+    }
+
+    // Complete requests 6, 8 (Batch 2 has 2/4 done)
+    let _ = dispatcher.process_completion(6, 1_200_000);
+    let _ = dispatcher.process_completion(8, 1_220_000);
+    if dispatcher.is_fence_reached(20, 200) {
+        return false;
+    }
+
+    // Now complete the final request for Batch 1: request 3
+    let b1_res = dispatcher.process_completion(3, 1_300_000);
+    if b1_res != Some((1, 10, 100)) {
+        return false; // Did not return completion tuple
+    }
+
+    // Fence 10 must now be signaled to 100!
+    if !dispatcher.is_fence_reached(10, 100) || dispatcher.get_fence_value(10) != 100 {
+        return false;
+    }
+    // Fence 20 must still be unreached
+    if dispatcher.is_fence_reached(20, 200) {
+        return false;
+    }
+
+    // Complete remaining Batch 2 requests: 5, 7
+    let _ = dispatcher.process_completion(5, 1_350_000);
+    let b2_res = dispatcher.process_completion(7, 1_400_000);
+    if b2_res != Some((2, 20, 200)) {
+        return false;
+    }
+
+    // Fence 20 must now be signaled to 200!
+    if !dispatcher.is_fence_reached(20, 200) || dispatcher.get_fence_value(20) != 200 {
+        return false;
+    }
+
+    // 4. Verify metrics
+    if dispatcher.total_completed_batches != 2 {
+        return false;
+    }
+    if dispatcher.total_bytes_completed != 6 * 1024 * 1024 {
+        return false;
+    }
+    if dispatcher.average_batch_latency_ns() == 0 {
         return false;
     }
 
