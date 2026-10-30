@@ -1,13 +1,5 @@
 //! Asynchronous Compute Command Stream Encoder & Dispatch Queue Subsystem.
-//!
 //! Implements modern low-level asynchronous compute command encoding (Direct3D 12 / Vulkan model):
-//! - Independent async compute command buffers bypassing graphics pipeline overhead
-//! - 3D workgroup dispatch recording (`Dispatch(x, y, z)`)
-//! - Compute Pipeline State Objects (PSO) with local threadgroup dimension tracking
-//! - Resource descriptor tables (UAVs, SRVs, CBVs) and push constant data streams
-//! - Fine-grained memory barrier synchronization (UAV barriers & Transition barriers)
-//! - Concurrent workgroup pipeline scheduler running async compute alongside graphics rasterization
-//! - High-speed asynchronous compute submission queue
 
 #![allow(dead_code)]
 
@@ -16,9 +8,7 @@ use alloc::vec::Vec;
 use crate::gfx::cmdbuf::{PipelineStageFlags, ResourceState};
 use crate::gfx::gpu_fence::{GpuTimelineFence, TimelineSyncHub};
 
-// -----------------------------------------------------------------------------
 // Workgroup Dimensions & Pipeline State Objects (PSO)
-// -----------------------------------------------------------------------------
 
 /// Threadgroup local dimensions for compute kernel execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,9 +58,7 @@ impl ComputePipelineState {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Resource Descriptors & Descriptor Tables
-// -----------------------------------------------------------------------------
 
 /// Resource descriptor types for shader binding.
 #[repr(u32)]
@@ -138,9 +126,7 @@ impl DescriptorTable {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Fine-Grained Memory Barrier Synchronization
-// -----------------------------------------------------------------------------
 
 /// Detailed barrier classification for compute pipeline transitions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -235,9 +221,7 @@ impl GpuCacheState {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Asynchronous Compute Command Opcodes & Payload Structures
-// -----------------------------------------------------------------------------
 
 /// Command opcodes for async compute streams.
 #[repr(u16)]
@@ -284,9 +268,7 @@ pub enum ComputeCommand {
     WaitFence { fence_id: u32, value: u64 },
 }
 
-// -----------------------------------------------------------------------------
 // Asynchronous Compute Command Buffer
-// -----------------------------------------------------------------------------
 
 /// Asynchronous compute command buffer recording linear compute streams.
 #[derive(Debug, Clone)]
@@ -386,9 +368,7 @@ impl AsyncComputeCommandBuffer {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Workgroup Workloads & Concurrent Pipeline Scheduler
-// -----------------------------------------------------------------------------
 
 /// Classification of asynchronous compute workloads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -526,9 +506,7 @@ impl ConcurrentComputeScheduler {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Asynchronous Compute Queue
-// -----------------------------------------------------------------------------
 
 /// Asynchronous hardware compute queue for submitting compute dispatches.
 #[derive(Debug)]
@@ -575,14 +553,10 @@ impl AsyncComputeQueue {
 }
 
 
-// -----------------------------------------------------------------------------
 // Subsystem Verification Self-Test
-// -----------------------------------------------------------------------------
 
 /// Comprehensive verification self-test suite for Zero-Copy GPU Asynchronous Compute Dispatch
 /// & Shader Execution Fence Engine.
-///
-/// Emits sentinel [KNT-GPU-COMPUTE-PASS] upon successful validation.
 pub fn test_async_compute_subsystem() -> bool {
     // 1. Verify Compute PSO, descriptor table, and command stream encoding
     let pso = ComputePipelineState::new(
