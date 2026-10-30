@@ -277,3 +277,209 @@ pub fn verify_nvme_structures() -> bool {
 
     true
 }
+
+pub const NVME_MAX_QUEUE_SIZE: usize = 64;
+
+/// Errors returned by NVMe controller and command operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NvmeError {
+    ControllerNotReady,
+    QueueCreationFailed,
+    Timeout,
+    CommandFailed(u16),
+    InvalidParameter,
+    DmaError,
+}
+
+/// Circular ring buffer pair for NVMe Submission Queue (SQ) and Completion Queue (CQ).
+pub struct NvmeQueuePair {
+    pub qid: u16,
+    pub size: u16,
+    pub sq_tail: u16,
+    pub sq_head: u16,
+    pub cq_head: u16,
+    pub cq_phase: bool,
+    pub next_cid: u16,
+    pub sq_phys: u64,
+    pub cq_phys: u64,
+    pub sq_doorbell_offset: usize,
+    pub cq_doorbell_offset: usize,
+    pub mmio_base: usize, // 0 if simulated / virtualized
+    pub sq_entries: [NvmeSubmissionEntry; NVME_MAX_QUEUE_SIZE],
+    pub cq_entries: [NvmeCompletionEntry; NVME_MAX_QUEUE_SIZE],
+}
+
+impl NvmeQueuePair {
+    pub const fn new(qid: u16, size: u16, dstrd: usize, mmio_base: usize) -> Self {
+        let q_size = if size > (NVME_MAX_QUEUE_SIZE as u16) {
+            NVME_MAX_QUEUE_SIZE as u16
+        } else if size == 0 {
+            2
+        } else {
+            size
+        };
+
+        Self {
+            qid,
+            size: q_size,
+            sq_tail: 0,
+            sq_head: 0,
+            cq_head: 0,
+            cq_phase: true, // NVMe spec: CQ phase begins at 1 (true)
+            next_cid: 1,
+            sq_phys: 0,
+            cq_phys: 0,
+            sq_doorbell_offset: nvme_sq_doorbell(qid, dstrd),
+            cq_doorbell_offset: nvme_cq_doorbell(qid, dstrd),
+            mmio_base,
+            sq_entries: [NvmeSubmissionEntry::empty(); NVME_MAX_QUEUE_SIZE],
+            cq_entries: [NvmeCompletionEntry::empty(); NVME_MAX_QUEUE_SIZE],
+        }
+    }
+
+    pub fn set_dma_buffers(&mut self, sq_phys: u64, cq_phys: u64) {
+        self.sq_phys = sq_phys;
+        self.cq_phys = cq_phys;
+    }
+
+    /// Submits an SQE to the Submission Queue and rings the SQ doorbell.
+    pub fn submit_command(&mut self, mut entry: NvmeSubmissionEntry) -> u16 {
+        let cid = self.next_cid;
+        self.next_cid = self.next_cid.wrapping_add(1);
+        if self.next_cid == 0 {
+            self.next_cid = 1;
+        }
+
+        // Set CID in cdw0: opcode in bits 7:0, CID in bits 31:16
+        entry.cdw0 = (entry.cdw0 & 0x0000_FFFF) | ((cid as u32) << 16);
+
+        self.sq_entries[self.sq_tail as usize] = entry;
+        self.sq_tail = (self.sq_tail + 1) % self.size;
+
+        self.ring_sq_doorbell();
+        cid
+    }
+
+    pub fn ring_sq_doorbell(&self) {
+        if self.mmio_base != 0 {
+            unsafe {
+                let db_ptr = (self.mmio_base + self.sq_doorbell_offset) as *mut u32;
+                core::ptr::write_volatile(db_ptr, self.sq_tail as u32);
+            }
+        }
+    }
+
+    pub fn ring_cq_doorbell(&self) {
+        if self.mmio_base != 0 {
+            unsafe {
+                let db_ptr = (self.mmio_base + self.cq_doorbell_offset) as *mut u32;
+                core::ptr::write_volatile(db_ptr, self.cq_head as u32);
+            }
+        }
+    }
+
+    /// Polls the Completion Queue for a completion matching `cid`.
+    pub fn poll_completion(&mut self, cid: u16, max_spins: usize) -> Result<NvmeCompletionEntry, NvmeError> {
+        let mut spins = 0;
+        loop {
+            let entry = self.cq_entries[self.cq_head as usize];
+            if entry.phase() == self.cq_phase {
+                // Advance CQ head
+                self.cq_head = (self.cq_head + 1) % self.size;
+                if self.cq_head == 0 {
+                    self.cq_phase = !self.cq_phase; // Invert phase bit on queue wraparound
+                }
+
+                self.ring_cq_doorbell();
+
+                if entry.cid == cid {
+                    if !entry.is_success() {
+                        return Err(NvmeError::CommandFailed(entry.status_code()));
+                    }
+                    return Ok(entry);
+                }
+            }
+
+            spins += 1;
+            if spins >= max_spins {
+                return Err(NvmeError::Timeout);
+            }
+            core::hint::spin_loop();
+        }
+    }
+
+    /// Simulates hardware completing a command (for loopback self-tests).
+    pub fn simulate_completion(&mut self, cid: u16, result: u32, status_code: u16) {
+        let idx = self.cq_head as usize;
+        let mut entry = NvmeCompletionEntry::empty();
+        entry.result = result;
+        entry.cid = cid;
+        entry.sq_id = self.qid;
+        entry.sq_head = self.sq_tail;
+        let phase_bit = if self.cq_phase { 1u16 } else { 0u16 };
+        entry.status = (status_code << 1) | phase_bit;
+
+        self.cq_entries[idx] = entry;
+    }
+}
+
+/// Unit test verifying NVMe Submission and Completion Queue rings, phase toggling, and doorbells.
+pub fn verify_nvme_queue_engine() -> bool {
+    let mut qp = NvmeQueuePair::new(0, 4, 0, 0); // 4-entry queue, DSTRD=0, simulated
+    assert_eq!(qp.size, 4);
+    assert_eq!(qp.sq_tail, 0);
+    assert_eq!(qp.cq_head, 0);
+    assert!(qp.cq_phase);
+
+    // 1. Submit command 1
+    let cmd1 = NvmeSubmissionEntry::new(NVME_ADMIN_IDENTIFY, 0, 0);
+    let cid1 = qp.submit_command(cmd1);
+    assert_eq!(cid1, 1);
+    assert_eq!(qp.sq_tail, 1);
+    assert_eq!(qp.sq_entries[0].command_id(), 1);
+
+    // 2. Simulate completion for CID 1
+    qp.simulate_completion(cid1, 0x55AA, 0);
+    let cqe1 = qp.poll_completion(cid1, 10).expect("poll_completion for cmd1 failed");
+    assert_eq!(cqe1.cid, 1);
+    assert_eq!(cqe1.result, 0x55AA);
+    assert_eq!(qp.cq_head, 1);
+    assert!(qp.cq_phase); // Still phase 1
+
+    // 3. Fill and drain remaining slots to trigger ring wraparound and phase toggle
+    let cid2 = qp.submit_command(NvmeSubmissionEntry::new(NVME_ADMIN_GET_FEATURES, 0, 0));
+    let cid3 = qp.submit_command(NvmeSubmissionEntry::new(NVME_ADMIN_GET_FEATURES, 0, 0));
+    let cid4 = qp.submit_command(NvmeSubmissionEntry::new(NVME_ADMIN_GET_FEATURES, 0, 0));
+    assert_eq!(qp.sq_tail, 0); // Wraps around (1 + 3 = 4 -> 0)
+
+    qp.simulate_completion(cid2, 0, 0);
+    assert!(qp.poll_completion(cid2, 10).is_ok());
+    assert_eq!(qp.cq_head, 2);
+
+    qp.simulate_completion(cid3, 0, 0);
+    assert!(qp.poll_completion(cid3, 10).is_ok());
+    assert_eq!(qp.cq_head, 3);
+
+    qp.simulate_completion(cid4, 0, 0);
+    assert!(qp.poll_completion(cid4, 10).is_ok());
+    assert_eq!(qp.cq_head, 0); // Wrapped around to 0
+    assert!(!qp.cq_phase);     // Phase inverted to false (0)!
+
+    // 4. Test next cycle with inverted phase
+    let cid5 = qp.submit_command(NvmeSubmissionEntry::new(NVME_NVM_READ, 0, 1));
+    qp.simulate_completion(cid5, 0xCAFE, 0);
+    let cqe5 = qp.poll_completion(cid5, 10).expect("poll_completion with inverted phase failed");
+    assert_eq!(cqe5.cid, cid5);
+    assert_eq!(cqe5.result, 0xCAFE);
+    assert!(!cqe5.phase()); // CQE phase is 0 matching inverted queue phase
+
+    // 5. Test command failure status
+    let cid6 = qp.submit_command(NvmeSubmissionEntry::new(NVME_NVM_WRITE, 0, 1));
+    qp.simulate_completion(cid6, 0, 0x02); // Status code 0x02 = Invalid Field
+    match qp.poll_completion(cid6, 10) {
+        Err(NvmeError::CommandFailed(0x02)) => {}
+        _ => panic!("Expected CommandFailed(0x02)"),
+    }
+
+    true
+}
