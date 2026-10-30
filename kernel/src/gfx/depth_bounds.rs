@@ -629,3 +629,176 @@ impl ConservativeRasterEngine {
         Ok(output)
     }
 }
+
+
+// -----------------------------------------------------------------------------
+// Verification Self-Test Suite
+// -----------------------------------------------------------------------------
+
+/// Comprehensive verification self-test for D3D12 Depth Bounds Testing & Conservative Rasterization.
+///
+/// Emits sentinel [KNT-GPU-DEPTH-BOUNDS-PASS] upon successful verification.
+pub fn test_depth_bounds_subsystem() -> bool {
+    // 1. Verify Depth Bounds State validation and range testing
+    let bounds = match DepthBoundsState::new(0.2, 0.8) {
+        Ok(b) => b,
+        Err(_) => return false,
+    };
+    if !bounds.test(0.2) || !bounds.test(0.5) || !bounds.test(0.8) {
+        return false;
+    }
+    if bounds.test(0.19) || bounds.test(0.81) {
+        return false;
+    }
+
+    // Invalid depth bounds (min > max or out of range) must fail
+    if DepthBoundsState::new(0.8, 0.2).is_ok() {
+        return false;
+    }
+    if DepthBoundsState::new(-0.1, 0.5).is_ok() {
+        return false;
+    }
+    if DepthBoundsState::new(0.5, 1.2).is_ok() {
+        return false;
+    }
+
+    // 2. Verify Dynamic Depth Bounds Testing (OMSetDepthBounds) and Early-Z rejection
+    let width = 16u32;
+    let height = 16u32;
+    let mut depth_buf = match DepthBuffer::new(width, height, 1.0) {
+        Ok(b) => b,
+        Err(_) => return false,
+    };
+
+    // Populate depth buffer: left half = 0.3 (foreground), right half = 0.7 (background)
+    for y in 0..height {
+        for x in 0..width {
+            let z = if x < 8 { 0.3 } else { 0.7 };
+            depth_buf.set_depth(x, y, z);
+        }
+    }
+
+    let mut evaluator = DepthBoundsEvaluator::new(
+        DepthBoundsState::disabled(),
+        DepthComparisonFunc::LessEqual,
+        true,
+    );
+
+    // Set depth bounds around foreground object [0.25, 0.45] (e.g. deferred point light volume)
+    if evaluator.om_set_depth_bounds(0.25, 0.45).is_err() {
+        return false;
+    }
+
+    // Test fragments across all 256 pixels
+    let mut passed_count = 0;
+    for y in 0..height {
+        for x in 0..width {
+            if evaluator.evaluate_fragment(&mut depth_buf, x, y, 0.3) {
+                passed_count += 1;
+            }
+        }
+    }
+
+    // Exactly the 128 left pixels should pass; 128 right pixels should be culled by DBT
+    if passed_count != 128 {
+        return false;
+    }
+    if evaluator.stats.culled_by_depth_bounds != 128 {
+        return false;
+    }
+    if (evaluator.stats.depth_bounds_cull_rate() - 0.5).abs() > 0.01 {
+        return false;
+    }
+
+    // 3. Verify Conservative Rasterization Boundary Expansion
+    // Sub-pixel triangle touching pixel (2, 2) without covering center (2.5, 2.5)
+    let subpixel_tri = match Triangle2D::new(
+        [2.1, 2.1],
+        [2.4, 2.1],
+        [2.1, 2.4],
+    ) {
+        Ok(t) => t,
+        Err(_) => return false,
+    };
+
+    // Standard rasterizer: center is outside
+    let std_desc = ConservativeRasterDesc::default(); // disabled
+    let std_cov = subpixel_tri.evaluate_pixel_coverage(2, 2, &std_desc);
+    if std_cov.is_covered {
+        return false;
+    }
+
+    // Conservative rasterizer (Tier 1): pixel touches triangle -> covered
+    let tier1_desc = ConservativeRasterDesc::new(ConservativeRasterTier::Tier1);
+    let t1_cov = subpixel_tri.evaluate_pixel_coverage(2, 2, &tier1_desc);
+    if !t1_cov.is_covered {
+        return false;
+    }
+    // Tier 1 does not support SV_InnerCoverage
+    if t1_cov.inner_coverage {
+        return false;
+    }
+
+    // Conservative rasterizer (Tier 2): pixel touches triangle -> covered
+    let tier2_desc = ConservativeRasterDesc::new(ConservativeRasterTier::Tier2);
+    let t2_cov = subpixel_tri.evaluate_pixel_coverage(2, 2, &tier2_desc);
+    if !t2_cov.is_covered {
+        return false;
+    }
+
+    // 4. Verify SV_InnerCoverage detection (Tier 2/3)
+    // Large triangle completely enclosing pixel (5, 5)
+    let large_tri = match Triangle2D::new(
+        [3.0, 3.0],
+        [9.0, 3.0],
+        [5.0, 9.0],
+    ) {
+        Ok(t) => t,
+        Err(_) => return false,
+    };
+
+    let inner_cov = large_tri.evaluate_pixel_coverage(5, 5, &tier2_desc);
+    if !inner_cov.is_covered || !inner_cov.inner_coverage {
+        return false;
+    }
+
+    // Boundary pixel on large triangle: covered, but NOT inner coverage
+    let boundary_cov = large_tri.evaluate_pixel_coverage(3, 3, &tier2_desc);
+    if !boundary_cov.is_covered || boundary_cov.inner_coverage {
+        return false;
+    }
+
+    // 5. Verify Tier 3 MSAA Sub-Pixel Sample Mask
+    let tier3_desc = ConservativeRasterDesc::new(ConservativeRasterTier::Tier3);
+    let t3_inner = large_tri.evaluate_pixel_coverage(5, 5, &tier3_desc);
+    if !t3_inner.is_covered || !t3_inner.inner_coverage || t3_inner.sample_mask != 0xF {
+        return false;
+    }
+
+    // 6. Verify Integrated ConservativeRasterEngine with Early-Z
+    let mut engine = ConservativeRasterEngine::new(
+        ConservativeRasterTier::Tier2,
+        DepthBoundsState::new(0.1, 0.5).unwrap(),
+    );
+    let mut engine_depth_buf = DepthBuffer::new(16, 16, 0.3).unwrap();
+
+    let rasterized = match engine.rasterize_triangle(&large_tri, 0.2, &mut engine_depth_buf) {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+
+    if rasterized.is_empty() {
+        return false;
+    }
+    if engine.total_pixels_rasterized_conservative == 0 {
+        return false;
+    }
+    if engine.inner_coverage_pixels == 0 {
+        return false;
+    }
+
+    // 7. Emit deterministic boot sentinel
+    crate::serial_write_str("[KNT-GPU-DEPTH-BOUNDS-PASS] Direct3D 12 depth bounds testing and conservative rasterization engine verified\r\n");
+
+    true
+}
