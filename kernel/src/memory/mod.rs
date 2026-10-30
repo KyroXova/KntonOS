@@ -1,9 +1,5 @@
 //! Kernel Memory Management Subsystem for KntonOS (`kntonk`).
-//!
 //! Subsystems:
-//! - PMM: Physical Memory Manager (Bitmap Frame Allocator for 4 KiB frames)
-//! - VMM: Virtual Memory Manager (x86-64 4-level PML4 paging)
-//! - Heap: Thread-safe dynamic memory allocator implementing `core::alloc::GlobalAlloc`
 
 pub mod heap;
 pub mod pmm;

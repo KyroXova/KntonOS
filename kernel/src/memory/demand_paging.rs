@@ -1,11 +1,5 @@
 //! Virtual Memory Demand Paging, Virtual Memory Areas (VMA), and Page Fault Resolution.
-//!
 //! Provides the core architectural abstraction for userland and kernel virtual memory:
-//! - `PageFaultErrorCode`: x86-64 architectural exception error code bit decoder.
-//! - `VmFlags`: Memory protection, allocation, and Copy-on-Write bitmask flags.
-//! - `VmArea`: Descriptor for contiguous virtual address ranges.
-//! - `AddressSpace`: Process virtual address space containing VMAs and root PML4.
-//! - `handle_page_fault`: Core demand paging allocation and page fault resolution engine.
 
 use super::pmm::{FrameAllocator, PhysAddr, PAGE_SIZE};
 use super::vmm::{invlpg, PageTable, PageTableFlags, PageTableManager, VirtAddr};
@@ -469,7 +463,6 @@ pub fn test_demand_paging_engine() -> bool {
         true
     }
 }
-
 
 /// Comprehensive Demand Paging & Copy-on-Write (COW) verification suite emitting [KNT-MEM-COW-PASS].
 pub fn test_cow_and_demand_paging() -> bool {
