@@ -14,11 +14,13 @@ pub mod display;
 pub mod led;
 pub mod power;
 pub mod thermal;
+pub mod bus;
 
 pub use sensor::*;
 pub use led::*;
 pub use power::*;
 pub use thermal::*;
+pub use bus::*;
 
 use alloc::vec::Vec;
 use crate::memory::spinlock::Spinlock;
