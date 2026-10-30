@@ -780,3 +780,464 @@ impl AcousticWorld {
         }
     }
 }
+
+
+// -----------------------------------------------------------------------------
+// Early Reflection Ray Bouncer & Reverb Decay Synthesizer
+// -----------------------------------------------------------------------------
+
+/// Casts first-order and second-order acoustic reflection rays off scene obstacles.
+pub struct EarlyReflectionBouncer {
+    /// Maximum ray bounce depth (1 = primary reflection, 2 = secondary reflection).
+    pub max_bounce_depth: u8,
+    /// Maximum reflection propagation distance in meters (~60 meters = ~175 ms).
+    pub max_distance_m: f32,
+}
+
+impl EarlyReflectionBouncer {
+    pub const fn new(max_bounce_depth: u8, max_distance_m: f32) -> Self {
+        Self {
+            max_bounce_depth,
+            max_distance_m,
+        }
+    }
+
+    /// Trace first-order and second-order acoustic reflections from emitter to listener.
+    pub fn calculate_reflection_paths(
+        &self,
+        world: &AcousticWorld,
+        emitter: AcousticVec3,
+        listener: AcousticVec3,
+    ) -> Vec<ReflectionPath> {
+        let mut paths = Vec::with_capacity(MAX_REFLECTION_PATHS);
+
+        // Representative emission ray directions (6 cardinal axes)
+        let emission_directions = [
+            AcousticVec3::new(1.0, 0.0, 0.0),
+            AcousticVec3::new(-1.0, 0.0, 0.0),
+            AcousticVec3::new(0.0, 1.0, 0.0),
+            AcousticVec3::new(0.0, -1.0, 0.0),
+            AcousticVec3::new(0.0, 0.0, 1.0),
+            AcousticVec3::new(0.0, 0.0, -1.0),
+        ];
+
+        for &dir in &emission_directions {
+            if paths.len() >= MAX_REFLECTION_PATHS {
+                break;
+            }
+
+            // 1. Primary ray from emitter
+            let ray1 = AcousticRay::new(emitter, dir, self.max_distance_m);
+            let mut nearest_hit1: Option<AcousticHit> = None;
+
+            for obs in &world.obstacles {
+                if let Some(hit) = obs.intersect_ray(&ray1) {
+                    if hit.distance > 0.05 {
+                        if let Some(prev) = nearest_hit1 {
+                            if hit.distance < prev.distance {
+                                nearest_hit1 = Some(hit);
+                            }
+                        } else {
+                            nearest_hit1 = Some(hit);
+                        }
+                    }
+                }
+            }
+
+            let hit1 = match nearest_hit1 {
+                Some(h) => h,
+                None => continue,
+            };
+
+            let p1 = hit1.hit_point;
+            let d1 = hit1.distance;
+            let props1 = MaterialAcousticProperties::of(hit1.material);
+
+            // Test 1st-order visibility from hit1 to listener
+            let to_listener_dist = p1.distance_to(listener);
+            let total_dist_1st = d1 + to_listener_dist;
+
+            if total_dist_1st <= self.max_distance_m && to_listener_dist > 0.1 {
+                // Check if segment hit1 -> listener is unoccluded
+                let ray_to_listener = AcousticRay::new(p1, (listener - p1).normalized(), to_listener_dist);
+                let mut path1_blocked = false;
+
+                for obs in &world.obstacles {
+                    if let Some(h) = obs.intersect_ray(&ray_to_listener) {
+                        if h.distance > 0.05 && h.distance < (to_listener_dist - 0.05) {
+                            path1_blocked = true;
+                            break;
+                        }
+                    }
+                }
+
+                if !path1_blocked {
+                    // Valid 1st-order reflection path
+                    let delay = total_dist_1st * SAMPLES_PER_METER;
+                    let dist_atten = 1.0 / total_dist_1st.max(1.0);
+                    let refl_gain = (1.0 - props1.absorption_mid) * (1.0 - props1.scattering_coeff);
+                    let gain = (dist_atten * refl_gain).clamp(0.0, 1.0);
+
+                    paths.push(ReflectionPath {
+                        total_distance_m: total_dist_1st,
+                        delay_samples: delay,
+                        linear_gain: gain,
+                        lpf_damping: props1.absorption_high,
+                        bounce_order: 1,
+                        final_normal: hit1.normal,
+                    });
+                }
+            }
+
+            // 2. Secondary reflection ray (2nd-order bounce) if depth >= 2
+            if self.max_bounce_depth >= 2 && paths.len() < MAX_REFLECTION_PATHS {
+                let reflect_dir = dir.reflect(hit1.normal).normalized();
+                let ray2 = AcousticRay::new(p1 + reflect_dir * 0.05, reflect_dir, self.max_distance_m - d1);
+                let mut nearest_hit2: Option<AcousticHit> = None;
+
+                for obs in &world.obstacles {
+                    if let Some(h) = obs.intersect_ray(&ray2) {
+                        if h.distance > 0.05 {
+                            if let Some(prev) = nearest_hit2 {
+                                if h.distance < prev.distance {
+                                    nearest_hit2 = Some(h);
+                                }
+                            } else {
+                                nearest_hit2 = Some(h);
+                            }
+                        }
+                    }
+                }
+
+                if let Some(hit2) = nearest_hit2 {
+                    let p2 = hit2.hit_point;
+                    let d2 = hit2.distance;
+                    let props2 = MaterialAcousticProperties::of(hit2.material);
+                    let dist2_listener = p2.distance_to(listener);
+                    let total_dist_2nd = d1 + d2 + dist2_listener;
+
+                    if total_dist_2nd <= self.max_distance_m && dist2_listener > 0.1 {
+                        let ray2_listener = AcousticRay::new(p2, (listener - p2).normalized(), dist2_listener);
+                        let mut path2_blocked = false;
+
+                        for obs in &world.obstacles {
+                            if let Some(h) = obs.intersect_ray(&ray2_listener) {
+                                if h.distance > 0.05 && h.distance < (dist2_listener - 0.05) {
+                                    path2_blocked = true;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if !path2_blocked {
+                            let delay = total_dist_2nd * SAMPLES_PER_METER;
+                            let dist_atten = 1.0 / total_dist_2nd.max(1.0);
+                            let refl_gain = (1.0 - props1.absorption_mid) * (1.0 - props2.absorption_mid);
+                            let gain = (dist_atten * refl_gain * 0.7).clamp(0.0, 1.0);
+                            let damping = 1.0 - (1.0 - props1.absorption_high) * (1.0 - props2.absorption_high);
+
+                            paths.push(ReflectionPath {
+                                total_distance_m: total_dist_2nd,
+                                delay_samples: delay,
+                                linear_gain: gain,
+                                lpf_damping: damping,
+                                bounce_order: 2,
+                                final_normal: hit2.normal,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        paths
+    }
+}
+
+/// Schroeder comb filter for late reverberation decay synthesis.
+pub struct SchroederComb {
+    pub buffer: Vec<f32>,
+    pub write_cursor: usize,
+    pub delay_samples: usize,
+    pub feedback_gain: f32,
+    pub filter_state: f32,
+    pub damping: f32,
+}
+
+impl SchroederComb {
+    pub fn new(delay_samples: usize, feedback_gain: f32, damping: f32) -> Self {
+        Self {
+            buffer: alloc::vec![0.0f32; delay_samples],
+            write_cursor: 0,
+            delay_samples,
+            feedback_gain,
+            filter_state: 0.0,
+            damping,
+        }
+    }
+
+    #[inline]
+    pub fn process(&mut self, input: f32) -> f32 {
+        let read_val = self.buffer[self.write_cursor];
+        self.filter_state = read_val * (1.0 - self.damping) + self.filter_state * self.damping;
+        let to_write = input + self.filter_state * self.feedback_gain;
+        self.buffer[self.write_cursor] = to_write;
+        self.write_cursor = (self.write_cursor + 1) % self.delay_samples;
+        read_val
+    }
+}
+
+/// Schroeder all-pass filter for sound diffusion in late reverberation.
+pub struct SchroederAllPass {
+    pub buffer: Vec<f32>,
+    pub write_cursor: usize,
+    pub delay_samples: usize,
+    pub gain: f32,
+}
+
+impl SchroederAllPass {
+    pub fn new(delay_samples: usize, gain: f32) -> Self {
+        Self {
+            buffer: alloc::vec![0.0f32; delay_samples],
+            write_cursor: 0,
+            delay_samples,
+            gain,
+        }
+    }
+
+    #[inline]
+    pub fn process(&mut self, input: f32) -> f32 {
+        let buf_val = self.buffer[self.write_cursor];
+        let output = -input + buf_val;
+        self.buffer[self.write_cursor] = input + buf_val * self.gain;
+        self.write_cursor = (self.write_cursor + 1) % self.delay_samples;
+        output
+    }
+}
+
+/// Late reverberation decay synthesizer based on Sabine RT60 formula and Schroeder filter network.
+pub struct LateReverbSynthesizer {
+    /// Room reverberation decay time in seconds (time to decay by 60 dB).
+    pub rt60_seconds: f32,
+    /// Parallel comb filters.
+    pub combs: [SchroederComb; 4],
+    /// Series all-pass diffusion filters.
+    pub allpasses: [SchroederAllPass; 2],
+    /// Wet reverberation send level.
+    pub wet_gain: f32,
+}
+
+impl LateReverbSynthesizer {
+    /// Allocate a new late reverberation synthesizer calibrated for room acoustics.
+    pub fn new(rt60_seconds: f32, wet_gain: f32) -> Self {
+        let rt60 = rt60_seconds.clamp(0.1, 10.0);
+        // Compute feedback gain g = 10^(-3 * tau / (RT60 * Fs))
+        let calc_fb = |delay: usize| -> f32 {
+            let exponent = -3.0 * (delay as f32) / (rt60 * AUDIO_SAMPLE_RATE_HZ);
+            crate::audio::drc::exp_f32(exponent * 2.3025851)
+        };
+
+        // Schroeder prime sample delay lines
+        let combs = [
+            SchroederComb::new(1116, calc_fb(1116), 0.2),
+            SchroederComb::new(1188, calc_fb(1188), 0.2),
+            SchroederComb::new(1277, calc_fb(1277), 0.2),
+            SchroederComb::new(1356, calc_fb(1356), 0.2),
+        ];
+
+        let allpasses = [
+            SchroederAllPass::new(225, 0.5),
+            SchroederAllPass::new(556, 0.5),
+        ];
+
+        Self {
+            rt60_seconds: rt60,
+            combs,
+            allpasses,
+            wet_gain,
+        }
+    }
+
+    /// Calculate Sabine reverberation time RT60 given room volume and total absorption:
+    /// $RT_{60} = 0.161 * V / A$.
+    pub fn calculate_sabine_rt60(room_volume_m3: f32, total_absorption_area: f32) -> f32 {
+        let abs_area = total_absorption_area.max(0.1);
+        (0.161 * room_volume_m3.max(1.0) / abs_area).clamp(0.1, 8.0)
+    }
+
+    /// Process a sample through the late reverberation tank.
+    #[inline]
+    pub fn process_sample(&mut self, input: f32) -> f32 {
+        // Sum parallel comb outputs
+        let mut comb_sum = 0.0f32;
+        for comb in &mut self.combs {
+            comb_sum += comb.process(input);
+        }
+        comb_sum *= 0.25;
+
+        // Pass through series allpasses for diffusion
+        let mut diff = comb_sum;
+        for ap in &mut self.allpasses {
+            diff = ap.process(diff);
+        }
+
+        diff * self.wet_gain
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Click-Free Audio Parameter Smoothing & Occlusion Engine
+// -----------------------------------------------------------------------------
+
+/// Parameter interpolator preventing audio popping and clicks during rapid source movement.
+pub struct AcousticParameterSmoother {
+    /// Current smoothly interpolated direct gain.
+    pub current_gain: f32,
+    /// Target direct gain from occlusion ray tracer.
+    pub target_gain: f32,
+    /// Current smoothly interpolated low-pass filter cutoff in Hz.
+    pub current_cutoff_hz: f32,
+    /// Target low-pass filter cutoff in Hz.
+    pub target_cutoff_hz: f32,
+    /// Maximum gain transition rate per audio sample (~20 ms slew rate).
+    pub gain_slew_per_sample: f32,
+    /// Maximum cutoff transition rate in Hz per audio sample.
+    pub cutoff_slew_per_sample: f32,
+}
+
+impl AcousticParameterSmoother {
+    /// Construct a parameter smoother configured for smooth 20 ms transitions.
+    pub fn new() -> Self {
+        // At 48 kHz, 20 ms = 960 samples.
+        // Transitioning full scale (1.0) over 960 samples -> ~0.00104 per sample
+        let slew_samples = AUDIO_SAMPLE_RATE_HZ * 0.020; // 960 samples
+        Self {
+            current_gain: 1.0,
+            target_gain: 1.0,
+            current_cutoff_hz: 20000.0,
+            target_cutoff_hz: 20000.0,
+            gain_slew_per_sample: 1.0 / slew_samples,
+            cutoff_slew_per_sample: 20000.0 / slew_samples,
+        }
+    }
+
+    /// Set target parameters from the latest ray tracing update.
+    pub fn set_targets(&mut self, target_gain: f32, target_cutoff_hz: f32) {
+        self.target_gain = target_gain.clamp(0.0, 1.0);
+        self.target_cutoff_hz = target_cutoff_hz.clamp(20.0, 20000.0);
+    }
+
+    /// Advance smoother by one audio sample and return `(interpolated_gain, interpolated_cutoff_hz)`.
+    #[inline]
+    pub fn step(&mut self) -> (f32, f32) {
+        // Gain slew
+        let diff_gain = self.target_gain - self.current_gain;
+        if diff_gain.abs() <= self.gain_slew_per_sample {
+            self.current_gain = self.target_gain;
+        } else if diff_gain > 0.0 {
+            self.current_gain += self.gain_slew_per_sample;
+        } else {
+            self.current_gain -= self.gain_slew_per_sample;
+        }
+
+        // Cutoff slew
+        let diff_cutoff = self.target_cutoff_hz - self.current_cutoff_hz;
+        if diff_cutoff.abs() <= self.cutoff_slew_per_sample {
+            self.current_cutoff_hz = self.target_cutoff_hz;
+        } else if diff_cutoff > 0.0 {
+            self.current_cutoff_hz += self.cutoff_slew_per_sample;
+        } else {
+            self.current_cutoff_hz -= self.cutoff_slew_per_sample;
+        }
+
+        (self.current_gain, self.current_cutoff_hz)
+    }
+}
+
+/// Real-Time 3D Audio Positional Occlusion & Acoustic Reflection DSP Engine.
+pub struct AcousticOcclusionEngine {
+    /// 3D acoustic world model holding obstacles.
+    pub world: AcousticWorld,
+    /// Early reflection ray bouncer.
+    pub bouncer: EarlyReflectionBouncer,
+    /// Circular delay line synthesizing early reflection taps.
+    pub delay_line: ReflectionDelayLine,
+    /// Late diffuse reverberation decay synthesizer.
+    pub late_reverb: LateReverbSynthesizer,
+    /// Click-free parameter smoother.
+    pub smoother: AcousticParameterSmoother,
+    /// Active early reflection paths.
+    pub reflection_paths: Vec<ReflectionPath>,
+    /// One-pole low-pass filter state for direct occluded sound path.
+    pub direct_lpf_state: f32,
+    /// Latest computed occlusion result.
+    pub last_occlusion: OcclusionResult,
+}
+
+impl AcousticOcclusionEngine {
+    /// Initialize a new acoustic occlusion and reflection DSP engine.
+    pub fn new(room_volume_m3: f32, total_absorption_area: f32) -> Self {
+        let rt60 = LateReverbSynthesizer::calculate_sabine_rt60(room_volume_m3, total_absorption_area);
+        Self {
+            world: AcousticWorld::new(),
+            bouncer: EarlyReflectionBouncer::new(2, 50.0),
+            delay_line: ReflectionDelayLine::new(MAX_DELAY_LINE_SAMPLES),
+            late_reverb: LateReverbSynthesizer::new(rt60, 0.15),
+            smoother: AcousticParameterSmoother::new(),
+            reflection_paths: Vec::new(),
+            direct_lpf_state: 0.0,
+            last_occlusion: OcclusionResult::unobstructed(),
+        }
+    }
+
+    /// Update spatial positions of audio emitter and listener, executing ray tracing
+    /// for direct path occlusion and early reflection paths.
+    pub fn update_scene(
+        &mut self,
+        emitter: AcousticVec3,
+        listener: AcousticVec3,
+    ) {
+        // 1. Line-of-sight occlusion tracing
+        let occ = self.world.trace_occlusion(emitter, listener);
+        self.last_occlusion = occ;
+
+        // Set target direct path parameters in smoother
+        self.smoother.set_targets(occ.direct_gain, occ.lpf_cutoff_hz);
+
+        // 2. Early reflections ray bouncing
+        self.reflection_paths = self.bouncer.calculate_reflection_paths(&self.world, emitter, listener);
+    }
+
+    /// Process a block of PCM audio samples through direct occlusion filtering,
+    /// early reflection delay lines, and late reverberation decay.
+    pub fn process_block(
+        &mut self,
+        input: &[f32],
+        output: &mut [f32],
+    ) {
+        let len = input.len().min(output.len());
+        for i in 0..len {
+            let sample = input[i];
+
+            // 1. Advance parameter smoother
+            let (smooth_gain, smooth_cutoff) = self.smoother.step();
+
+            // 2. Calculate one-pole LPF alpha: alpha = (2*pi*fc/Fs) / (1 + 2*pi*fc/Fs)
+            let omega = 2.0 * 3.14159265 * smooth_cutoff / AUDIO_SAMPLE_RATE_HZ;
+            let alpha = (omega / (1.0 + omega)).clamp(0.001, 1.0);
+
+            // Apply direct path low-pass filter
+            self.direct_lpf_state = self.direct_lpf_state + alpha * (sample - self.direct_lpf_state);
+            let direct_filtered = self.direct_lpf_state * smooth_gain;
+
+            // 3. Process early reflection delay lines
+            let early_refl = self.delay_line.process_reflections(sample, &self.reflection_paths);
+
+            // 4. Process late diffuse reverberation
+            let late_rev = self.late_reverb.process_sample(sample);
+
+            // 5. Combine direct, early reflections, and late reverb
+            output[i] = direct_filtered + early_refl + late_rev;
+        }
+    }
+}
