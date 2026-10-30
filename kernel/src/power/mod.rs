@@ -10,8 +10,12 @@ pub mod cstate;
 pub mod epb;
 pub mod freeze;
 pub mod s3_resume;
+pub mod fan;
+pub mod thermal;
 
 pub use s3_resume::*;
+pub use fan::*;
+pub use thermal::*;
 
 pub use freeze::*;
 
@@ -147,6 +151,32 @@ pub fn test_s0i3_s3_suspend_resume_subsystem() -> bool {
 
     // 4. Emit deterministic boot sentinel
     crate::serial_write_str("[KNT-SUSPEND-RESUME-PASS] S0i3/S3 instant-resume freeze and wakeup controller verified\r\n");
+
+    true
+}
+
+/// Comprehensive verification self-test suite for Handheld PC Thermal & Fan Profile Controller,
+/// Multi-Point Curves, Thermal Hysteresis Damping, and Acoustic Pacing Governor.
+///
+/// Emits sentinel [KNT-THERMAL-FAN-PASS] upon successful validation.
+pub fn test_handheld_thermal_and_fan_subsystem() -> bool {
+    // 1. Verify multi-point fan interpolation curves (Linear & Cubic S-curve) and safety clamps
+    if !verify_fan_curve_interpolation() {
+        return false;
+    }
+
+    // 2. Verify thermal hysteresis damping (3°C) and acoustic rate-of-change limiter (ramp up 20%/s, ramp down 5%/s)
+    if !verify_thermal_hysteresis_and_rate_limiter() {
+        return false;
+    }
+
+    // 3. Verify multi-zone thermal aggregation (CPU/GPU/Batt/Skin) and acoustic pacing governor profiles
+    if !verify_thermal_governor_and_zones() {
+        return false;
+    }
+
+    // 4. Emit deterministic boot sentinel
+    crate::serial_write_str("[KNT-THERMAL-FAN-PASS] Handheld multi-point fan curves and acoustic thermal governor verified\r\n");
 
     true
 }

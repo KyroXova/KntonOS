@@ -174,6 +174,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] S0i3/S3 suspend-resume subsystem self-test failed!\r\n");
     }
 
+    // Initialize and verify Handheld Thermal & Fan Profile Controller
+    if !power::test_handheld_thermal_and_fan_subsystem() {
+        serial_write_str("[KNT-PANIC] Handheld thermal and fan profile subsystem self-test failed!\r\n");
+    }
+
     // Initialize Virtual File System & mount demo initramfs
     fs::init();
     if !fs::test_vfs_subsystem() {
