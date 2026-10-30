@@ -1,9 +1,5 @@
 //! Hardware Random Number Generation (RDRAND / RDSEED) and Entropy Extractor.
-//!
 //! Provides x86_64 CPUID feature interrogation, hardware digital random number
-//! extraction (RDRAND and RDSEED instructions), high-resolution RDTSC jitter
-//! fallback mixing, and ChaCha20-based Cryptographically Secure Pseudorandom
-//! Number Generator (CSPRNG) kernel entropy pool.
 
 use crate::crypto::chacha20::{
     ChaCha20State, CHACHA20_BLOCK_SIZE, CHACHA20_KEY_SIZE, CHACHA20_NONCE_SIZE,
