@@ -1,10 +1,5 @@
 //! Parametric 10-Band Audio Equalizer & Biquad IIR Filter Engine.
-//!
 //! Implements Robert Bristow-Johnson (RBJ) Audio EQ Cookbook biquad filters:
-//! - Peaking (Bell EQ), Low-Shelf, High-Shelf, and Bandpass filter types.
-//! - 10-band ISO standard octave-spaced parametric equalizer (31 Hz to 16 kHz).
-//! - Clean transposed Direct Form II / Direct Form I biquad processing for low roundoff noise.
-//! - Gain range from -12.0 dB to +12.0 dB with configurable Q-factor (0.1 to 10.0).
 
 use crate::graphics::types::{cos_f32, sin_f32, sqrt_f32, PI};
 use super::hrtf::AUDIO_SAMPLE_RATE;
@@ -389,9 +384,7 @@ impl ParametricEqualizer10 {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Unit Tests
-// -----------------------------------------------------------------------------
 
 /// Unit test verifying biquad coefficient calculations and 10-band equalizer processing.
 pub fn test_parametric_eq_core() -> bool {

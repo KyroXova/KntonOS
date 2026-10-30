@@ -1,9 +1,5 @@
 //! High-Performance Multi-Stream Audio Mixer & TPDF Dithering Sample Converter.
-//!
 //! Performs 32-bit floating point accumulation across up to 16 concurrent audio client streams.
-//! Implements independent stream volume scaling, stereo balance/panning, asymptotic soft
-//! clipping to prevent digital overdrive, and Triangular Probability Density Function (TPDF)
-//! dithering for artifact-free float-to-int16 PCM quantization.
 
 use super::client_ring::{AudioClientManager, AudioFrame};
 use alloc::vec;
@@ -37,7 +33,6 @@ pub fn generate_tpdf_dither(state: &mut u32) -> f32 {
 
 /// Smooth asymptotic soft clipping saturator.
 /// Preserves strict linearity for signals within [-0.8, 0.8], then smoothly compresses
-/// excess peaks towards +/-1.0 without harmonic distortion.
 #[inline]
 pub fn soft_clip(sample: f32) -> f32 {
     const THRESHOLD: f32 = 0.8;
@@ -107,7 +102,6 @@ impl AudioSimdMixer {
 
     /// Pulls frames from all active clients in `manager`, performs 32-bit floating point mixing,
     /// applies volume scaling, panning, soft clipping, and writes interleaved int16 PCM to `out_pcm`.
-    /// `out_pcm` length must be at least `frames_to_mix * 2`. Returns the number of stereo frames mixed.
     pub fn mix_clients(
         &mut self,
         manager: &mut AudioClientManager,
@@ -242,7 +236,6 @@ pub fn test_simd_mixer_and_tpdf_dithering() -> bool {
 
     // Register two audio clients:
     // Client 1 ("game_sfx"): amplitude 0.3, center pan (0.0)
-    // Client 2 ("bgm"): amplitude 0.2, center pan (0.0)
     let c1_id = manager.register_client("game_sfx").unwrap();
     let c2_id = manager.register_client("bgm").unwrap();
 
@@ -262,8 +255,6 @@ pub fn test_simd_mixer_and_tpdf_dithering() -> bool {
 
     // Expected mixed amplitude:
     // Client 1 center gain: 0.3 * (0.5 * 1.0) = 0.15
-    // Client 2 center gain: 0.2 * (0.5 * 1.0) = 0.10
-    // Sum: 0.25 -> ~8191 in 16-bit PCM (allow small tolerance for TPDF dither noise)
     let expected_pcm = (0.25 * PCM_SCALE_I16) as i16;
     for sample in &out_pcm {
         if (sample - expected_pcm).abs() > 3 {
