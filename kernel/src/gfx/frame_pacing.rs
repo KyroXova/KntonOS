@@ -249,3 +249,136 @@ impl FrameTimelineRing {
         frame.record_marker(marker, timestamp_ns)
     }
 }
+
+
+// -----------------------------------------------------------------------------
+// Dynamic Frame Pacing Regulator & Proactive CPU Sleep Engine
+// -----------------------------------------------------------------------------
+
+/// Frame pacing regulation modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PacingMode {
+    /// Pacing disabled; unconstrained CPU frame generation (leads to 2-3 frame queue backlog).
+    Unconstrained = 0,
+    /// Fixed target frame rate pacing (V-Sync / framerate limiter).
+    #[default]
+    TargetFramerate = 1,
+    /// Low-latency Reflex / Anti-Lag proactive sleep regulation (locks queue depth to 0..1).
+    LowLatencyReflex = 2,
+    /// Reflex + Boost (forces GPU clocks to maximum and aggressive CPU pacing).
+    LowLatencyBoost = 3,
+}
+
+/// Dynamic frame pacing regulator maintaining optimal 0..1 GPU queue depth.
+#[derive(Debug, Clone)]
+pub struct FramePacingRegulator {
+    pub mode: PacingMode,
+    pub target_fps: f32,
+    pub max_queue_depth: u32,
+    pub moving_avg_cpu_time_ns: u64,
+    pub moving_avg_gpu_time_ns: u64,
+    pub total_proactive_sleep_ns: u64,
+    pub total_throttled_frames: u64,
+    pub total_frames_paced: u64,
+    pub alpha_smoothing: f32, // Exponential moving average weight (e.g. 0.15)
+}
+
+impl Default for FramePacingRegulator {
+    fn default() -> Self {
+        Self::new(PacingMode::LowLatencyReflex, 144.0, 1)
+    }
+}
+
+impl FramePacingRegulator {
+    pub fn new(mode: PacingMode, target_fps: f32, max_queue_depth: u32) -> Self {
+        Self {
+            mode,
+            target_fps: if target_fps > 0.0 { target_fps } else { 60.0 },
+            max_queue_depth: max_queue_depth.max(1),
+            moving_avg_cpu_time_ns: 4_000_000,  // initial default: 4ms
+            moving_avg_gpu_time_ns: 6_000_000,  // initial default: 6ms
+            total_proactive_sleep_ns: 0,
+            total_throttled_frames: 0,
+            total_frames_paced: 0,
+            alpha_smoothing: 0.20,
+        }
+    }
+
+    /// Updates exponential moving average of CPU and GPU work durations.
+    pub fn update_durations(&mut self, cpu_duration_ns: u64, gpu_duration_ns: u64) {
+        if cpu_duration_ns > 0 {
+            let old_cpu = self.moving_avg_cpu_time_ns as f32;
+            let new_cpu = old_cpu * (1.0 - self.alpha_smoothing) + (cpu_duration_ns as f32) * self.alpha_smoothing;
+            self.moving_avg_cpu_time_ns = new_cpu as u64;
+        }
+        if gpu_duration_ns > 0 {
+            let old_gpu = self.moving_avg_gpu_time_ns as f32;
+            let new_gpu = old_gpu * (1.0 - self.alpha_smoothing) + (gpu_duration_ns as f32) * self.alpha_smoothing;
+            self.moving_avg_gpu_time_ns = new_gpu as u64;
+        }
+    }
+
+    /// Evaluates whether CPU frame submission must be throttled to prevent render queue backlog.
+    #[inline(always)]
+    pub fn should_throttle(&self, in_flight_gpu_frames: u32) -> bool {
+        match self.mode {
+            PacingMode::Unconstrained => false,
+            _ => in_flight_gpu_frames >= self.max_queue_depth,
+        }
+    }
+
+    /// Computes the optimal proactive CPU sleep duration prior to initiating the next frame's simulation.
+    ///
+    /// Goal: Delay CPU simulation start such that the CPU finishes command recording and submits
+    /// precisely when the GPU finishes executing the previous frame. This minimizes the time
+    /// input sits in the queue, cutting input-to-display latency drastically.
+    pub fn compute_proactive_sleep(
+        &mut self,
+        current_time_ns: u64,
+        last_gpu_finish_estimated_ns: u64,
+        in_flight_gpu_frames: u32,
+    ) -> u64 {
+        self.total_frames_paced += 1;
+
+        if self.mode == PacingMode::Unconstrained {
+            return 0;
+        }
+
+        let mut sleep_ns = 0u64;
+
+        // 1. If currently at or exceeding max queue depth, must wait for oldest frame to finish
+        if self.should_throttle(in_flight_gpu_frames) {
+            self.total_throttled_frames += 1;
+            if last_gpu_finish_estimated_ns > current_time_ns {
+                sleep_ns = last_gpu_finish_estimated_ns - current_time_ns;
+            }
+        }
+
+        // 2. Reflex proactive sleep: Align CPU completion with GPU availability
+        if (self.mode == PacingMode::LowLatencyReflex || self.mode == PacingMode::LowLatencyBoost)
+            && last_gpu_finish_estimated_ns > current_time_ns
+        {
+            let remaining_gpu_time = last_gpu_finish_estimated_ns - current_time_ns;
+            let expected_cpu_time = self.moving_avg_cpu_time_ns;
+
+            if remaining_gpu_time > expected_cpu_time {
+                // Sleep the delta so CPU finishes right when GPU is free
+                let reflex_sleep = remaining_gpu_time - expected_cpu_time;
+                sleep_ns = sleep_ns.max(reflex_sleep);
+            }
+        }
+
+        // 3. Target framerate pacing: Cap frame rate if target_fps is set
+        if self.mode == PacingMode::TargetFramerate && self.target_fps > 0.0 {
+            let target_interval_ns = (1_000_000_000.0 / self.target_fps) as u64;
+            let total_estimated = self.moving_avg_cpu_time_ns.max(self.moving_avg_gpu_time_ns);
+            if target_interval_ns > total_estimated {
+                let fps_sleep = target_interval_ns - total_estimated;
+                sleep_ns = sleep_ns.max(fps_sleep);
+            }
+        }
+
+        self.total_proactive_sleep_ns += sleep_ns;
+        sleep_ns
+    }
+}
