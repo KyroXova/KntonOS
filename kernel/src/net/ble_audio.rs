@@ -1005,6 +1005,218 @@ impl CisAudioScheduler {
     }
 }
 
+// =============================================================================
+// 5. HID over GATT (HoG) Gamepad Processor & Adaptive Jitter Buffer
+// =============================================================================
+
+pub const BLE_UUID_HID_SERVICE: u16 = 0x1812;
+pub const BLE_UUID_REPORT_CHAR: u16 = 0x2A4D;
+pub const BLE_UUID_REPORT_MAP: u16 = 0x2A4B;
+pub const BLE_UUID_PROTOCOL_MODE: u16 = 0x2A4E;
+pub const BLE_UUID_HID_INFO: u16 = 0x2A4A;
+pub const BLE_UUID_HID_CONTROL_POINT: u16 = 0x2A4C;
+
+// Gamepad Button bitmask flags
+pub const BLE_BTN_A: u32 = 1 << 0;
+pub const BLE_BTN_B: u32 = 1 << 1;
+pub const BLE_BTN_X: u32 = 1 << 2;
+pub const BLE_BTN_Y: u32 = 1 << 3;
+pub const BLE_BTN_DPAD_UP: u32 = 1 << 4;
+pub const BLE_BTN_DPAD_DOWN: u32 = 1 << 5;
+pub const BLE_BTN_DPAD_LEFT: u32 = 1 << 6;
+pub const BLE_BTN_DPAD_RIGHT: u32 = 1 << 7;
+pub const BLE_BTN_LB: u32 = 1 << 8;
+pub const BLE_BTN_RB: u32 = 1 << 9;
+pub const BLE_BTN_LS: u32 = 1 << 10;
+pub const BLE_BTN_RS: u32 = 1 << 11;
+pub const BLE_BTN_START: u32 = 1 << 12;
+pub const BLE_BTN_SELECT: u32 = 1 << 13;
+pub const BLE_BTN_GUIDE: u32 = 1 << 14;
+
+/// Processed, normalized BLE handheld gamepad state.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct BleGamepadState {
+    pub left_stick_x: f32,  // [-1.0, 1.0]
+    pub left_stick_y: f32,  // [-1.0, 1.0]
+    pub right_stick_x: f32, // [-1.0, 1.0]
+    pub right_stick_y: f32, // [-1.0, 1.0]
+    pub left_trigger: f32,  // [0.0, 1.0]
+    pub right_trigger: f32, // [0.0, 1.0]
+    pub buttons: u32,
+    pub timestamp_us: u64,
+    pub sequence: u32,
+}
+
+impl BleGamepadState {
+    pub fn is_button_pressed(&self, button_mask: u32) -> bool {
+        (self.buttons & button_mask) != 0
+    }
+}
+
+/// Dynamic Adaptive Anti-Jitter Buffer for wireless gamepad inputs.
+///
+/// Mitigates 2.4 GHz RF multi-path interference and packet inter-arrival jitter
+/// without adding unnecessary input lag.
+#[derive(Debug)]
+pub struct BleGamepadJitterBuffer {
+    pub target_interval_us: u32,      // Expected interval, e.g. 7,500us (7.5ms)
+    pub last_arrival_us: u64,
+    pub jitter_ema_us: f32,           // Exponential moving average jitter
+    pub target_depth: usize,          // 1 (clean RF), 2 (moderate), 3 (noisy)
+    pub queue: VecDeque<BleGamepadState>,
+    pub underrun_count: u64,
+    pub overrun_count: u64,
+    pub total_samples_dequeued: u64,
+}
+
+impl BleGamepadJitterBuffer {
+    pub fn new(target_interval_us: u32) -> Self {
+        Self {
+            target_interval_us,
+            last_arrival_us: 0,
+            jitter_ema_us: 0.0,
+            target_depth: 1,
+            queue: VecDeque::with_capacity(16),
+            underrun_count: 0,
+            overrun_count: 0,
+            total_samples_dequeued: 0,
+        }
+    }
+
+    /// Records arrival of a new gamepad state and updates RF jitter statistics.
+    pub fn push_sample(&mut self, sample: BleGamepadState, arrival_us: u64) {
+        if self.last_arrival_us > 0 && arrival_us >= self.last_arrival_us {
+            let delta = (arrival_us - self.last_arrival_us) as f32;
+            let error = (delta - self.target_interval_us as f32).abs();
+            // Alpha = 0.2 smoothing factor
+            self.jitter_ema_us = 0.2 * error + 0.8 * self.jitter_ema_us;
+
+            // Dynamically tune playout buffer depth
+            self.target_depth = if self.jitter_ema_us < 1500.0 {
+                1 // Clean wireless link: instant sub-8ms delivery
+            } else if self.jitter_ema_us < 4000.0 {
+                2 // Moderate RF noise: 15ms buffer depth to prevent hitching
+            } else {
+                3 // High RF contention: 22.5ms depth
+            };
+        }
+        self.last_arrival_us = arrival_us;
+
+        if self.queue.len() >= 8 {
+            self.overrun_count += 1;
+            self.queue.pop_front();
+        }
+        self.queue.push_back(sample);
+    }
+
+    /// Pops the next smoothed gamepad sample for the game engine / kernel input loop.
+    pub fn pop_sample(&mut self) -> Option<BleGamepadState> {
+        if self.queue.is_empty() {
+            self.underrun_count += 1;
+            None
+        } else {
+            self.total_samples_dequeued += 1;
+            self.queue.pop_front()
+        }
+    }
+}
+
+/// HID over GATT (HoG) Gamepad Input Processor.
+#[derive(Debug)]
+pub struct BleHogGamepadProcessor {
+    pub connection_params: BleConnectionParams,
+    pub jitter_buffer: BleGamepadJitterBuffer,
+    pub deadzone_threshold: f32, // e.g. 0.05 (5%)
+    pub sequence_counter: u32,
+    pub last_state: BleGamepadState,
+}
+
+impl BleHogGamepadProcessor {
+    pub fn new() -> Self {
+        let params = BleConnectionParams::gaming_low_latency_7_5ms();
+        Self {
+            connection_params: params,
+            jitter_buffer: BleGamepadJitterBuffer::new(7500),
+            deadzone_threshold: 0.05,
+            sequence_counter: 0,
+            last_state: BleGamepadState::default(),
+        }
+    }
+
+    /// Enforces sub-8ms connection intervals. If current peripheral settings exceed
+    /// 7.5ms (6 units), returns an updated `BleConnectionParams` for negotiation.
+    pub fn enforce_sub_8ms_profile(&mut self, current: BleConnectionParams) -> Option<BleConnectionParams> {
+        if !current.is_sub_8ms() {
+            self.connection_params = BleConnectionParams::gaming_low_latency_7_5ms();
+            Some(self.connection_params)
+        } else {
+            self.connection_params = current;
+            None
+        }
+    }
+
+    /// Applies inner deadzone to analog axis values.
+    fn apply_deadzone(&self, val: f32) -> f32 {
+        if val.abs() < self.deadzone_threshold {
+            0.0
+        } else {
+            let sign = if val >= 0.0 { 1.0 } else { -1.0 };
+            let remapped = (val.abs() - self.deadzone_threshold) / (1.0 - self.deadzone_threshold);
+            sign * remapped.clamp(0.0, 1.0)
+        }
+    }
+
+    /// Parses standard 12-byte HID over GATT gamepad input report.
+    ///
+    /// Byte format:
+    /// [0..1]: Left Stick X (signed 16-bit)
+    /// [2..3]: Left Stick Y (signed 16-bit)
+    /// [4..5]: Right Stick X (signed 16-bit)
+    /// [6..7]: Right Stick Y (signed 16-bit)
+    /// [8]: Left Trigger (0..255)
+    /// [9]: Right Trigger (0..255)
+    /// [10..11]: Buttons bitmask (16-bit)
+    pub fn parse_input_report(&mut self, report_data: &[u8], timestamp_us: u64) -> Result<BleGamepadState, &'static str> {
+        if report_data.len() < 12 {
+            return Err("HID gamepad report too short (minimum 12 bytes required)");
+        }
+
+        let raw_lx = (report_data[0] as i16) | ((report_data[1] as i16) << 8);
+        let raw_ly = (report_data[2] as i16) | ((report_data[3] as i16) << 8);
+        let raw_rx = (report_data[4] as i16) | ((report_data[5] as i16) << 8);
+        let raw_ry = (report_data[6] as i16) | ((report_data[7] as i16) << 8);
+
+        let lx = self.apply_deadzone(raw_lx as f32 / 32767.0);
+        let ly = self.apply_deadzone(raw_ly as f32 / 32767.0);
+        let rx = self.apply_deadzone(raw_rx as f32 / 32767.0);
+        let ry = self.apply_deadzone(raw_ry as f32 / 32767.0);
+
+        let lt = (report_data[8] as f32) / 255.0;
+        let rt = (report_data[9] as f32) / 255.0;
+
+        let buttons = ((report_data[10] as u32) | ((report_data[11] as u32) << 8)) & 0xFFFF;
+
+        self.sequence_counter = self.sequence_counter.wrapping_add(1);
+
+        let state = BleGamepadState {
+            left_stick_x: lx.clamp(-1.0, 1.0),
+            left_stick_y: ly.clamp(-1.0, 1.0),
+            right_stick_x: rx.clamp(-1.0, 1.0),
+            right_stick_y: ry.clamp(-1.0, 1.0),
+            left_trigger: lt.clamp(0.0, 1.0),
+            right_trigger: rt.clamp(0.0, 1.0),
+            buttons,
+            timestamp_us,
+            sequence: self.sequence_counter,
+        };
+
+        self.last_state = state;
+        self.jitter_buffer.push_sample(state, timestamp_us);
+
+        Ok(state)
+    }
+}
+
 // -----------------------------------------------------------------------------
 // Unit Tests for Commit 1
 // -----------------------------------------------------------------------------
@@ -1120,5 +1332,50 @@ mod tests {
         CisAudioScheduler::plc_conceal_frame(&prev_pcm, &mut concealed);
         assert!(concealed[0] < 1000 && concealed[0] > 700);
         assert!(concealed[9] < concealed[0]); // verified decaying envelope
+    }
+    #[test]
+    pub fn test_hog_gamepad_and_jitter_buffer() {
+        let mut processor = BleHogGamepadProcessor::new();
+
+        // Sub-8ms enforcement check
+        let slow_params = BleConnectionParams {
+            min_interval: 24, // 30ms
+            max_interval: 24,
+            latency: 2,
+            timeout: 100,
+        };
+        let updated = processor.enforce_sub_8ms_profile(slow_params).expect("Expected profile update");
+        assert!(updated.is_sub_8ms());
+        assert_eq!(updated.max_interval, 6); // 7.5ms
+
+        // Construct 12-byte HID report
+        // Stick LX = 16384 (~0.5), LY = 0, RX = -16384 (~-0.5), RY = 0
+        // Triggers LT = 255 (1.0), RT = 128 (~0.5)
+        // Buttons = BLE_BTN_A | BLE_BTN_RB
+        let mut report = [0u8; 12];
+        let lx_bytes = 16384i16.to_le_bytes();
+        report[0] = lx_bytes[0];
+        report[1] = lx_bytes[1];
+        let rx_bytes = (-16384i16).to_le_bytes();
+        report[4] = rx_bytes[0];
+        report[5] = rx_bytes[1];
+        report[8] = 255;
+        report[9] = 128;
+        let btn_bytes = ((BLE_BTN_A | BLE_BTN_RB) as u16).to_le_bytes();
+        report[10] = btn_bytes[0];
+        report[11] = btn_bytes[1];
+
+        let state = processor.parse_input_report(&report, 100_000).expect("Parse HID report failed");
+        assert!(state.left_stick_x > 0.45 && state.left_stick_x < 0.55);
+        assert!(state.right_stick_x < -0.45 && state.right_stick_x > -0.55);
+        assert_eq!(state.left_trigger, 1.0);
+        assert!(state.is_button_pressed(BLE_BTN_A));
+        assert!(state.is_button_pressed(BLE_BTN_RB));
+        assert!(!state.is_button_pressed(BLE_BTN_B));
+
+        // Verify Jitter Buffer operation
+        let popped = processor.jitter_buffer.pop_sample().expect("Pop sample failed");
+        assert_eq!(popped.sequence, 1);
+        assert!(popped.is_button_pressed(BLE_BTN_A));
     }
 }
