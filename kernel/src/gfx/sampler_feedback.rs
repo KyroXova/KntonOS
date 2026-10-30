@@ -533,3 +533,242 @@ impl TileRequestQueue {
         self.requests.clear();
     }
 }
+
+/// Telemetry statistics for the sampler feedback and texture streaming engine.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SamplerFeedbackStats {
+    /// Total simulated GPU texture sample operations recorded into feedback map.
+    pub total_samples_recorded: u64,
+    /// Total evaluations performed across the feedback map.
+    pub evaluations_performed: u64,
+    /// Total tile streaming I/O requests generated for missing high-res mips.
+    pub tile_requests_generated: u64,
+    /// Total tile streaming requests fulfilled and uploaded to VRAM.
+    pub tile_requests_fulfilled: u64,
+}
+
+/// Dynamic Texture LOD Clamp Governor.
+///
+/// Dynamically calculates hardware sampler MinLOD clamps to prevent GPU shaders from
+/// accessing non-resident mip levels while asynchronous tile streaming is in flight.
+#[derive(Debug, Clone)]
+pub struct TextureLodClampGovernor {
+    /// Active hardware sampler minimum LOD clamp (finest allowed mip index).
+    active_min_lod_clamp: f32,
+    /// Baseline fallback resident mip level (always present in VRAM).
+    base_resident_mip: u8,
+    /// Target ideal mip level requested by shaders.
+    target_mip: u8,
+}
+
+impl TextureLodClampGovernor {
+    /// Creates a new LOD clamp governor initialized to the base resident mip level.
+    pub fn new(base_resident_mip: u8) -> Self {
+        Self {
+            active_min_lod_clamp: base_resident_mip as f32,
+            base_resident_mip,
+            target_mip: 0,
+        }
+    }
+
+    /// Active minimum LOD clamp value (in fractional mip level units).
+    #[inline]
+    pub fn active_min_lod_clamp(&self) -> f32 {
+        self.active_min_lod_clamp
+    }
+
+    /// Base resident fallback mip level.
+    #[inline]
+    pub fn base_resident_mip(&self) -> u8 {
+        self.base_resident_mip
+    }
+
+    /// Target ideal mip level requested by GPU shaders.
+    #[inline]
+    pub fn target_mip(&self) -> u8 {
+        self.target_mip
+    }
+
+    /// Updates the hardware sampler clamp based on current per-tile residency.
+    pub fn update_clamp_from_residency(&mut self, residency: &TextureMipResidency) {
+        let finest_resident = residency.finest_resident_mip();
+        self.active_min_lod_clamp = finest_resident as f32;
+    }
+
+    /// Sets the target ideal mip level.
+    pub fn set_target_mip(&mut self, target: u8) {
+        self.target_mip = target;
+    }
+}
+
+/// Kernel-Direct GPU Sampler Feedback Streaming & Texture LOD Clamp Engine.
+///
+/// Orchestrates paired sampler feedback maps (MinMipMap and TextureTranscoding),
+/// monitors GPU texture access patterns without CPU readback stalls, prioritizes
+/// tile streaming I/O requests, and governs hardware sampler LOD clamping.
+#[derive(Debug)]
+pub struct SamplerFeedbackEngine {
+    /// Paired texture and feedback map descriptor.
+    descriptor: FeedbackMapDescriptor,
+    /// MinMipMap feedback storage surface.
+    min_mip_map: MinMipMapStorage,
+    /// Texture transcoding feedback storage surface.
+    transcoding_map: TextureTranscodingStorage,
+    /// Per-tile mip level residency tracker.
+    residency: TextureMipResidency,
+    /// Priority request queue for asynchronous tile streaming.
+    request_queue: TileRequestQueue,
+    /// Dynamic hardware sampler LOD clamp governor.
+    lod_governor: TextureLodClampGovernor,
+    /// Profiling and streaming telemetry.
+    stats: SamplerFeedbackStats,
+}
+
+impl SamplerFeedbackEngine {
+    /// Creates a new SamplerFeedbackEngine paired with a texture resource.
+    pub fn new(
+        descriptor: FeedbackMapDescriptor,
+        base_resident_mip: u8,
+        queue_capacity: usize,
+    ) -> Self {
+        let tx = descriptor.tiles_x;
+        let ty = descriptor.tiles_y;
+
+        Self {
+            descriptor,
+            min_mip_map: MinMipMapStorage::new(tx, ty),
+            transcoding_map: TextureTranscodingStorage::new(tx, ty),
+            residency: TextureMipResidency::new(tx, ty, base_resident_mip),
+            request_queue: TileRequestQueue::new(queue_capacity),
+            lod_governor: TextureLodClampGovernor::new(base_resident_mip),
+            stats: SamplerFeedbackStats::default(),
+        }
+    }
+
+    /// Paired feedback map descriptor.
+    #[inline]
+    pub fn descriptor(&self) -> &FeedbackMapDescriptor {
+        &self.descriptor
+    }
+
+    /// Reference to MinMipMap storage.
+    #[inline]
+    pub fn min_mip_map(&self) -> &MinMipMapStorage {
+        &self.min_mip_map
+    }
+
+    /// Mutably access MinMipMap storage.
+    #[inline]
+    pub fn min_mip_map_mut(&mut self) -> &mut MinMipMapStorage {
+        &mut self.min_mip_map
+    }
+
+    /// Reference to Transcoding map storage.
+    #[inline]
+    pub fn transcoding_map(&self) -> &TextureTranscodingStorage {
+        &self.transcoding_map
+    }
+
+    /// Reference to texture mip residency tracker.
+    #[inline]
+    pub fn residency(&self) -> &TextureMipResidency {
+        &self.residency
+    }
+
+    /// Mutably access residency tracker.
+    #[inline]
+    pub fn residency_mut(&mut self) -> &mut TextureMipResidency {
+        &mut self.residency
+    }
+
+    /// Reference to the tile request queue.
+    #[inline]
+    pub fn request_queue(&self) -> &TileRequestQueue {
+        &self.request_queue
+    }
+
+    /// Mutably access tile request queue.
+    #[inline]
+    pub fn request_queue_mut(&mut self) -> &mut TileRequestQueue {
+        &mut self.request_queue
+    }
+
+    /// Reference to the LOD clamp governor.
+    #[inline]
+    pub fn lod_governor(&self) -> &TextureLodClampGovernor {
+        &self.lod_governor
+    }
+
+    /// Engine telemetry statistics.
+    #[inline]
+    pub fn stats(&self) -> &SamplerFeedbackStats {
+        &self.stats
+    }
+
+    /// Records a simulated GPU shader texture sample operation into the feedback map.
+    pub fn record_sample(&mut self, texel_x: u32, texel_y: u32, sampled_mip: u8) {
+        let (tx, ty) = self.descriptor.texel_to_tile(texel_x, texel_y);
+        self.min_mip_map.record_sample(tx, ty, sampled_mip);
+        self.transcoding_map.mark_transcode_needed(tx, ty);
+        self.stats.total_samples_recorded += 1;
+    }
+
+    /// Evaluates the feedback map against current VRAM residency.
+    ///
+    /// Identifies all tiles where `sampled_mip < resident_mip` (missing higher-resolution detail),
+    /// generates prioritized streaming requests into the queue, and updates the LOD clamp governor.
+    pub fn evaluate_feedback(&mut self, texture_id: u32) -> Result<usize, SamplerFeedbackError> {
+        let mut new_requests_count = 0;
+
+        for ty in 0..self.descriptor.tiles_y {
+            for tx in 0..self.descriptor.tiles_x {
+                if let Some(sampled_mip) = self.min_mip_map.get(tx, ty) {
+                    if sampled_mip != SAMPLER_FEEDBACK_UNACCESSED_MIP {
+                        let resident_mip = self.residency.get_resident_mip(tx, ty);
+                        if sampled_mip < resident_mip {
+                            // Missing higher-resolution mip tile!
+                            // Priority calculation: urgency scales with mip distance
+                            let urgency = (resident_mip - sampled_mip) as u32 * 100;
+
+                            let req = TileStreamingRequest::new(
+                                texture_id,
+                                tx,
+                                ty,
+                                sampled_mip,
+                                urgency,
+                            );
+
+                            if self.request_queue.push(req)? {
+                                new_requests_count += 1;
+                                self.stats.tile_requests_generated += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        self.lod_governor.update_clamp_from_residency(&self.residency);
+        self.stats.evaluations_performed += 1;
+
+        Ok(new_requests_count)
+    }
+
+    /// Fulfills a streaming tile request by promoting tile residency in VRAM
+    /// and updating the active sampler LOD clamp.
+    pub fn fulfill_tile_request(&mut self, req: &TileStreamingRequest) -> bool {
+        let promoted = self.residency.promote_tile_mip(req.tile_x, req.tile_y, req.requested_mip);
+        if promoted {
+            self.transcoding_map.mark_transcode_ready(req.tile_x, req.tile_y);
+            self.lod_governor.update_clamp_from_residency(&self.residency);
+            self.stats.tile_requests_fulfilled += 1;
+        }
+        promoted
+    }
+
+    /// Clears both MinMipMap and Transcoding feedback surfaces for the next frame.
+    pub fn clear_feedback(&mut self) {
+        self.min_mip_map.clear();
+        self.transcoding_map.clear();
+    }
+}
