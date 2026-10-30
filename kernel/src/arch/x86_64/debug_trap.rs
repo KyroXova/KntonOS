@@ -310,3 +310,254 @@ pub fn test_hardware_watchpoint_registers() -> bool {
 
     true
 }
+
+// -------------------------------------------------------------------------------------------------
+// Single-Step Trap Execution & Register State Snapshotting
+// -------------------------------------------------------------------------------------------------
+
+/// CPU EFLAGS Trap Flag (TF, bit 8).
+pub const EFLAGS_TF: u64 = 1 << 8;
+
+/// Complete 64-bit CPU architectural register snapshot captured during a debug trap or watchpoint.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CpuRegisterSnapshot {
+    pub rax: u64,
+    pub rbx: u64,
+    pub rcx: u64,
+    pub rdx: u64,
+    pub rsi: u64,
+    pub rdi: u64,
+    pub rbp: u64,
+    pub rsp: u64,
+    pub r8: u64,
+    pub r9: u64,
+    pub r10: u64,
+    pub r11: u64,
+    pub r12: u64,
+    pub r13: u64,
+    pub r14: u64,
+    pub r15: u64,
+    pub rip: u64,
+    pub rflags: u64,
+    pub cs: u64,
+    pub ss: u64,
+    pub cr2: u64,
+    pub dr6: u64,
+}
+
+impl CpuRegisterSnapshot {
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    /// Sets or clears the single-step Trap Flag (TF) in saved RFLAGS.
+    #[inline(always)]
+    pub fn set_single_step(&mut self, enable: bool) {
+        if enable {
+            self.rflags |= EFLAGS_TF;
+        } else {
+            self.rflags &= !EFLAGS_TF;
+        }
+    }
+
+    #[inline(always)]
+    pub fn is_single_step_enabled(&self) -> bool {
+        (self.rflags & EFLAGS_TF) != 0
+    }
+}
+
+/// Diagnostic trap record logging instruction operand, trigger cause, and state snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrapReason {
+    HardwareWatchpoint(DebugRegisterIndex),
+    MmioPageFaultRange(u32),
+    SingleStepInstruction,
+    SoftwareBreakpoint,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DiagnosticTrapLog {
+    pub reason: TrapReason,
+    pub snapshot: CpuRegisterSnapshot,
+    pub instruction_bytes: [u8; 15],
+    pub instruction_len: usize,
+    pub timestamp_tsc: u64,
+}
+
+impl DiagnosticTrapLog {
+    pub fn new(reason: TrapReason, snapshot: CpuRegisterSnapshot, insn: &[u8], tsc: u64) -> Self {
+        let mut insn_buf = [0u8; 15];
+        let len = core::cmp::min(insn.len(), 15);
+        insn_buf[..len].copy_from_slice(&insn[..len]);
+        Self {
+            reason,
+            snapshot,
+            instruction_bytes: insn_buf,
+            instruction_len: len,
+            timestamp_tsc: tsc,
+        }
+    }
+}
+
+/// Single-step debug engine maintaining trace stepping sessions and diagnostic logs.
+pub const MAX_TRAP_LOGS: usize = 16;
+
+pub struct SingleStepTrapEngine {
+    stepping_active: bool,
+    break_on_next_instruction: bool,
+    #[allow(dead_code)]
+    target_rip: Option<u64>,
+    trap_history: [Option<DiagnosticTrapLog>; MAX_TRAP_LOGS],
+    history_count: usize,
+    step_count: u64,
+}
+
+impl SingleStepTrapEngine {
+    pub const fn new() -> Self {
+        Self {
+            stepping_active: false,
+            break_on_next_instruction: false,
+            target_rip: None,
+            trap_history: [None; MAX_TRAP_LOGS],
+            history_count: 0,
+            step_count: 0,
+        }
+    }
+
+    /// Arms single-stepping for the thread resuming from `snapshot`.
+    pub fn arm_single_step(&mut self, snapshot: &mut CpuRegisterSnapshot) {
+        self.stepping_active = true;
+        self.break_on_next_instruction = true;
+        snapshot.set_single_step(true);
+    }
+
+    /// Disarms single-stepping on `snapshot`.
+    pub fn disarm_single_step(&mut self, snapshot: &mut CpuRegisterSnapshot) {
+        self.stepping_active = false;
+        self.break_on_next_instruction = false;
+        snapshot.set_single_step(false);
+    }
+
+    /// Handles a #DB (Debug Exception, vector 1) single step or watchpoint hit.
+    pub fn handle_debug_exception(
+        &mut self,
+        snapshot: &mut CpuRegisterSnapshot,
+        dr6_raw: u64,
+        insn: &[u8],
+        tsc: u64,
+    ) -> TrapReason {
+        let status = DebugStatusRegister::from_raw(dr6_raw);
+        let reason = if status.single_step {
+            self.step_count += 1;
+            TrapReason::SingleStepInstruction
+        } else if status.dr0_triggered {
+            TrapReason::HardwareWatchpoint(DebugRegisterIndex::Dr0)
+        } else if status.dr1_triggered {
+            TrapReason::HardwareWatchpoint(DebugRegisterIndex::Dr1)
+        } else if status.dr2_triggered {
+            TrapReason::HardwareWatchpoint(DebugRegisterIndex::Dr2)
+        } else if status.dr3_triggered {
+            TrapReason::HardwareWatchpoint(DebugRegisterIndex::Dr3)
+        } else {
+            TrapReason::SoftwareBreakpoint
+        };
+
+        let log = DiagnosticTrapLog::new(reason, *snapshot, insn, tsc);
+        self.record_log(log);
+
+        reason
+    }
+
+    fn record_log(&mut self, log: DiagnosticTrapLog) {
+        if self.history_count < MAX_TRAP_LOGS {
+            self.trap_history[self.history_count] = Some(log);
+            self.history_count += 1;
+        } else {
+            for i in 1..MAX_TRAP_LOGS {
+                self.trap_history[i - 1] = self.trap_history[i];
+            }
+            self.trap_history[MAX_TRAP_LOGS - 1] = Some(log);
+        }
+    }
+
+    #[inline(always)]
+    pub const fn is_stepping_active(&self) -> bool {
+        self.stepping_active
+    }
+
+    #[inline(always)]
+    pub const fn total_steps(&self) -> u64 {
+        self.step_count
+    }
+
+    #[inline(always)]
+    pub const fn logged_traps_count(&self) -> usize {
+        self.history_count
+    }
+
+    pub fn last_log(&self) -> Option<DiagnosticTrapLog> {
+        if self.history_count > 0 {
+            self.trap_history[self.history_count - 1]
+        } else {
+            None
+        }
+    }
+}
+
+/// Unit test verifying single-step arming, disarming, EFLAGS.TF manipulation, and register snapshotting.
+pub fn test_single_step_and_snapshotting() -> bool {
+    let mut engine = SingleStepTrapEngine::new();
+    let mut snapshot = CpuRegisterSnapshot::empty();
+
+    snapshot.rip = 0xFFFFFFFF_8010_4000;
+    snapshot.rsp = 0xFFFF8000_0000_FFF0;
+    snapshot.rax = 0x1234_5678_9ABC_DEF0;
+    snapshot.rflags = 0x0000_0202; // IF=1, reserved=1
+
+    // 1. Arm single step and verify TF set
+    engine.arm_single_step(&mut snapshot);
+    if !snapshot.is_single_step_enabled() || !engine.is_stepping_active() {
+        return false;
+    }
+    if (snapshot.rflags & EFLAGS_TF) == 0 {
+        return false;
+    }
+
+    // 2. Simulate #DB debug exception firing on single-step completion
+    // DR6 BS bit is bit 14
+    let dr6_single_step = 0xFFFF_0FF0 | (1 << 14);
+    let mock_insn = [0x48, 0x89, 0xC3]; // mov rbx, rax
+    let tsc = 1_000_000;
+
+    snapshot.rip += 3; // Advanced past instruction
+    snapshot.rbx = snapshot.rax;
+
+    let reason = engine.handle_debug_exception(&mut snapshot, dr6_single_step, &mock_insn, tsc);
+    if reason != TrapReason::SingleStepInstruction {
+        return false;
+    }
+
+    if engine.total_steps() != 1 || engine.logged_traps_count() != 1 {
+        return false;
+    }
+
+    let last_log = match engine.last_log() {
+        Some(l) => l,
+        None => return false,
+    };
+    if last_log.snapshot.rbx != snapshot.rax || last_log.snapshot.rip != 0xFFFFFFFF_8010_4003 {
+        return false;
+    }
+    if last_log.instruction_len != 3 || &last_log.instruction_bytes[..3] != &mock_insn {
+        return false;
+    }
+
+    // 3. Disarm single step
+    engine.disarm_single_step(&mut snapshot);
+    if snapshot.is_single_step_enabled() || engine.is_stepping_active() {
+        return false;
+    }
+
+    true
+}

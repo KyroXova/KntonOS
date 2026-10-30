@@ -26,8 +26,10 @@ pub use hpet::{
 
 pub use smp::{test_smp_and_timer_subsystem, SMP};
 pub use debug_trap::{
-    test_hardware_watchpoint_registers, DebugControlRegister, DebugRegisterIndex,
-    DebugStatusRegister, HardwareWatchpointController, WatchpointCondition, WatchpointLength,
+    test_hardware_watchpoint_registers, test_single_step_and_snapshotting,
+    CpuRegisterSnapshot, DebugControlRegister, DebugRegisterIndex,
+    DebugStatusRegister, DiagnosticTrapLog, HardwareWatchpointController,
+    SingleStepTrapEngine, TrapReason, WatchpointCondition, WatchpointLength, EFLAGS_TF,
 };
 pub use mmio_watch::{
     test_mmio_range_interceptor, MmioAccessType, MmioInterceptEvent, MmioRangeInterceptor,
