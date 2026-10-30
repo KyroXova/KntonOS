@@ -504,6 +504,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Audio client protocol and mixer ring self-test failed!\r\n");
     }
 
+    // Initialize and verify Real-Time Game Voice Chat & Acoustic Noise Cancellation Filter Engine
+    if !audio::test_voice_dsp_subsystem() {
+        serial_write_str("[KNT-PANIC] Game voice DSP and noise cancellation self-test failed!\r\n");
+    }
+
     // Initialize and verify Hardware RNG & ChaCha20 Cryptographic Entropy Pool
     crypto::init_kernel_rng();
     if !crypto::test_crypto_rng_subsystem() {

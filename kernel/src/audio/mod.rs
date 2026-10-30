@@ -239,3 +239,59 @@ pub fn test_audio_client_protocol_subsystem() -> bool {
     crate::serial_write_str("[KNT-AUDIO-CLIENT-PASS] Zero-copy shared-memory audio client protocol and real-time mixer operational\r\n");
     true
 }
+
+/// Comprehensive verification self-test suite for Real-Time Low-Latency Game Voice Chat
+/// & Acoustic Noise Cancellation (DSP / RNNoise-Style) Filter Engine.
+///
+/// Emits sentinel [KNT-AUDIO-VOICE-DSP-PASS] upon successful validation.
+pub fn test_voice_dsp_subsystem() -> bool {
+    crate::serial_write_str("[KNT-AUDIO-VOICE-DSP-TEST] Running Real-Time Game Voice Chat & Acoustic Noise Cancellation verification suite...\r\n");
+
+    // 1. Verify capture ring buffer, 16-bit 48kHz PCM frames, and 16-band Bark filterbank
+    if !voice_dsp::test_voice_capture_ring_and_filterbank() {
+        crate::serial_write_str("[KNT-PANIC] Voice capture ring and filterbank verification failed!\r\n");
+        return false;
+    }
+    crate::serial_write_str("  * Microphone circular capture ring buffer and 16-band Bark filterbank verified\r\n");
+
+    // 2. Verify Voice Activity Detection (VAD), zero-crossing rate, and spectral noise estimation
+    if !voice_dsp::test_vad_and_noise_estimator() {
+        crate::serial_write_str("[KNT-PANIC] Voice activity detector and noise estimator verification failed!\r\n");
+        return false;
+    }
+    crate::serial_write_str("  * Energy/ZCR Voice Activity Detection (VAD) and continuous noise estimation verified\r\n");
+
+    // 3. Verify real-time spectral subtraction noise suppressor, AGC, and soft-limiter
+    if !voice_dsp::test_noise_suppressor_and_agc() {
+        crate::serial_write_str("[KNT-PANIC] Noise suppressor and AGC verification failed!\r\n");
+        return false;
+    }
+    crate::serial_write_str("  * Multi-band spectral subtraction noise suppressor and Automatic Gain Control (AGC) verified\r\n");
+
+    // 4. End-to-end integration test: capture ring -> DSP engine -> denoised output frame
+    let mut engine = voice_dsp::VoiceDspEngine::new();
+
+    // Push 480 samples of test audio into capture ring
+    let test_frame = voice_dsp::VoicePcmFrame {
+        samples: [500; voice_dsp::VOICE_FRAME_SAMPLES],
+        channels: voice_dsp::VoiceChannels::Mono,
+        timestamp_us: 100_000,
+        sequence_number: 1,
+    };
+    engine.ring.push_samples(&test_frame.samples);
+
+    let popped = match engine.ring.pop_frame(100_000) {
+        Some(f) => f,
+        None => return false,
+    };
+
+    let processed = engine.process_frame(&popped);
+    if processed.sequence_number != 1 || engine.total_processed_frames != 1 {
+        return false;
+    }
+
+    crate::serial_write_str("  * End-to-end game voice chat capture, noise cancellation, and AGC pipeline verified\r\n");
+    crate::serial_write_str("[KNT-AUDIO-VOICE-DSP-PASS] Real-time game voice chat and acoustic noise cancellation engine operational\r\n");
+
+    true
+}

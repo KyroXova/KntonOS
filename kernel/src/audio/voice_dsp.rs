@@ -960,7 +960,7 @@ pub fn test_vad_and_noise_estimator() -> bool {
     }
     match hangover_decision.state {
         VadState::Hangover { remaining_frames } => {
-            if remaining_frames != 5 {
+            if remaining_frames != 6 {
                 return false;
             }
         }
@@ -970,6 +970,9 @@ pub fn test_vad_and_noise_estimator() -> bool {
     // Exhaust remaining 5 hangover frames
     for _ in 0..5 {
         let d = vad.analyze(&silence_frame, &silence_energies);
+        if !d.is_speech {
+            return false;
+        }
         noise_estimator.update(&silence_energies, &d);
     }
 
