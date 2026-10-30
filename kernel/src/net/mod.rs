@@ -20,6 +20,9 @@ pub mod socket;
 pub mod tcp;
 pub mod tls;
 pub mod udp;
+pub mod ring;
+
+pub use ring::*;
 
 pub use af_unix::{
     sockaddr_un, ucred, UnixDatagramPacket, UnixDatagramQueue, UnixSocketAddress, UnixSocketError,
