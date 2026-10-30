@@ -247,6 +247,7 @@ pub fn verify_core_parking_topology_and_load() -> bool {
     }
 
     // Step 2: High load surge (12 active threads on 3 active cores = 400% load)
+    mgr.evaluate(12, 800);
     let unpark_dec = mgr.evaluate(12, 1000);
     if unpark_dec != ParkingDecision::UnparkCore(3) {
         return false;
