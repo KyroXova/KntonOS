@@ -1,11 +1,5 @@
 //! Direct3D 12 Enhanced Barriers & Split-Barrier Synchronized GPU Resource Transition Engine.
-//!
 //! Replaces legacy monolithic ResourceBarrier state transitions with granular,
-//! pipelined Enhanced Barriers:
-//! - Granular Synchronization Scopes (`BarrierSync`) and Memory Access flags (`BarrierAccess`)
-//! - Explicit Texture Compression & Memory Layout states (`BarrierLayout`)
-//! - GlobalBarrier, BufferBarrier, and TextureBarrier with SubresourceRange matching
-//! - Split-barrier execution (`BeginBarrier` / `EndBarrier`) maximizing GPU overlap and concurrency
 
 use alloc::vec::Vec;
 
@@ -13,9 +7,7 @@ use alloc::vec::Vec;
 pub const ALL_SUBRESOURCES: u32 = 0xFFFF_FFFF;
 
 /// Direct3D 12 Synchronization Scopes (`D3D12_BARRIER_SYNC`).
-///
 /// Defines which hardware pipeline stages must complete before the barrier (sync_before)
-/// and which stages must wait before executing (sync_after).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct BarrierSync;
 
@@ -37,9 +29,7 @@ impl BarrierSync {
 }
 
 /// Direct3D 12 Memory Access Types (`D3D12_BARRIER_ACCESS`).
-///
 /// Defines which GPU memory caches must be flushed before the barrier (access_before)
-/// and which caches must be invalidated before subsequent access (access_after).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct BarrierAccess;
 
@@ -63,7 +53,6 @@ impl BarrierAccess {
 }
 
 /// Direct3D 12 Texture Layouts (`D3D12_BARRIER_LAYOUT`).
-///
 /// Governs memory layout, compression metadata (DCC, HTILE), and cache configurations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(u32)]
@@ -484,9 +473,7 @@ impl BufferResourceDesc {
 }
 
 /// Barrier transition evaluator and state tracking validator.
-///
 /// Ensures all state changes comply with D3D12 Enhanced Barrier specifications,
-/// verifying sync scopes, cache access flags, and texture layout transitions.
 #[derive(Debug, Clone, Default)]
 pub struct BarrierTransitionValidator {
     pub textures: Vec<TextureResourceDesc>,
@@ -685,9 +672,7 @@ pub struct InFlightSplitBarrier {
 }
 
 /// Direct3D 12 Enhanced Barrier & Split-Barrier Synchronized GPU Transition Engine.
-///
 /// Manages high-performance granular synchronization, non-blocking split barrier pipelines,
-/// asynchronous GPU cache flushes, and hazard-free subresource layout transitions.
 #[derive(Debug, Clone, Default)]
 pub struct EnhancedBarrierEngine {
     pub validator: BarrierTransitionValidator,
@@ -713,9 +698,7 @@ impl EnhancedBarrierEngine {
     }
 
     /// Begins a split barrier transition asynchronously.
-    ///
     /// Initiates cache flushes and decompress passes without stalling subsequent
-    /// independent GPU commands.
     pub fn begin_barrier(&mut self, group: BarrierGroup) -> Result<SplitBarrierToken, BarrierError> {
         // Validate all barriers in the group before accepting
         for global in &group.global_barriers {
@@ -769,9 +752,7 @@ impl EnhancedBarrierEngine {
     }
 
     /// Ends an in-flight split barrier transition.
-    ///
     /// Waits for cache flushes / decompression to complete and commits new
-    /// subresource layout and access states into the transition validator.
     pub fn end_barrier(&mut self, token: SplitBarrierToken) -> Result<(), BarrierError> {
         let idx = self.in_flight_barriers.iter().position(|b| b.token == token)
             .ok_or(BarrierError::SplitBarrierNotFound(token.0))?;
@@ -791,7 +772,6 @@ impl EnhancedBarrierEngine {
     }
 
     /// Executes an immediate (non-split) barrier group.
-    ///
     /// Synchronously flushes caches and applies layout transitions immediately.
     pub fn execute_barrier(&mut self, group: BarrierGroup) -> Result<(), BarrierError> {
         self.validator.evaluate_group(&group)?;
@@ -813,7 +793,6 @@ impl EnhancedBarrierEngine {
 
 
 /// Comprehensive verification self-test for Direct3D 12 Enhanced Barriers & Split-Barrier Engine.
-///
 /// Emits sentinel [KNT-GPU-ENHANCED-BARRIERS-PASS] upon successful verification.
 pub fn test_enhanced_barriers_subsystem() -> bool {
     let mut engine = EnhancedBarrierEngine::new();

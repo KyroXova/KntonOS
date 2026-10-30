@@ -1,19 +1,11 @@
 //! Direct3D 12 Dynamic Constant Buffer View (CBV) Descriptor Pool & Binder.
-//!
 //! Manages dynamic shader constants, GPU virtual addresses (GPU VA), root descriptor slots,
-//! and per-draw constant update streams:
-//! - Strict D3D12 constant buffer size clamping (up to 64 KiB / 4096 16-byte elements)
-//! - Per-draw suballocation and automatic 256-byte alignment
-//! - Dirty bitmask tracking for root descriptor bindings
-//! - Shadow CPU staging and multi-frame retirement synchronization
 
 use crate::gfx::ring_alloc::{
     ConstantBufferRingAllocator, ConstantBufferSlice, FrameRetirementTracker, RingAllocError,
 };
 
-// -----------------------------------------------------------------------------
 // Constants and Errors
-// -----------------------------------------------------------------------------
 
 /// Maximum allowable constant buffer size in Direct3D 12 (64 KiB).
 pub const D3D12_MAX_CONSTANT_BUFFER_SIZE_BYTES: usize = 65536;
@@ -44,9 +36,7 @@ impl From<RingAllocError> for CbvPoolError {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Dynamic CBV Descriptor
-// -----------------------------------------------------------------------------
 
 /// Direct3D 12 Constant Buffer View (CBV) descriptor representation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,9 +53,7 @@ pub struct DynamicCbvDescriptor {
     pub ring_offset: usize,
 }
 
-// -----------------------------------------------------------------------------
 // Dynamic CBV Pool
-// -----------------------------------------------------------------------------
 
 /// High-performance pool and binder managing per-draw dynamic constant buffers.
 pub struct DynamicCbvPool {
@@ -110,11 +98,6 @@ impl DynamicCbvPool {
     }
 
     /// Stages a slice of raw CPU constant data into the ring buffer and binds it to a root parameter slot.
-    ///
-    /// - Enforces 256-byte alignment on both GPU VA and size.
-    /// - Clamps buffer size to D3D12 maximum (64 KiB).
-    /// - Copies CPU bytes to staging memory.
-    /// - Marks the root parameter as dirty for the next draw command.
     pub fn stage_constants(
         &mut self,
         root_param_index: u32,
@@ -211,9 +194,7 @@ impl DynamicCbvPool {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Unit Tests & Verification
-// -----------------------------------------------------------------------------
 
 /// Unit test verifying dynamic CBV heap descriptor binder and per-draw constant update stream.
 pub fn verify_dynamic_cbv_pool_and_binding() -> bool {
