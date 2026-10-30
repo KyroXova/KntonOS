@@ -131,6 +131,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] THP and NUMA V-Cache self-test failed!\r\n");
     }
 
+    // Initialize and verify Dynamic VMM Memory Compactor & Transparent Page Defragmentation
+    if !mm::test_memory_compaction_subsystem() {
+        serial_write_str("[KNT-PANIC] Memory compactor and defragmentation self-test failed!\r\n");
+    }
+
     // Initialize SMP multi-core discovery and Local APIC timer
     arch::init_smp();
 
