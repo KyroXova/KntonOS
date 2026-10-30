@@ -231,7 +231,6 @@ impl GyroAimIntegrator {
     }
 
     /// Integrates calibrated angular velocity (rad/s) over timestep `dt_sec` and outputs integer mouse deltas (dx, dy).
-    ///
     /// `gyro_rad_per_sec`: `(pitch_x, yaw_y, roll_z)`.
     pub fn integrate(&mut self, gyro_rad_per_sec: (f32, f32, f32), dt_sec: f32) -> (i32, i32) {
         let (raw_pitch, raw_yaw, raw_roll) = gyro_rad_per_sec;
@@ -827,7 +826,6 @@ impl MotionAimingGovernor {
     }
 
     /// Processes an input angular velocity frame, updating yaw integration and auto-centering.
-    ///
     /// Returns compensated and curved angular velocity: `(pitch_dps, yaw_dps)`.
     pub fn process_motion(
         &mut self,

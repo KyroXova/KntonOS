@@ -355,7 +355,6 @@ impl BacklightGovernor {
                 } else {
                     // Low luminance: PWM modulation below threshold.
                     // DC drive is locked at the hybrid threshold permille (e.g. 250 = 25% current)
-                    // preventing color shift and diode knee extinction.
                     let dc_floor_permille = ((self.config.hybrid_threshold * 1000.0) + 0.5) as u16;
                     let pwm_fraction = (effective_linear / self.config.hybrid_threshold).clamp(0.0, 1.0);
                     let pwm = ((pwm_fraction * (PWM_DUTY_MAX as f32)) + 0.5) as u16;

@@ -432,7 +432,6 @@ impl Usb4EgpuManager {
     }
 
     /// Safe MMIO read barrier preventing bus lockup or machine check exceptions.
-    ///
     /// If the cable has been pulled, immediately returns  xFFFFFFFF without waiting for bus timeouts.
     pub fn safe_mmio_read(&mut self, _offset: u32) -> u32 {
         if self.state != HotPlugState::ConnectedAndActive {

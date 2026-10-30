@@ -553,10 +553,7 @@ impl Default for GameTelemetry {
 }
 
 /// Evaluates APU temperature and maps to a dynamic thermal gradient color.
-///
 /// - <= 45°C: Deep Sapphire Blue (0, 80, 255)
-/// - 45°C..65°C: Neon Cyan to Radiant Gold (0, 255, 255 -> 255, 215, 0)
-/// - >= 85°C: Blazing Crimson Thermal Red (255, 0, 0)
 pub fn evaluate_thermal_heat_gradient(temp_celsius: f32) -> Rgb8 {
     let t = temp_celsius.clamp(35.0, 90.0);
     if t <= 50.0 {
@@ -675,11 +672,7 @@ pub mod ec_regs {
 }
 
 /// Serializes a 6-zone RGB frame buffer into an EC I2C register transaction packet.
-///
 /// Output packet layout:
-/// - [0]: Target start register address (REG_ZONE_BASE: 0x10)
-/// - [1..24]: 6 zones * 4 bytes (Red PWM, Green PWM, Blue PWM, Zone flags)
-/// - [25]: Commit command byte (0x01) at REG_COMMIT_LATCH (0x28)
 pub fn serialize_ec_frame(
     frame: &[Rgb8; LED_ZONE_COUNT],
     out_buf: &mut [u8],

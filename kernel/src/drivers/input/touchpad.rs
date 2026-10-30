@@ -1008,7 +1008,6 @@ impl TouchpadTrackingEngine {
                 } else {
                     // 2. Adaptive Exponential Moving Average (EMA) smoothing factor:
                     // High speed -> alpha = 0.85 (responsive, zero lag)
-                    // Low speed  -> alpha = 0.25 (heavy noise reduction)
                     let speed = raw_dist / dt_ms; // px/ms
                     let alpha = if speed > 1.5 { 0.85 } else if speed > 0.5 { 0.55 } else { 0.25 };
 

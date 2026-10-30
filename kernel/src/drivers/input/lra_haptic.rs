@@ -233,7 +233,6 @@ impl LraPllTracker {
         if phase_error_rad.abs() > self.config.phase_deadband_rad {
             // Apply PI loop filter to frequency:
             // If phase_error < 0 (measured faster than drive), we need to INCREASE drive frequency.
-            // Hence: delta_f = - (Kp * phase_error + Ki * integral_error)
             self.integral_error += phase_error_rad;
             // Anti-windup clamping on integral error (+/- 5.0 rad)
             self.integral_error = self.integral_error.clamp(-10.0, 10.0);

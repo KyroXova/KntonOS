@@ -113,11 +113,7 @@ const SINE_QUARTER_TABLE: [u8; 17] = [
 
 /// Computes integer sine approximation yielding normalized 0..=255 amplitude.
 pub fn integer_sine_u8(phase_256: u8) -> u8 {
-    // phase in 0..256 corresponds to 0..2pi
-    // Quadrant 0: 0..64
-    // Quadrant 1: 64..128
-    // Quadrant 2: 128..192
-    // Quadrant 3: 192..256
+    // Phase in 0..256 corresponds to 0..2pi across 4 quadrants.
     let quad = phase_256 / 64;
     let rem = phase_256 % 64;
 

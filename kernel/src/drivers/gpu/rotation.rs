@@ -36,16 +36,13 @@ impl ScanoutTransformMatrix {
             PanelOrientation::RightUp => {
                 // 90 deg clockwise rotation:
                 // x_l = y_p
-                // y_l = (h - 1) - x_p
                 Self {
                     m00:  0.0, m01: 1.0, tx: 0.0,
                     m10: -1.0, m11: 0.0, ty: (h - 1.0).max(0.0),
                 }
             }
             PanelOrientation::BottomUp => {
-                // 180 deg upside-down rotation:
-                // x_l = (w - 1) - x_p
-                // y_l = (h - 1) - y_p
+                // 180 deg upside-down: x_l = (w - 1) - x_p, y_l = (h - 1) - y_p
                 Self {
                     m00: -1.0, m01:  0.0, tx: (w - 1.0).max(0.0),
                     m10:  0.0, m11: -1.0, ty: (h - 1.0).max(0.0),
@@ -54,7 +51,6 @@ impl ScanoutTransformMatrix {
             PanelOrientation::LeftUp => {
                 // 270 deg (90 counter-clockwise) rotation:
                 // x_l = (w - 1) - y_p
-                // y_l = x_p
                 Self {
                     m00: 0.0, m01: -1.0, tx: (w - 1.0).max(0.0),
                     m10: 1.0, m11:  0.0, ty: 0.0,
@@ -135,16 +131,12 @@ impl HardwareScanoutConfig {
             PanelOrientation::RightUp => {
                 // 90 deg clockwise:
                 // First physical pixel (0, 0) is at logical (0, log_h - 1)
-                // Advancing physical X moves UP logically: -pitch
-                // Advancing physical Y moves RIGHT logically: +bpp
                 let offset = ((log_height.saturating_sub(1)) as u64) * (pitch_bytes as u64);
                 (offset, -pitch, bpp)
             }
             PanelOrientation::BottomUp => {
                 // 180 deg upside-down:
                 // First physical pixel (0, 0) is at logical (log_w - 1, log_h - 1)
-                // Advancing physical X moves LEFT logically: -bpp
-                // Advancing physical Y moves UP logically: -pitch
                 let offset = ((log_height.saturating_sub(1)) as u64) * (pitch_bytes as u64)
                     + ((log_width.saturating_sub(1)) as u64) * (bytes_per_pixel as u64);
                 (offset, -bpp, -pitch)
@@ -152,8 +144,6 @@ impl HardwareScanoutConfig {
             PanelOrientation::LeftUp => {
                 // 270 deg (90 counter-clockwise):
                 // First physical pixel (0, 0) is at logical (log_w - 1, 0)
-                // Advancing physical X moves DOWN logically: +pitch
-                // Advancing physical Y moves LEFT logically: -bpp
                 let offset = ((log_width.saturating_sub(1)) as u64) * (bytes_per_pixel as u64);
                 (offset, pitch, -bpp)
             }

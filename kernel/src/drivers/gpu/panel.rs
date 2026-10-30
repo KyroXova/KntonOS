@@ -393,21 +393,15 @@ impl TouchCalibrationMatrix {
         match orientation {
             PanelOrientation::Normal => Self::IDENTITY,
             PanelOrientation::RightUp => {
-                // 90 deg clockwise rotation:
-                // X' = Y
-                // Y' = 1.0 - X
+                // 90 deg clockwise: X' = Y, Y' = 1.0 - X
                 Self::new(0.0, 1.0, 0.0, -1.0, 0.0, 1.0)
             }
             PanelOrientation::BottomUp => {
-                // 180 deg upside-down:
-                // X' = 1.0 - X
-                // Y' = 1.0 - Y
+                // 180 deg upside-down: X' = 1.0 - X, Y' = 1.0 - Y
                 Self::new(-1.0, 0.0, 1.0, 0.0, -1.0, 1.0)
             }
             PanelOrientation::LeftUp => {
-                // 270 deg (90 counter-clockwise):
-                // X' = 1.0 - Y
-                // Y' = X
+                // 270 deg counter-clockwise: X' = 1.0 - Y, Y' = X
                 Self::new(0.0, -1.0, 1.0, 1.0, 0.0, 0.0)
             }
         }
