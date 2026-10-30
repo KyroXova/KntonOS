@@ -1,10 +1,5 @@
 //! State-Externalized Partition Structures & Crash-Safe Journals (`knton.shm.*`).
-//!
 //! Provides transactional state externalization for critical micro-kernel services:
-//! - Dual-ring / double-buffered state banks (Bank A and Bank B)
-//! - Monotonic generation counters and sequence ordering
-//! - Write-ahead crash-safe journal for zero-loss atomic state commits
-//! - Fast Adler-32 integrity checksums to detect torn writes or corrupted checkpoints
 
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -221,10 +216,7 @@ impl PartitionHeader {
 }
 
 /// State-Externalized Dual-Ring Memory Partition.
-///
 /// Holds two identical physical memory banks (A and B). While the active bank is
-/// read by worker threads, state updates are written into the standby bank.
-/// On successful journal commit, the active bank index is atomically flipped.
 pub struct StatePartition {
     pub header: PartitionHeader,
     pub bank_a: [u8; STATE_BANK_SIZE],
