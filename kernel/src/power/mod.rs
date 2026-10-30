@@ -5,6 +5,9 @@
 
 pub mod governor;
 pub mod rapl;
+pub mod parking;
+pub mod cstate;
+pub mod epb;
 
 pub use governor::{
     verify_pid_power_governor, verify_thermal_monitoring, CoreThermalStatus, GovernorAction,
@@ -18,6 +21,9 @@ pub use governor::{
     THERM_STATUS_VALID,
 };
 
+pub use parking::*;
+pub use cstate::*;
+pub use epb::*;
 pub use rapl::{
     verify_rapl_and_smu_structures, AmdSmuMailbox, CpuPowerVendor, EnergyCounter, PkgPowerLimit,
     RaplUnits, AMD_SMU_MSG_GET_CORE_TEMP, AMD_SMU_MSG_GET_PACKAGE_POWER,
@@ -85,6 +91,30 @@ pub fn test_power_governor_subsystem() -> bool {
 
     // 5. Emit boot sentinel
     crate::serial_write_str("[KNT-POWER-GOV-PASS] Dynamic power governor, RAPL energy meter, and thermal monitor operational\r\n");
+
+    true
+}
+
+/// Comprehensive verification self-test suite for Dynamic Core Parking,
+/// C-State Governor, and Energy-Performance Bias (EPB / EPP).
+pub fn test_core_parking_and_cstate_subsystem() -> bool {
+    // 1. Verify CPU core parking topology table, runqueue load evaluation, and park/unpark transitions
+    if !verify_core_parking_topology_and_load() {
+        return false;
+    }
+
+    // 2. Verify autonomous C-state residency selection and break-even latency analysis
+    if !verify_cstate_governor_and_latency() {
+        return false;
+    }
+
+    // 3. Verify Energy-Performance Bias (EPB) and EPP hardware MSR governor profiles
+    if !verify_epb_and_epp_profiles() {
+        return false;
+    }
+
+    // 4. Emit deterministic boot sentinel
+    crate::serial_write_str("[KNT-POWER-PARK-PASS] Dynamic core parking, C-state governor, and EPB/EPP profiles verified\r\n");
 
     true
 }
