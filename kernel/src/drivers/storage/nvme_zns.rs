@@ -569,3 +569,183 @@ impl ActiveZoneCapacityTracker {
         None
     }
 }
+
+
+// -----------------------------------------------------------------------------
+// Subsystem Verification Self-Test
+// -----------------------------------------------------------------------------
+
+/// Comprehensive verification self-test suite for Kernel-Direct NVMe ZNS (Zoned Namespaces)
+/// and Hardware Copy Offload Engine.
+///
+/// Emits sentinel [KNT-NVME-ZNS-PASS] upon successful validation.
+pub fn test_nvme_zns_subsystem() -> bool {
+    use crate::drivers::storage::copy_offload::{
+        NvmeCopyOffloadEngine, NvmeCopyRangeDescriptor, NVME_NVM_COPY,
+    };
+
+    // 1. Verify ZNS geometry and standard Zone State Machine
+    let mut zns = ZnsNamespace::new(1, 524_288, 65_536, 64_000, 4, 2);
+    if zns.zone_count() != 8 {
+        return false;
+    }
+    // Initial zone state must be Empty
+    if !zns.zones[0].is_empty() || zns.zones[0].write_pointer != 0 || zns.zones[0].remaining_capacity() != 64_000 {
+        return false;
+    }
+
+    // Open zone 0 explicitly
+    if zns.open_zone(0, true).is_err() || zns.zones[0].state != ZoneState::ExplicitlyOpened {
+        return false;
+    }
+    // Open zone 1 implicitly
+    if zns.open_zone(1, false).is_err() || zns.zones[1].state != ZoneState::ImplicitlyOpened {
+        return false;
+    }
+    if zns.open_zone_count() != 2 || zns.active_zone_count() != 2 {
+        return false;
+    }
+
+    // Enforce max open zones limit (limit = 2)
+    if zns.open_zone(2, true).is_ok() {
+        return false;
+    }
+
+    // Close zone 1
+    if zns.close_zone(1).is_err() || zns.zones[1].state != ZoneState::Closed {
+        return false;
+    }
+    if zns.open_zone_count() != 1 || zns.active_zone_count() != 2 {
+        return false;
+    }
+
+    // Now opening zone 2 succeeds
+    if zns.open_zone(2, true).is_err() || zns.zones[2].state != ZoneState::ExplicitlyOpened {
+        return false;
+    }
+
+    // Sequential write to zone 0: write 10,000 LBAs
+    let assigned = match zns.write_sequential(0, 10_000) {
+        Ok(lba) => lba,
+        Err(_) => return false,
+    };
+    if assigned != 0 || zns.zones[0].write_pointer != 10_000 || zns.zones[0].remaining_capacity() != 54_000 {
+        return false;
+    }
+
+    // Finish zone 0: write pointer advances to capacity (64,000) and state becomes Full
+    if zns.finish_zone(0).is_err() || zns.zones[0].state != ZoneState::Full || zns.zones[0].write_pointer != 64_000 {
+        return false;
+    }
+    if zns.zones[0].remaining_capacity() != 0 {
+        return false;
+    }
+
+    // Reset zone 0: write pointer resets to start LBA and state returns to Empty
+    if zns.reset_zone(0).is_err() || zns.zones[0].state != ZoneState::Empty || zns.zones[0].write_pointer != 0 {
+        return false;
+    }
+
+    // 2. Verify Zone Append Queue and Concurrent Multi-Writer Dispatch
+    let mut append_queue = ZoneAppendQueue::new();
+    let id1 = append_queue.enqueue(2, 500, 0x1000_0000, 0);
+    let id2 = append_queue.enqueue(2, 1000, 0x1001_0000, 0);
+    let id3 = append_queue.enqueue(2, 1500, 0x1002_0000, 0);
+
+    let submissions = match append_queue.submit_batch(&mut zns) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+
+    if submissions.len() != 3 || append_queue.total_appended_lbas != 3000 {
+        return false;
+    }
+
+    // Verify assigned LBAs are strictly monotonic without host lock serialization
+    let r1 = match append_queue.get_request(id1) {
+        Some(r) => r,
+        None => return false,
+    };
+    let r2 = match append_queue.get_request(id2) {
+        Some(r) => r,
+        None => return false,
+    };
+    let r3 = match append_queue.get_request(id3) {
+        Some(r) => r,
+        None => return false,
+    };
+
+    let start_lba_zone2 = zns.zones[2].start_lba;
+    if r1.assigned_lba != Some(start_lba_zone2) {
+        return false;
+    }
+    if r2.assigned_lba != Some(start_lba_zone2 + 500) {
+        return false;
+    }
+    if r3.assigned_lba != Some(start_lba_zone2 + 1500) {
+        return false;
+    }
+    if zns.zones[2].write_pointer != start_lba_zone2 + 3000 {
+        return false;
+    }
+
+    // Verify submission entry hardware encoding
+    if submissions[0].opcode() != NVME_ZNS_ZONE_APPEND {
+        return false;
+    }
+
+    // 3. Verify Active Zone Capacity Tracker & Governor
+    let tracker = ActiveZoneCapacityTracker::new();
+    let active_cap = tracker.total_active_capacity(&zns);
+    if active_cap == 0 || !tracker.can_write(&zns, 2, 1000) {
+        return false;
+    }
+    let best_zone = tracker.find_best_zone_for_append(&zns, 2000);
+    if best_zone.is_none() {
+        return false;
+    }
+
+    // 4. Verify NVMe Simple Copy Command & Hardware Copy Offload Engine
+    let mut copy_engine = NvmeCopyOffloadEngine::new(512);
+
+    let ranges = [
+        NvmeCopyRangeDescriptor::new(100, 50),
+        NvmeCopyRangeDescriptor::new(500, 100),
+    ];
+    if ranges[0].lba_count() != 50 || ranges[1].lba_count() != 100 {
+        return false;
+    }
+
+    let copy_cmd = match copy_engine.prepare_copy_job(42, 1, 10_000, &ranges, 0x2000_0000) {
+        Ok(cmd) => cmd,
+        Err(_) => return false,
+    };
+    if copy_cmd.opcode() != NVME_NVM_COPY || copy_cmd.cdw10 != 10_000 || copy_cmd.cdw12 != 1 {
+        return false;
+    }
+
+    // Execute copy offload directly into destination ZNS zone 3
+    let copy_ranges = [
+        NvmeCopyRangeDescriptor::new(start_lba_zone2, 500),
+        NvmeCopyRangeDescriptor::new(start_lba_zone2 + 500, 1000),
+    ];
+    let dest_slba = match copy_engine.execute_zns_zone_copy_offload(&mut zns, 3, &copy_ranges) {
+        Ok(slba) => slba,
+        Err(_) => return false,
+    };
+
+    let start_lba_zone3 = zns.zones[3].start_lba;
+    if dest_slba != start_lba_zone3 || zns.zones[3].write_pointer != start_lba_zone3 + 1500 {
+        return false;
+    }
+    // Telemetry: 1500 LBAs * 512 bytes * 2 (read + write PCIe traffic eliminated)
+    let expected_saved = 1500 * 512 * 2;
+    if copy_engine.bytes_saved() != expected_saved {
+        return false;
+    }
+
+    // 5. Emit deterministic boot sentinel
+    crate::serial_write_str("[KNT-NVME-ZNS-PASS] NVMe Zoned Namespaces (ZNS) and hardware copy offload engine verified\r\n");
+
+    true
+}

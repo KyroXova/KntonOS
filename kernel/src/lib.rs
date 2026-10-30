@@ -328,6 +328,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] DirectStorage NVMe-to-GPU streaming self-test failed!\r\n");
     }
 
+    // Initialize and verify Kernel-Direct NVMe ZNS (Zoned Namespaces) & Copy Offload Engine
+    if !drivers::storage::test_nvme_zns_subsystem() {
+        serial_write_str("[KNT-PANIC] NVMe ZNS and copy offload self-test failed!\r\n");
+    }
+
     // Initialize Embedded Network Protocol Stack (ARP, IPv4, ICMP, UDP, TCP)
     net::init();
     if !net::test_network_stack() {
