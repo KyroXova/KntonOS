@@ -1,14 +1,5 @@
 //! Direct3D 12 Shader Execution Reordering (SER) & Raytracing Hit-Sort Accelerator Engine.
-//!
 //! Solves ray tracing SIMD lane divergence and texture cache thrashing by reordering
-//! secondary ray hit invocations into shader-coherent and spatially contiguous batches.
-//!
-//! Core Architecture:
-//! - Hit record descriptors: Ray hit attributes (instance, geometry, primitive, barycentrics)
-//! - Spatial bit-key hashing (3D Morton codes / Z-order curve)
-//! - Composite reorder keys (material shader target primary, spatial Morton secondary)
-//! - Hardware-assisted hit-sort radix binning engine
-//! - ReorderThread / HitObject dispatch loop and SIMD coherence profiler
 
 #![allow(dead_code)]
 
@@ -103,9 +94,7 @@ impl HitRecord {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Spatial Bit-Key Hashing (3D Morton Codes)
-// -----------------------------------------------------------------------------
 
 /// Expands a 10-bit integer by inserting 2 zero bits between each bit,
 /// mapping bits 0..9 into bits 0, 3, 6, 9, 12, 15, 18, 21, 24, 27.
@@ -138,8 +127,6 @@ pub fn morton_code_3d(point: [f32; 3], bbox_min: [f32; 3], bbox_max: [f32; 3]) -
 }
 
 /// 64-bit composite reorder key:
-/// - High 32 bits: Shader table index (material target) for SIMD warp divergence elimination
-/// - Low 32 bits: 3D Morton code for spatial cache locality
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Hash)]
 pub struct ReorderKey(pub u64);
 
@@ -191,9 +178,7 @@ impl HitObject {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Reorder Table Layout
-// -----------------------------------------------------------------------------
 
 /// Reorder table buffering intercepted ray hit records prior to sorting and dispatch.
 #[derive(Debug, Clone)]
@@ -238,9 +223,7 @@ impl ReorderTable {
 }
 
 
-// -----------------------------------------------------------------------------
 // Radix Hit-Sort Accelerator Engine
-// -----------------------------------------------------------------------------
 
 /// Hardware-assisted 8-bit Radix Sort engine operating on 64-bit composite ReorderKey.
 #[derive(Debug, Clone, Default)]
@@ -305,9 +288,7 @@ impl RadixHitSorter {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Threadgroup / SIMD Divergence Estimator
-// -----------------------------------------------------------------------------
 
 /// Coherence and SIMD lane efficiency metrics for a ray batch.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -399,9 +380,7 @@ impl DivergenceEstimator {
 }
 
 
-// -----------------------------------------------------------------------------
 // ReorderThread Execution Pipeline & HitObject Dispatch Loop
-// -----------------------------------------------------------------------------
 
 /// Coherence profiler recording before-and-after SIMD efficiency gains.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -541,12 +520,9 @@ impl SerEngine {
 }
 
 
-// -----------------------------------------------------------------------------
 // Verification Self-Test Suite
-// -----------------------------------------------------------------------------
 
 /// Comprehensive verification self-test for D3D12 Shader Execution Reordering (SER).
-///
 /// Emits sentinel [KNT-GPU-SER-PASS] upon successful verification.
 pub fn test_ser_subsystem() -> bool {
     let bbox_min = [-10.0, -10.0, -10.0];
