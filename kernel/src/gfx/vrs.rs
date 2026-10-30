@@ -1138,5 +1138,201 @@ impl UnifiedVrsEngine {
     }
 }
 
+// -----------------------------------------------------------------------------
+// Verification Self-Test Suite
+// -----------------------------------------------------------------------------
+
+/// Comprehensive verification self-test for Direct3D 12 Variable-Rate Shading (VRS)
+/// Tier 2 Screen-Space Shading Rate Image Generator.
+///
+/// Emits sentinel [KNT-GPU-VRS-TIER2-PASS] upon successful validation.
+pub fn test_vrs_tier2_shading_rate_image_subsystem() -> bool {
+    // 1. Verify D3D12 VRS Tier 2 shading rates and tile encodings
+    let rates = [
+        (ShadingRate::Rate1x1, D3D12_VRS_SHADING_RATE_1X1, 1, 1),
+        (ShadingRate::Rate1x2, D3D12_VRS_SHADING_RATE_1X2, 1, 2),
+        (ShadingRate::Rate2x1, D3D12_VRS_SHADING_RATE_2X1, 2, 1),
+        (ShadingRate::Rate2x2, D3D12_VRS_SHADING_RATE_2X2, 2, 2),
+        (ShadingRate::Rate2x4, D3D12_VRS_SHADING_RATE_2X4, 2, 4),
+        (ShadingRate::Rate4x2, D3D12_VRS_SHADING_RATE_4X2, 4, 2),
+        (ShadingRate::Rate4x4, D3D12_VRS_SHADING_RATE_4X4, 4, 4),
+    ];
+
+    for &(rate, raw, w, h) in rates.iter() {
+        if rate.to_d3d12() != raw {
+            crate::serial_write_str("[KNT-FAIL-VRS-1] Raw D3D12 byte encoding mismatch\r\n");
+            return false;
+        }
+        if ShadingRate::from_d3d12(raw) != Some(rate) {
+            crate::serial_write_str("[KNT-FAIL-VRS-2] Raw D3D12 decode mismatch\r\n");
+            return false;
+        }
+        if rate.width() != w || rate.height() != h {
+            crate::serial_write_str("[KNT-FAIL-VRS-3] Rate dimension mismatch\r\n");
+            return false;
+        }
+    }
+
+    // 2. Verify Contrast-Adaptive Edge Protection
+    let config = ContrastSensitivityConfig::default();
+    let gen = ContrastAdaptiveVrsGenerator::new(config);
+
+    // High contrast tile (silhouettes/specular edge)
+    let edge_tile = LumaTile::new(0.05, 0.95, 0.5);
+    let (edge_rate, is_edge) = gen.evaluate_contrast_rate(&edge_tile);
+    if edge_rate != ShadingRate::Rate1x1 || !is_edge {
+        crate::serial_write_str("[KNT-FAIL-VRS-4] High contrast edge must be assigned 1x1\r\n");
+        return false;
+    }
+
+    // Moderate contrast tile
+    let mid_tile = LumaTile::new(0.44, 0.56, 0.5);
+    let (mid_rate, mid_is_edge) = gen.evaluate_contrast_rate(&mid_tile);
+    if mid_rate != ShadingRate::Rate2x2 || mid_is_edge {
+        crate::serial_write_str("[KNT-FAIL-VRS-5] Moderate contrast must be assigned 2x2\r\n");
+        return false;
+    }
+
+    // Low contrast / flat tile
+    let flat_tile = LumaTile::new(0.5, 0.5, 0.5);
+    let (flat_rate, flat_is_edge) = gen.evaluate_contrast_rate(&flat_tile);
+    if flat_rate != ShadingRate::Rate4x4 || flat_is_edge {
+        crate::serial_write_str("[KNT-FAIL-VRS-6] Low contrast must be assigned 4x4\r\n");
+        return false;
+    }
+
+    // 3. Verify Motion-Vector Adaptive Coarsening & Directional Stretching
+    let stationary = MotionVector2D::new(0.2, 0.1);
+    if gen.evaluate_motion_rate(&stationary) != ShadingRate::Rate1x1 {
+        crate::serial_write_str("[KNT-FAIL-VRS-7] Stationary motion must be 1x1\r\n");
+        return false;
+    }
+
+    let horiz_motion = MotionVector2D::new(6.0, 0.5);
+    if gen.evaluate_motion_rate(&horiz_motion) != ShadingRate::Rate4x2 {
+        crate::serial_write_str("[KNT-FAIL-VRS-8] Dominant horizontal motion must be 4x2\r\n");
+        return false;
+    }
+
+    let vert_motion = MotionVector2D::new(0.5, 6.0);
+    if gen.evaluate_motion_rate(&vert_motion) != ShadingRate::Rate2x4 {
+        crate::serial_write_str("[KNT-FAIL-VRS-9] Dominant vertical motion must be 2x4\r\n");
+        return false;
+    }
+
+    let diag_motion = MotionVector2D::new(6.0, 6.0);
+    if gen.evaluate_motion_rate(&diag_motion) != ShadingRate::Rate4x4 {
+        crate::serial_write_str("[KNT-FAIL-VRS-10] Fast diagonal motion must be 4x4\r\n");
+        return false;
+    }
+
+    // 4. Verify Foveated Peripheral Concentric Ring Coarsening
+    let fov_config = FoveatedVrsConfig {
+        gaze_x: 128,
+        gaze_y: 128,
+        inner_radius: 32.0,
+        middle_radius: 80.0,
+        peripheral_rate: ShadingRate::Rate4x4,
+    };
+    let fov_gen = FoveatedVrsGenerator::new(fov_config);
+
+    // Gaze center tile at (8, 8) with tile size 16 (pixel center 136, 136, dist = ~11.3 <= 32)
+    let (center_rate, _) = fov_gen.evaluate_tile(8, 8, TileGranularity::Tile16x16);
+    if center_rate != ShadingRate::Rate1x1 {
+        crate::serial_write_str("[KNT-FAIL-VRS-11] Foveal center tile must be 1x1\r\n");
+        return false;
+    }
+
+    // Parafoveal tile at (8, 11) (pixel center 136, 184, dy = 56, dist = ~56.5 in (32, 80])
+    let (mid_fov_rate, _) = fov_gen.evaluate_tile(8, 11, TileGranularity::Tile16x16);
+    if mid_fov_rate != ShadingRate::Rate2x2 {
+        crate::serial_write_str("[KNT-FAIL-VRS-12] Parafoveal tile must be 2x2\r\n");
+        return false;
+    }
+
+    // Outer peripheral corner tile at (0, 0) (pixel center 8, 8, dist = ~170 > 80)
+    let (periph_rate, _) = fov_gen.evaluate_tile(0, 0, TileGranularity::Tile16x16);
+    if periph_rate != ShadingRate::Rate4x4 {
+        crate::serial_write_str("[KNT-FAIL-VRS-13] Peripheral corner tile must be 4x4\r\n");
+        return false;
+    }
+
+    // 5. Verify Multi-Source Combiner Rules
+    let combiners = MultiSourceCombinerDescriptor::new(
+        ShadingRateCombiner::Min,
+        ShadingRateCombiner::Override,
+    );
+
+    // Stage 0: Min(Rate2x2, Rate4x4) = Rate2x2; Stage 1: Override(Rate2x2, Rate1x2) = Rate1x2
+    let combined_override = combiners.combine(ShadingRate::Rate2x2, ShadingRate::Rate4x4, Some(ShadingRate::Rate1x2));
+    if combined_override != ShadingRate::Rate1x2 {
+        crate::serial_write_str("[KNT-FAIL-VRS-14] Combiner override mismatch\r\n");
+        return false;
+    }
+
+    let combiners_min = MultiSourceCombinerDescriptor::new(
+        ShadingRateCombiner::Max,
+        ShadingRateCombiner::Min,
+    );
+    // Stage 0: Max(Rate1x2, Rate2x1) = Rate2x2; Stage 1: Min(Rate2x2, Rate1x1) = Rate1x1
+    let combined_min = combiners_min.combine(ShadingRate::Rate1x2, ShadingRate::Rate2x1, Some(ShadingRate::Rate1x1));
+    if combined_min != ShadingRate::Rate1x1 {
+        crate::serial_write_str("[KNT-FAIL-VRS-15] Combiner min mismatch\r\n");
+        return false;
+    }
+
+    // 6. Verify Full Unified SRI Generation
+    let unified_engine = UnifiedVrsEngine::new(gen, fov_gen, combiners);
+    let desc = ShadingRateImageDescriptor {
+        width_pixels: 64,
+        height_pixels: 64,
+        granularity: TileGranularity::Tile16x16,
+        default_rate: ShadingRate::Rate1x1,
+        min_rate: ShadingRate::Rate1x1,
+        max_rate: ShadingRate::Rate4x4,
+    };
+
+    // 4x4 tiles = 16 tiles
+    let mut luma_grid = alloc::vec![LumaTile::new(0.5, 0.5, 0.5); 16];
+    let mut motion_grid = alloc::vec![MotionVector2D::new(0.0, 0.0); 16];
+
+    // Put high contrast edge at tile (1, 1) -> index 1 * 4 + 1 = 5
+    luma_grid[5] = LumaTile::new(0.0, 1.0, 0.5);
+    // Put fast horizontal motion at tile (2, 2) -> index 2 * 4 + 2 = 10
+    motion_grid[10] = MotionVector2D::new(8.0, 0.0);
+
+    let (sri, descs) = match unified_engine.generate_unified_sri(desc, &luma_grid, &motion_grid) {
+        Ok(res) => res,
+        Err(_) => {
+            crate::serial_write_str("[KNT-FAIL-VRS-16] Unified SRI generation failed\r\n");
+            return false;
+        }
+    };
+
+    if descs.len() != 16 {
+        crate::serial_write_str("[KNT-FAIL-VRS-17] Descriptors length mismatch\r\n");
+        return false;
+    }
+
+    // Edge tile 5 must remain Rate1x1
+    if descs[5].rate != ShadingRate::Rate1x1 || !descs[5].is_edge_protected {
+        crate::serial_write_str("[KNT-FAIL-VRS-18] Unified edge tile must be Rate1x1\r\n");
+        return false;
+    }
+
+    // Raw bytes check
+    let raw_bytes = sri.to_raw_d3d12_bytes();
+    if raw_bytes.len() != 16 || raw_bytes[5] != D3D12_VRS_SHADING_RATE_1X1 {
+        crate::serial_write_str("[KNT-FAIL-VRS-19] Raw byte array mismatch\r\n");
+        return false;
+    }
+
+    // 7. Emit deterministic boot sentinel
+    crate::serial_write_str("[KNT-GPU-VRS-TIER2-PASS] Direct3D 12 Variable-Rate Shading Tier 2 screen-space shading rate image generator verified\r\n");
+
+    true
+}
+
+
 
 
