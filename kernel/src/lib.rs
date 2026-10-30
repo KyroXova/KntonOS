@@ -135,6 +135,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] ACPI Power Management self-test failed!\r\n");
     }
 
+    // Initialize and verify HPET & Real-Time Monotonic Nanosecond Clock Subsystem
+    if !arch::test_hpet_subsystem() {
+        serial_write_str("[KNT-PANIC] HPET and monotonic clock self-test failed!\r\n");
+    }
+
     // Initialize Virtual File System & mount demo initramfs
     fs::init();
     if !fs::test_vfs_subsystem() {

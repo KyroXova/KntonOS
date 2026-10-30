@@ -11,14 +11,15 @@ pub mod hpet;
 
 pub use hpet::{
     calibrate_tsc, calibrate_tsc_with_samples, monotonic_sleep_ns, monotonic_time_ms,
-    monotonic_time_ns, monotonic_time_us, nanoseconds_to_ticks, read_tsc, ticks_to_nanoseconds,
-    verify_hpet_counter_and_timers, verify_hpet_monotonic_and_tsc, verify_hpet_structures,
-    AcpiHpetTable, HpetDevice, HpetInfo, HpetRegisters, HpetTableParser, HpetTimerConfig,
-    HpetTimerMode, CALIBRATED_TSC_HZ, DEFAULT_HPET_BASE_ADDRESS, HPET_DEVICE, HPET_GEN_CONF_ENABLE,
-    HPET_GEN_CONF_LEG_RT, HPET_REG_GCAP_ID, HPET_REG_GEN_CONF, HPET_REG_GINTR_STA,
-    HPET_REG_MAIN_CNT, HPET_REG_TIM0_COMP, HPET_REG_TIM0_CONF, HPET_REG_TIM0_FSB, HPET_SIGNATURE,
-    HPET_SIGNATURE_U32, HPET_TIMER_STRIDE, HPET_TN_32MODE, HPET_TN_INT_ENABLE, HPET_TN_INT_TYPE,
-    HPET_TN_PERIODIC_CAP, HPET_TN_SIZE_CAP, HPET_TN_TYPE_PERIODIC, HPET_TN_VAL_SET,
+    monotonic_time_ns, monotonic_time_us, nanoseconds_to_ticks, read_tsc, test_hpet_subsystem,
+    ticks_to_nanoseconds, verify_hpet_counter_and_timers, verify_hpet_monotonic_and_tsc,
+    verify_hpet_structures, AcpiHpetTable, HpetDevice, HpetInfo, HpetRegisters, HpetTableParser,
+    HpetTimerConfig, HpetTimerMode, CALIBRATED_TSC_HZ, DEFAULT_HPET_BASE_ADDRESS, HPET_DEVICE,
+    HPET_GEN_CONF_ENABLE, HPET_GEN_CONF_LEG_RT, HPET_REG_GCAP_ID, HPET_REG_GEN_CONF,
+    HPET_REG_GINTR_STA, HPET_REG_MAIN_CNT, HPET_REG_TIM0_COMP, HPET_REG_TIM0_CONF,
+    HPET_REG_TIM0_FSB, HPET_SIGNATURE, HPET_SIGNATURE_U32, HPET_TIMER_STRIDE, HPET_TN_32MODE,
+    HPET_TN_INT_ENABLE, HPET_TN_INT_TYPE, HPET_TN_PERIODIC_CAP, HPET_TN_SIZE_CAP,
+    HPET_TN_TYPE_PERIODIC, HPET_TN_VAL_SET,
 };
 
 pub use smp::{test_smp_and_timer_subsystem, SMP};

@@ -84,7 +84,7 @@ impl HpetInfo {
             base_address: DEFAULT_HPET_BASE_ADDRESS,
             hpet_number: 0,
             min_clock_tick: 0x0080,
-            counter_clk_period_fs: 10_000_000, // 100ns tick period (10 MHz standard HPET)
+            counter_clk_period_fs: 100_000_000, // 100ns tick period (10 MHz standard HPET)
             num_timers: 3,                     // Timers 0, 1, 2
             is_64bit: true,
             legacy_replacement_cap: true,
@@ -163,7 +163,7 @@ impl HpetTableParser {
             base_address: target_base,
             hpet_number,
             min_clock_tick,
-            counter_clk_period_fs: 10_000_000, // Standard default until read from GCAP_ID
+            counter_clk_period_fs: 100_000_000, // Standard default until read from GCAP_ID
             num_timers,
             is_64bit,
             legacy_replacement_cap,
@@ -309,11 +309,11 @@ pub fn verify_hpet_structures() -> bool {
     }
 
     // 4. Verify Capabilities register bitfield decoding
-    // GCAP_VAL: period = 10,000,000 fs (100ns), vendor = 0x8086, leg_rt = 1, 64-bit = 1, timers = 3 (val 2)
-    let gcap_val = ((10_000_000u64) << 32) | ((0x8086u64) << 16) | (1 << 15) | (1 << 13) | (2 << 8) | 1;
+    // GCAP_VAL: period = 100,000,000 fs (100ns), vendor = 0x8086, leg_rt = 1, 64-bit = 1, timers = 3 (val 2)
+    let gcap_val = ((100_000_000u64) << 32) | ((0x8086u64) << 16) | (1 << 15) | (1 << 13) | (2 << 8) | 1;
     let (period_fs, n_timers, is_64, leg_rt, ven_id) = HpetRegisters::decode_capabilities(gcap_val);
 
-    if period_fs != 10_000_000 || n_timers != 3 || !is_64 || !leg_rt || ven_id != 0x8086 {
+    if period_fs != 100_000_000 || n_timers != 3 || !is_64 || !leg_rt || ven_id != 0x8086 {
         return false;
     }
 
@@ -518,13 +518,13 @@ pub fn verify_hpet_counter_and_timers() -> bool {
     let info = HpetInfo::default_q35();
     let mut dev = HpetDevice::new(info, true);
 
-    // Setup simulated GCAP_ID: 10 MHz (10,000,000 fs), 3 timers (val 2), 64-bit, legacy route, Intel
-    let gcap_val = ((10_000_000u64) << 32) | ((0x8086u64) << 16) | (1 << 15) | (1 << 13) | (2 << 8) | 1;
+    // Setup simulated GCAP_ID: 10 MHz (100,000,000 fs), 3 timers (val 2), 64-bit, legacy route, Intel
+    let gcap_val = ((100_000_000u64) << 32) | ((0x8086u64) << 16) | (1 << 15) | (1 << 13) | (2 << 8) | 1;
     dev.write_reg(HPET_REG_GCAP_ID, gcap_val);
 
     // 1. Frequency and capability discovery
     dev.discover_capabilities();
-    if dev.info.counter_clk_period_fs != 10_000_000 || dev.info.frequency_hz() != 10_000_000 {
+    if dev.info.counter_clk_period_fs != 100_000_000 || dev.info.frequency_hz() != 10_000_000 {
         return false;
     }
     if dev.info.num_timers != 3 || !dev.info.is_64bit || !dev.info.legacy_replacement_cap {
@@ -714,8 +714,8 @@ pub fn calibrate_tsc(dev: &mut HpetDevice, duration_us: u64) -> u64 {
 
 /// Verification self-test for monotonic nanosecond time arithmetic and TSC calibration.
 pub fn verify_hpet_monotonic_and_tsc() -> bool {
-    // 1. Ticks to nanoseconds round-trip test (100ns tick period = 10,000,000 fs)
-    let period_fs = 10_000_000u32;
+    // 1. Ticks to nanoseconds round-trip test (100ns tick period = 100,000,000 fs)
+    let period_fs = 100_000_000u32;
     let ticks = 50_000u64; // 50,000 ticks * 100ns = 5,000,000 ns (5 ms)
     let ns = ticks_to_nanoseconds(ticks, period_fs);
     if ns != 5_000_000 {
@@ -756,6 +756,61 @@ pub fn verify_hpet_monotonic_and_tsc() -> bool {
     if dev_calibrated_hz != 2_500_000_000 || CALIBRATED_TSC_HZ.load(Ordering::Relaxed) != 2_500_000_000 {
         return false;
     }
+
+    true
+}
+
+/// Comprehensive verification self-test suite for HPET and Monotonic Nanosecond Clock.
+pub fn test_hpet_subsystem() -> bool {
+    // 1. Verify ACPI HPET table parser and MMIO register structures
+    if !verify_hpet_structures() {
+        return false;
+    }
+
+    // 2. Verify HPET main counter, frequency discovery, start/stop, and comparator timers
+    if !verify_hpet_counter_and_timers() {
+        return false;
+    }
+
+    // 3. Verify monotonic nanosecond time arithmetic and TSC calibration
+    if !verify_hpet_monotonic_and_tsc() {
+        return false;
+    }
+
+    // 4. Initialize and activate system HPET device
+    let info = HpetInfo::default_q35();
+    let mut dev = HpetDevice::new(info, true);
+
+    // Populate simulated GCAP_ID register with 10 MHz HPET clock (100,000,000 fs)
+    let gcap_val = ((100_000_000u64) << 32) | ((0x8086u64) << 16) | (1 << 15) | (1 << 13) | (2 << 8) | 1;
+    dev.write_reg(HPET_REG_GCAP_ID, gcap_val);
+    dev.discover_capabilities();
+    dev.enable(true);
+
+    // Advance simulated main counter and measure monotonic advancement
+    dev.set_main_counter(10_000); // 10,000 ticks * 100ns = 1,000,000 ns (1 ms)
+    let ns1 = ticks_to_nanoseconds(dev.read_main_counter(), dev.info.counter_clk_period_fs);
+    if ns1 != 1_000_000 {
+        return false;
+    }
+
+    dev.set_main_counter(25_000); // 25,000 ticks * 100ns = 2,500,000 ns (2.5 ms)
+    let ns2 = ticks_to_nanoseconds(dev.read_main_counter(), dev.info.counter_clk_period_fs);
+    if ns2 <= ns1 || ns2 != 2_500_000 {
+        return false;
+    }
+
+    // Perform TSC calibration
+    let tsc_hz = calibrate_tsc(&mut dev, 5_000);
+    if tsc_hz == 0 {
+        return false;
+    }
+
+    // Store in global HPET_DEVICE
+    *HPET_DEVICE.lock() = Some(dev);
+
+    // 5. Emit boot sentinel
+    crate::serial_write_str("[KNT-ARCH-HPET-PASS] HPET high-precision event timer and monotonic nanosecond clock verified\r\n");
 
     true
 }
