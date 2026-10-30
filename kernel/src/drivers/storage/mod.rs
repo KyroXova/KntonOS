@@ -9,11 +9,14 @@ pub mod uring;
 pub mod direct_storage;
 pub mod nvme_zns;
 pub mod copy_offload;
+pub mod sdcard;
+pub mod sdhci;
 
 pub use uring::*;
 pub use direct_storage::*;
 pub use nvme_zns::*;
 pub use copy_offload::*;
+pub use sdhci::*;
 
 pub use nvme::{
     make_aqa, nvme_cq_doorbell, nvme_sq_doorbell, build_identify_controller, build_identify_namespace, build_nvm_read, build_nvm_write,
