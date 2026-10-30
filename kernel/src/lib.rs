@@ -20,6 +20,7 @@ pub mod graphics;
 pub mod terminal;
 pub mod power;
 pub mod mm;
+pub mod trace;
 
 pub use memory::ALLOCATOR;
 
@@ -150,6 +151,11 @@ pub extern "C" fn kmain() -> ! {
     // Initialize and verify MMIO Watchpoint & Kernel Debug Trap Engine
     if !arch::test_debug_trap_subsystem() {
         serial_write_str("[KNT-PANIC] MMIO watchpoint and debug trap self-test failed!\r\n");
+    }
+
+    // Initialize and verify Zero-Overhead Kernel Trace Ring Buffer & Performance Profiling
+    if !trace::test_trace_subsystem() {
+        serial_write_str("[KNT-PANIC] Kernel trace ring buffer self-test failed!\r\n");
     }
 
     // Initialize and verify Dynamic Power Governor & Thermal Energy Meter
