@@ -1,14 +1,11 @@
-//! Intel High Definition Audio (HDA) Specification 1.0a Controller & MMIO Registers.
-//!
-//! Provides memory-mapped register definitions, bitmask constants, Buffer Descriptor
-//! List (BDL) structures, and Command/Response Ring Buffers (CORB / RIRB).
+//! Intel High Definition Audio (HDA) Specification 1.0a controller and MMIO registers.
 
 use crate::drivers::pci_scanner::PciDevice;
 
 pub const PCI_CLASS_MULTIMEDIA: u8 = 0x04;
 pub const PCI_SUBCLASS_HDA: u8 = 0x03;
 
-// --- Intel HDA Global Registers (Specification Section 3.3) ---
+// Intel HDA Global Registers (Specification Section 3.3).
 pub const HDA_REG_GCAP: usize = 0x00;     // Global Capabilities (16-bit)
 pub const HDA_REG_VMIN: usize = 0x02;     // Minor Version (8-bit)
 pub const HDA_REG_VMAJ: usize = 0x03;     // Major Version (8-bit)
@@ -23,7 +20,7 @@ pub const HDA_REG_INTSTS: usize = 0x24;   // Interrupt Status (32-bit)
 pub const HDA_REG_WALCLK: usize = 0x30;   // Wall Clock Counter (32-bit)
 pub const HDA_REG_SSYNC: usize = 0x38;    // Stream Synchronization (32-bit)
 
-// --- Command & Output Ring Buffer (CORB) Registers (Offset 0x40) ---
+// Command and Output Ring Buffer (CORB) Registers (Offset 0x40).
 pub const HDA_REG_CORBLBASE: usize = 0x40; // CORB Lower Base Address (32-bit)
 pub const HDA_REG_CORBUBASE: usize = 0x44; // CORB Upper Base Address (32-bit)
 pub const HDA_REG_CORBWP: usize = 0x48;    // CORB Write Pointer (16-bit)
@@ -32,7 +29,7 @@ pub const HDA_REG_CORBCTL: usize = 0x4C;   // CORB Control (8-bit)
 pub const HDA_REG_CORBST: usize = 0x4D;    // CORB Status (8-bit)
 pub const HDA_REG_CORBSIZE: usize = 0x4E;  // CORB Size (8-bit)
 
-// --- Response Input Ring Buffer (RIRB) Registers (Offset 0x50) ---
+// Response Input Ring Buffer (RIRB) Registers (Offset 0x50).
 pub const HDA_REG_RIRBLBASE: usize = 0x50; // RIRB Lower Base Address (32-bit)
 pub const HDA_REG_RIRBUBASE: usize = 0x54; // RIRB Upper Base Address (32-bit)
 pub const HDA_REG_RIRBWP: usize = 0x58;    // RIRB Write Pointer (16-bit)
@@ -41,12 +38,12 @@ pub const HDA_REG_RIRBCTL: usize = 0x5C;   // RIRB Control (8-bit)
 pub const HDA_REG_RIRBSTS: usize = 0x5D;   // RIRB Status (8-bit)
 pub const HDA_REG_RIRBSIZE: usize = 0x5E;  // RIRB Size (8-bit)
 
-// --- Immediate Command / Response Registers ---
+// Immediate Command / Response Registers.
 pub const HDA_REG_ICOI: usize = 0x60;     // Immediate Command Output (32-bit)
 pub const HDA_REG_ICII: usize = 0x64;     // Immediate Command Input (32-bit)
 pub const HDA_REG_ICIS: usize = 0x68;     // Immediate Command Status (16-bit)
 
-// --- Stream Descriptor Registers (Base 0x80, Stride 0x20) ---
+// Stream Descriptor Registers (Base 0x80, Stride 0x20).
 pub const HDA_SD_BASE: usize = 0x80;
 pub const HDA_SD_STRIDE: usize = 0x20;
 
@@ -60,7 +57,7 @@ pub const SD_REG_FMT: usize = 0x12;       // Stream Format (16-bit)
 pub const SD_REG_BDPL: usize = 0x18;      // BDL Lower Base (32-bit)
 pub const SD_REG_BDPU: usize = 0x1C;      // BDL Upper Base (32-bit)
 
-// --- Control and Status Bitmasks ---
+// Control and Status Bitmasks.
 pub const GCTL_CRST: u32 = 1 << 0;        // Controller Reset (0: in reset, 1: operational)
 pub const GCTL_FCNTRL: u32 = 1 << 1;      // Flush Control
 pub const GCTL_UNSOL: u32 = 1 << 8;       // Accept Unsolicited Responses
