@@ -6,6 +6,7 @@
 pub mod ring;
 pub mod futex;
 pub mod section;
+pub mod umwait;
 
 pub use futex::{
     futex_wait, futex_wake, futex_wake_tid, test_futex_engine, FutexBucket, FutexError, FutexKey,
@@ -18,6 +19,10 @@ pub use ring::{
     DualRingPointers, DUAL_RING_MAGIC, DUAL_RING_VERSION,
 };
 pub use section::{SectionManager, SharedSection, SECTION_MANAGER};
+pub use umwait::{
+    cpu_tpause, cpu_umwait, cpu_umonitor, detect_waitpkg_support, read_tsc,
+    set_waitpkg_override, test_umwait_primitives, AdaptiveWaitBarrier, UmwaitCState, WaitResult,
+};
 
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
