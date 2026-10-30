@@ -16,6 +16,9 @@ pub mod hibernate;
 pub mod lz4_restore;
 pub mod battery;
 pub mod charger;
+pub mod cppc;
+
+pub use cppc::*;
 
 pub use hibernate::*;
 pub use lz4_restore::*;
