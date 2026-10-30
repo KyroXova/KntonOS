@@ -200,13 +200,13 @@ impl DpcdReceiverCaps {
 /// Controller simulating 1Mbps Manchester AUX channel transactions to the DPCD register bank.
 #[derive(Debug)]
 pub struct AuxChannelEngine {
-    dpcd_memory: [u8; 512],
+    dpcd_memory: [u8; 1024],
     pub transactions_executed: u64,
 }
 
 impl AuxChannelEngine {
     pub fn new() -> Self {
-        let mut dpcd = [0u8; 512];
+        let mut dpcd = [0u8; 1024];
         // Default DPCD 1.4 sink configuration (e.g. 4K60p dock display)
         dpcd[DPCD_REV as usize] = 0x14; // DPCD 1.4
         dpcd[DPCD_MAX_LINK_RATE as usize] = DpLinkRate::Hbr2 as u8; // 5.40 Gbps
