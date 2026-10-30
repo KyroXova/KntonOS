@@ -574,3 +574,103 @@ pub fn verify_lfc_engine() -> bool {
 
     true
 }
+
+
+/// Comprehensive verification of Hardware Variable Refresh Rate (VRR), dynamic VBLANK timing,
+/// and Low Framerate Compensation (LFC) pacing.
+pub fn test_vrr_subsystem() -> bool {
+    // 1. Verify EDID VRR descriptor parsing, range boundaries, and timing state
+    if !verify_vrr_descriptor_and_ranges() {
+        return false;
+    }
+
+    // 2. Verify hardware VBLANK interrupt tracking, drift detection, and frame pacing queue
+    if !super::timing::verify_vblank_tracking_and_pacing() {
+        return false;
+    }
+
+    // 3. Verify Low Framerate Compensation (LFC) frame doubler and sub-threshold decisions
+    if !verify_lfc_engine() {
+        return false;
+    }
+
+    // 4. End-to-end simulation: 30 FPS game pacing on 48-144 Hz FreeSync panel via LFC doubler
+    let limits = EdidRangeLimits {
+        min_v_rate_hz: 48,
+        max_v_rate_hz: 144,
+        min_h_rate_khz: 30,
+        max_h_rate_khz: 160,
+        max_pixel_clock_khz: 360_000,
+        supports_continuous_frequency: true,
+    };
+    let mode = DrmModeInfo::new(
+        "1920x1080@144",
+        356400,
+        1920,
+        2008,
+        2052,
+        2200,
+        1080,
+        1084,
+        1089,
+        1125,
+        144,
+        0,
+        0,
+    );
+    let vrr_range = VrrRange::from_mode_and_limits(&mode, &limits);
+    let timing = super::timing::VblankTimingInfo::from_mode(&mode);
+    let lfc = LfcEngine::new(vrr_range, 4, 356400, 2200, timing.line_time_ns);
+    let mut tracker = super::timing::VblankTracker::new(1, timing.frame_duration_ns);
+    let mut queue = super::timing::FramePacingQueue::new();
+
+    // Start with VBLANK at t = 10_000_000 ns
+    tracker.on_vblank_interrupt(10_000_000);
+
+    // Frame 1 (30 FPS render time = 33_333_333 ns, ready at t = 43_333_333 ns)
+    let dec = lfc.evaluate(33_333_333);
+    if !dec.lfc_active || dec.multiplier != 2 || dec.target_refresh_hz != 60 {
+        return false;
+    }
+
+    // Schedule 2 sub-frames for Frame 1
+    let sub_duration = dec.sub_frame_duration_ns;
+    let sf1 = super::timing::PacedFrame::new(
+        1,
+        201, // fb_id
+        43_333_333,
+        10_000_000 + sub_duration,
+        dec.sub_frame_vtotal,
+        dec.sub_frame_front_porch,
+    );
+    let sf2 = super::timing::PacedFrame::new(
+        2,
+        201, // same fb_id (frame repeated)
+        43_333_333 + sub_duration,
+        10_000_000 + 2 * sub_duration,
+        dec.sub_frame_vtotal,
+        dec.sub_frame_front_porch,
+    );
+    queue.frames.push(sf1);
+    queue.frames.push(sf2);
+
+    // VBLANK 1 at t = 43_333_333 ns (retires sub-frame 1)
+    tracker.on_vblank_interrupt(43_333_333);
+    let p1 = queue.on_vblank(2, 43_333_333).expect("Sub-frame 1 presentation failed");
+    if p1.frame_id != 1 || p1.fb_id != 201 {
+        return false;
+    }
+
+    // VBLANK 2 at t = 43_333_333 + sub_duration (retires sub-frame 2)
+    let t_vblank2 = 43_333_333 + sub_duration;
+    tracker.on_vblank_interrupt(t_vblank2);
+    let p2 = queue.on_vblank(3, t_vblank2).expect("Sub-frame 2 presentation failed");
+    if p2.frame_id != 2 || p2.fb_id != 201 {
+        return false;
+    }
+
+    // 5. Emit deterministic boot sentinel
+    crate::serial_write_str("[KNT-GFX-VRR-PASS] Hardware VRR, dynamic VBLANK modulation, and LFC pacing verified\r\n");
+
+    true
+}
