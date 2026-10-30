@@ -1,9 +1,4 @@
-//! GPU and Display Acceleration Subsystem for KntonOS.
-//!
-//! Provides modular hardware driver infrastructure for VirtIO GPU (2D/3D hardware
-//! acceleration, display scanouts, EDID mode discovery, and zero-copy backbuffer sharing),
-//! Direct Rendering Manager / Kernel Mode Setting (DRM/KMS) hardware scanout pipelines,
-//! and Hardware Variable Refresh Rate (VRR / FreeSync) dynamic timing.
+//! GPU and display acceleration subsystem for KntonOS.
 
 pub mod drm;
 pub mod modeset;
@@ -52,9 +47,7 @@ use crate::serial_write_str;
 pub fn test_display_rotation_and_panel_subsystem() -> bool {
     serial_write_str("[KNT-GFX-ROT] Testing panel orientation detection & zero-overhead scanout rotation...\r\n");
 
-    // -------------------------------------------------------------------------
     // 1. Test DMI Chassis & Handheld Mobile Panel Quirk Detection
-    // -------------------------------------------------------------------------
     {
         // Valve Steam Deck LCD
         let deck_dmi = DmiSystemInfo {
@@ -142,9 +135,7 @@ pub fn test_display_rotation_and_panel_subsystem() -> bool {
         }
     }
 
-    // -------------------------------------------------------------------------
     // 2. Test Scanout Affine Transformation Matrix
-    // -------------------------------------------------------------------------
     {
         let matrix_90 = ScanoutTransformMatrix::for_orientation(PanelOrientation::RightUp, 1280, 800);
 
@@ -177,9 +168,7 @@ pub fn test_display_rotation_and_panel_subsystem() -> bool {
         }
     }
 
-    // -------------------------------------------------------------------------
     // 3. Test Zero-Overhead Hardware Scanout DMA Configuration & Direct Pixel Fetch
-    // -------------------------------------------------------------------------
     {
         // 1. Verify 1280x800 full-scale scanout configuration and strides
         let log_w = 1280u32;
@@ -273,9 +262,7 @@ pub fn test_display_rotation_and_panel_subsystem() -> bool {
         }
     }
 
-    // -------------------------------------------------------------------------
     // 4. Test Touchscreen Coordinate Normalization & Orientation Transform
-    // -------------------------------------------------------------------------
     {
         let touch_pipeline = TouchTransformPipeline::new(
             PanelOrientation::RightUp,

@@ -1,10 +1,4 @@
-//! DRM/KMS Modesetting and Hardware Display Pipeline Controller.
-//!
-//! Provides display modesetting configuration, linking CRTCs, encoders,
-//! connectors, and framebuffers into an active scanout pipeline.
-//! Implements atomic commit property table transactions (FB_ID, CRTC_ID,
-//! coordinates, rotation, scaling filter, alpha, zpos) and direct-to-display
-//! multi-plane overlay scanout presentation (primary, overlay, cursor).
+//! DRM/KMS modesetting and hardware display pipeline controller.
 
 extern crate alloc;
 use alloc::vec;
@@ -109,9 +103,7 @@ impl DrmModeSet {
     }
 }
 
-// -----------------------------------------------------------------------------
-// DRM Atomic Modesetting Property Table & Transaction Engine
-// -----------------------------------------------------------------------------
+// DRM Atomic Modesetting Property Table & Transaction Engine.
 
 pub const MAX_ATOMIC_PROPERTIES: usize = 32;
 
@@ -376,9 +368,7 @@ impl DrmAtomicReq {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Direct-to-Display Multi-Plane Overlay Scanout Engine
-// -----------------------------------------------------------------------------
+// Direct-to-Display Multi-Plane Overlay Scanout Engine.
 
 /// Output hardware scanout surface (CRTC target scanout memory).
 pub struct DrmScanoutSurface {
@@ -533,10 +523,6 @@ pub struct DrmScanoutCompositor;
 
 impl DrmScanoutCompositor {
     /// Composes multiple hardware planes into a target scanout surface in z-order.
-    ///
-    /// Evaluates plane coordinates, clipping against the scanout display boundaries,
-    /// applies scaling and rotation/reflection, performs alpha compositing,
-    /// and tracks the dirty bounding rectangle for low-latency hardware flush.
     pub fn compose_planes(
         scanout: &mut DrmScanoutSurface,
         planes: &mut [DrmPlanePresentation],
@@ -648,9 +634,7 @@ impl DrmScanoutCompositor {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Unit Verification for Multi-Plane Presentation
-// -----------------------------------------------------------------------------
+// Unit Verification for Multi-Plane Presentation.
 
 /// Unit test verifying multi-plane overlay presentation (primary surface, overlay plane, cursor plane).
 pub fn verify_multi_plane_overlay() -> bool {
@@ -759,9 +743,7 @@ pub fn verify_multi_plane_overlay() -> bool {
     true
 }
 
-// -----------------------------------------------------------------------------
-// Unit Verification for Atomic Modesetting Engine
-// -----------------------------------------------------------------------------
+// Unit Verification for Atomic Modesetting Engine.
 
 /// Unit test verifying DRM atomic commit property tables, dry-run checks, and atomic state updates.
 pub fn verify_atomic_commit_engine() -> bool {
@@ -872,13 +854,7 @@ pub fn verify_atomic_commit_engine() -> bool {
 }
 
 
-/// Comprehensive verification of the DRM/KMS modesetting and multi-plane scanout presentation layer.
-///
-/// Tests:
-/// 1. DRM object abstractions, video mode timings, and device topology.
-/// 2. Atomic commit property table engine, test-only validation, and atomic state updates.
-/// 3. Direct-to-display multi-plane overlay presentation (primary surface, video overlay plane, cursor plane)
-///    with scaling, rotation, alpha blending, and dirty rectangle tracking.
+/// Verification suite for DRM/KMS modesetting and multi-plane scanout presentation layer.
 pub fn test_drm_kms_subsystem() -> bool {
     // 1. Verify DRM object definitions, CRTC, plane, connector, and encoder abstractions
     if !super::drm::verify_drm_abstractions() {
