@@ -308,6 +308,254 @@ impl QuickAccessMenuLayout {
     }
 }
 
+// =============================================================================
+// 3. Hardware Cursor Plane & Sub-Pixel Scanout Composition
+// =============================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CursorType {
+    Arrow,
+    Hand,
+    TextIBeam,
+    Crosshair,
+}
+
+#[derive(Debug, Clone)]
+pub struct HardwareCursorPlane {
+    pub plane_id: u32,
+    pub width: u32,
+    pub height: u32,
+    pub subpixel_x: f32,
+    pub subpixel_y: f32,
+    pub hotspot_x: u32,
+    pub hotspot_y: u32,
+    pub enabled: bool,
+    pub cursor_type: CursorType,
+    pub buffer: Vec<u32>, // e.g. 64x64 ARGB8888
+    pub framebuffer_phys_addr: u64,
+}
+
+impl HardwareCursorPlane {
+    pub fn new(plane_id: u32, size: u32) -> Self {
+        let count = (size * size) as usize;
+        let mut buffer = Vec::with_capacity(count);
+        buffer.resize(count, 0);
+
+        let mut cursor = Self {
+            plane_id,
+            width: size,
+            height: size,
+            subpixel_x: 0.0,
+            subpixel_y: 0.0,
+            hotspot_x: 0,
+            hotspot_y: 0,
+            enabled: true,
+            cursor_type: CursorType::Arrow,
+            buffer,
+            framebuffer_phys_addr: 0,
+        };
+        cursor.render_default_arrow_sprite();
+        cursor
+    }
+
+    /// Sets cursor on-screen sub-pixel position.
+    pub fn set_subpixel_position(&mut self, x: f32, y: f32) {
+        self.subpixel_x = x;
+        self.subpixel_y = y;
+    }
+
+    /// Integer screen coordinates considering hotspot offset.
+    pub fn screen_coords(&self) -> (i32, i32) {
+        let rx = if self.subpixel_x >= 0.0 { (self.subpixel_x + 0.5) as i32 } else { (self.subpixel_x - 0.5) as i32 };
+        let ry = if self.subpixel_y >= 0.0 { (self.subpixel_y + 0.5) as i32 } else { (self.subpixel_y - 0.5) as i32 };
+        (rx - self.hotspot_x as i32, ry - self.hotspot_y as i32)
+    }
+
+    /// Sets the cursor shape/type and updates sprite & hotspot.
+    pub fn set_cursor_type(&mut self, c_type: CursorType) {
+        self.cursor_type = c_type;
+        self.buffer.fill(0);
+        match c_type {
+            CursorType::Arrow => {
+                self.hotspot_x = 0;
+                self.hotspot_y = 0;
+                self.render_default_arrow_sprite();
+            }
+            CursorType::Crosshair => {
+                self.hotspot_x = self.width / 2;
+                self.hotspot_y = self.height / 2;
+                self.render_crosshair_sprite();
+            }
+            CursorType::Hand => {
+                self.hotspot_x = 4;
+                self.hotspot_y = 0;
+                self.render_default_arrow_sprite();
+            }
+            CursorType::TextIBeam => {
+                self.hotspot_x = self.width / 2;
+                self.hotspot_y = self.height / 2;
+                self.render_ibeam_sprite();
+            }
+        }
+    }
+
+    fn render_default_arrow_sprite(&mut self) {
+        for y in 0..16 {
+            for x in 0..=y {
+                if x < self.width as usize && y < self.height as usize {
+                    let is_border = x == 0 || x == y || y == 15;
+                    let color = if is_border {
+                        0xFF000000 // Opaque black
+                    } else {
+                        0xFFFFFFFF // Opaque white
+                    };
+                    self.buffer[y * (self.width as usize) + x] = color;
+                }
+            }
+        }
+    }
+
+    fn render_crosshair_sprite(&mut self) {
+        let cx = (self.width / 2) as usize;
+        let cy = (self.height / 2) as usize;
+        let w = self.width as usize;
+        for i in 0..self.width as usize {
+            if i < self.buffer.len() {
+                self.buffer[cy * w + i] = 0xFF00FF00;
+                self.buffer[i * w + cx] = 0xFF00FF00;
+            }
+        }
+    }
+
+    fn render_ibeam_sprite(&mut self) {
+        let cx = (self.width / 2) as usize;
+        let w = self.width as usize;
+        for y in 2..18 {
+            if y < self.height as usize {
+                self.buffer[y * w + cx] = 0xFFFFFFFF;
+            }
+        }
+        for x in (cx.saturating_sub(4))..=(cx + 4).min(w - 1) {
+            self.buffer[2 * w + x] = 0xFFFFFFFF;
+            self.buffer[17 * w + x] = 0xFFFFFFFF;
+        }
+    }
+}
+
+// =============================================================================
+// 4. Alpha Blending Pipeline (Porter-Duff Over Fixed-Point Engine)
+// =============================================================================
+
+pub struct AlphaBlendPipeline;
+
+impl AlphaBlendPipeline {
+    /// Fixed-point Porter-Duff Over blend of foreground ARGB8888 onto background XRGB/ARGB8888.
+    #[inline(always)]
+    pub fn blend_pixel(bg: u32, fg: u32, plane_global_alpha: u16) -> u32 {
+        let fg_alpha = ((fg >> 24) & 0xFF) as u32;
+        if fg_alpha == 0 {
+            return bg;
+        }
+
+        let eff_alpha = (fg_alpha * ((plane_global_alpha >> 8) as u32) + 128) / 255;
+        if eff_alpha == 0 {
+            return bg;
+        }
+        if eff_alpha >= 255 {
+            return fg;
+        }
+
+        let bg_r = (bg >> 16) & 0xFF;
+        let bg_g = (bg >> 8) & 0xFF;
+        let bg_b = bg & 0xFF;
+
+        let fg_r = (fg >> 16) & 0xFF;
+        let fg_g = (fg >> 8) & 0xFF;
+        let fg_b = fg & 0xFF;
+
+        let inv_alpha = 255 - eff_alpha;
+
+        let out_r = (fg_r * eff_alpha + bg_r * inv_alpha + 128) / 255;
+        let out_g = (fg_g * eff_alpha + bg_g * inv_alpha + 128) / 255;
+        let out_b = (fg_b * eff_alpha + bg_b * inv_alpha + 128) / 255;
+
+        0xFF000000 | ((out_r & 0xFF) << 16) | ((out_g & 0xFF) << 8) | (out_b & 0xFF)
+    }
+
+    /// Composes the 3 hardware planes (Primary, Overlay, Cursor) into an output frame.
+    pub fn compose_3planes(
+        primary: &[u32],
+        overlay: &OverlayPlaneDescriptor,
+        cursor: &HardwareCursorPlane,
+        out: &mut [u32],
+        width: usize,
+        height: usize,
+    ) {
+        let total_pixels = width * height;
+        let copy_len = primary.len().min(out.len()).min(total_pixels);
+        out[..copy_len].copy_from_slice(&primary[..copy_len]);
+
+        // 1. Blend Overlay Plane if enabled
+        if overlay.enabled {
+            let ox = overlay.dest_rect.x;
+            let oy = overlay.dest_rect.y;
+            let ow = overlay.dest_rect.width as usize;
+            let oh = overlay.dest_rect.height as usize;
+
+            for row in 0..oh {
+                let screen_y = oy + row as i32;
+                if screen_y < 0 || screen_y >= height as i32 {
+                    continue;
+                }
+                for col in 0..ow {
+                    let screen_x = ox + col as i32;
+                    if screen_x < 0 || screen_x >= width as i32 {
+                        continue;
+                    }
+                    let overlay_idx = row * ow + col;
+                    if overlay_idx < overlay.buffer.len() {
+                        let fg = overlay.buffer[overlay_idx];
+                        let out_idx = (screen_y as usize) * width + (screen_x as usize);
+                        if out_idx < out.len() {
+                            let bg = out[out_idx];
+                            out[out_idx] = Self::blend_pixel(bg, fg, overlay.global_alpha);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Blend Hardware Cursor Plane if enabled
+        if cursor.enabled {
+            let (cx, cy) = cursor.screen_coords();
+            let cw = cursor.width as usize;
+            let ch = cursor.height as usize;
+
+            for row in 0..ch {
+                let screen_y = cy + row as i32;
+                if screen_y < 0 || screen_y >= height as i32 {
+                    continue;
+                }
+                for col in 0..cw {
+                    let screen_x = cx + col as i32;
+                    if screen_x < 0 || screen_x >= width as i32 {
+                        continue;
+                    }
+                    let cursor_idx = row * cw + col;
+                    if cursor_idx < cursor.buffer.len() {
+                        let fg = cursor.buffer[cursor_idx];
+                        let out_idx = (screen_y as usize) * width + (screen_x as usize);
+                        if out_idx < out.len() {
+                            let bg = out[out_idx];
+                            out[out_idx] = Self::blend_pixel(bg, fg, 0xFFFF);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 // -----------------------------------------------------------------------------
 // Unit Tests for Commit 1
 // -----------------------------------------------------------------------------
@@ -368,5 +616,32 @@ mod tests {
         let x_closed = layout.tick_animation(0.16);
         assert_eq!(x_closed, 1280);
         assert_eq!(layout.visibility, OverlayVisibilityState::Hidden);
+    }
+    #[test]
+    pub fn test_cursor_and_alpha_blending() {
+        let mut cursor = HardwareCursorPlane::new(30, 64);
+        assert_eq!(cursor.plane_id, 30);
+        assert_eq!(cursor.width, 64);
+
+        // Sub-pixel movement
+        cursor.set_subpixel_position(100.4, 200.6);
+        let (cx, cy) = cursor.screen_coords();
+        assert_eq!(cx, 100);
+        assert_eq!(cy, 201);
+
+        // Crosshair hotspot check
+        cursor.set_cursor_type(CursorType::Crosshair);
+        assert_eq!(cursor.hotspot_x, 32);
+        assert_eq!(cursor.hotspot_y, 32);
+        let (chx, chy) = cursor.screen_coords();
+        assert_eq!(chx, 100 - 32);
+        assert_eq!(chy, 201 - 32);
+
+        // Alpha blending test: 50% white over black = ~128 gray
+        let bg = 0xFF000000;
+        let fg = 0x80FFFFFF;
+        let blended = AlphaBlendPipeline::blend_pixel(bg, fg, 0xFFFF);
+        let r = (blended >> 16) & 0xFF;
+        assert!(r >= 126 && r <= 130);
     }
 }
