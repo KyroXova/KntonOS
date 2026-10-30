@@ -246,3 +246,290 @@ impl MinMipMapStorage {
         self.data.is_empty()
     }
 }
+
+/// Flag indicating a tile requires on-demand format decompression or transcoding.
+pub const TRANSCODE_FLAG_REQUIRED: u8 = 0x01;
+/// Flag indicating a tile has completed transcoding and is ready for sampling.
+pub const TRANSCODE_FLAG_READY: u8 = 0x02;
+
+/// Underlying storage for a Texture Transcoding sampler feedback surface.
+///
+/// Records which texture tiles were accessed by shaders to drive asynchronous
+/// texture decompression (e.g. Basis Universal / BCn / ASTC transcoding).
+#[derive(Debug, Clone)]
+pub struct TextureTranscodingStorage {
+    tiles_x: u32,
+    tiles_y: u32,
+    flags: Vec<u8>,
+}
+
+impl TextureTranscodingStorage {
+    /// Creates a new transcoding feedback storage buffer.
+    pub fn new(tiles_x: u32, tiles_y: u32) -> Self {
+        let total = (tiles_x as usize) * (tiles_y as usize);
+        Self {
+            tiles_x,
+            tiles_y,
+            flags: vec![0u8; total],
+        }
+    }
+
+    /// Clears all transcoding flags back to zero.
+    pub fn clear(&mut self) {
+        for slot in self.flags.iter_mut() {
+            *slot = 0;
+        }
+    }
+
+    /// Marks a tile as accessed and requiring transcoding.
+    pub fn mark_transcode_needed(&mut self, tile_x: u32, tile_y: u32) -> bool {
+        if tile_x >= self.tiles_x || tile_y >= self.tiles_y {
+            return false;
+        }
+        let index = (tile_y as usize) * (self.tiles_x as usize) + (tile_x as usize);
+        if let Some(slot) = self.flags.get_mut(index) {
+            *slot |= TRANSCODE_FLAG_REQUIRED;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Marks a tile as transcoded and ready.
+    pub fn mark_transcode_ready(&mut self, tile_x: u32, tile_y: u32) -> bool {
+        if tile_x >= self.tiles_x || tile_y >= self.tiles_y {
+            return false;
+        }
+        let index = (tile_y as usize) * (self.tiles_x as usize) + (tile_x as usize);
+        if let Some(slot) = self.flags.get_mut(index) {
+            *slot = (*slot & !TRANSCODE_FLAG_REQUIRED) | TRANSCODE_FLAG_READY;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Checks if a tile is flagged as requiring transcoding.
+    pub fn is_transcode_needed(&self, tile_x: u32, tile_y: u32) -> bool {
+        if tile_x >= self.tiles_x || tile_y >= self.tiles_y {
+            return false;
+        }
+        let index = (tile_y as usize) * (self.tiles_x as usize) + (tile_x as usize);
+        self.flags.get(index).map(|&f| (f & TRANSCODE_FLAG_REQUIRED) != 0).unwrap_or(false)
+    }
+
+    /// Checks if a tile is marked as transcoded and ready.
+    pub fn is_transcode_ready(&self, tile_x: u32, tile_y: u32) -> bool {
+        if tile_x >= self.tiles_x || tile_y >= self.tiles_y {
+            return false;
+        }
+        let index = (tile_y as usize) * (self.tiles_x as usize) + (tile_x as usize);
+        self.flags.get(index).map(|&f| (f & TRANSCODE_FLAG_READY) != 0).unwrap_or(false)
+    }
+}
+
+/// Tracks per-tile mip level residency for tiled / sparse textures in VRAM.
+#[derive(Debug, Clone)]
+pub struct TextureMipResidency {
+    tiles_x: u32,
+    tiles_y: u32,
+    base_resident_mip: u8,
+    resident_mips: Vec<u8>,
+}
+
+impl TextureMipResidency {
+    /// Creates a new residency map initialized to `base_resident_mip` for all tiles.
+    pub fn new(tiles_x: u32, tiles_y: u32, base_resident_mip: u8) -> Self {
+        let total = (tiles_x as usize) * (tiles_y as usize);
+        Self {
+            tiles_x,
+            tiles_y,
+            base_resident_mip,
+            resident_mips: vec![base_resident_mip; total],
+        }
+    }
+
+    /// Returns the currently resident finest mip level for tile `(tile_x, tile_y)`.
+    pub fn get_resident_mip(&self, tile_x: u32, tile_y: u32) -> u8 {
+        if tile_x >= self.tiles_x || tile_y >= self.tiles_y {
+            return self.base_resident_mip;
+        }
+        let index = (tile_y as usize) * (self.tiles_x as usize) + (tile_x as usize);
+        self.resident_mips.get(index).copied().unwrap_or(self.base_resident_mip)
+    }
+
+    /// Promotes a tile's resident mip level to a finer (higher-resolution) mip level.
+    pub fn promote_tile_mip(&mut self, tile_x: u32, tile_y: u32, new_mip: u8) -> bool {
+        if tile_x >= self.tiles_x || tile_y >= self.tiles_y {
+            return false;
+        }
+        let index = (tile_y as usize) * (self.tiles_x as usize) + (tile_x as usize);
+        if let Some(slot) = self.resident_mips.get_mut(index) {
+            if new_mip < *slot {
+                *slot = new_mip;
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    }
+
+    /// Demotes a tile's resident mip level (coarser resolution, e.g. for memory eviction).
+    pub fn demote_tile_mip(&mut self, tile_x: u32, tile_y: u32, new_mip: u8) -> bool {
+        if tile_x >= self.tiles_x || tile_y >= self.tiles_y {
+            return false;
+        }
+        let index = (tile_y as usize) * (self.tiles_x as usize) + (tile_x as usize);
+        if let Some(slot) = self.resident_mips.get_mut(index) {
+            if new_mip > *slot {
+                *slot = new_mip;
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    }
+
+    /// Evaluates the coarsest resident mip across the entire texture.
+    pub fn coarsest_resident_mip(&self) -> u8 {
+        self.resident_mips.iter().copied().max().unwrap_or(self.base_resident_mip)
+    }
+
+    /// Evaluates the finest resident mip across the entire texture.
+    pub fn finest_resident_mip(&self) -> u8 {
+        self.resident_mips.iter().copied().min().unwrap_or(self.base_resident_mip)
+    }
+
+    /// Resets all tiles back to the base resident mip.
+    pub fn reset_to_base(&mut self) {
+        for slot in self.resident_mips.iter_mut() {
+            *slot = self.base_resident_mip;
+        }
+    }
+}
+
+/// A prioritized tile streaming request generated from feedback analysis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TileStreamingRequest {
+    /// Texture resource identifier.
+    pub texture_id: u32,
+    /// Tile coordinate X.
+    pub tile_x: u32,
+    /// Tile coordinate Y.
+    pub tile_y: u32,
+    /// Mip level requested by the GPU shader.
+    pub requested_mip: u8,
+    /// Streaming urgency priority (higher value = higher priority).
+    pub priority: u32,
+}
+
+impl TileStreamingRequest {
+    /// Creates a new streaming request.
+    pub const fn new(
+        texture_id: u32,
+        tile_x: u32,
+        tile_y: u32,
+        requested_mip: u8,
+        priority: u32,
+    ) -> Self {
+        Self {
+            texture_id,
+            tile_x,
+            tile_y,
+            requested_mip,
+            priority,
+        }
+    }
+}
+
+/// Request queue prioritizing texture tile streaming for DirectStorage and asynchronous I/O.
+#[derive(Debug, Clone)]
+pub struct TileRequestQueue {
+    requests: Vec<TileStreamingRequest>,
+    capacity: usize,
+}
+
+impl TileRequestQueue {
+    /// Creates a new request queue with the specified maximum capacity.
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            requests: Vec::with_capacity(capacity),
+            capacity,
+        }
+    }
+
+    /// Pushes a tile streaming request into the queue with deduplication and priority ordering.
+    ///
+    /// Returns `Ok(true)` if newly added, `Ok(false)` if merged/deduplicated, or `Err(QueueFull)`.
+    pub fn push(&mut self, request: TileStreamingRequest) -> Result<bool, SamplerFeedbackError> {
+        // Check for duplicate request targeting the same tile
+        if let Some(existing) = self.requests.iter_mut().find(|r| {
+            r.texture_id == request.texture_id && r.tile_x == request.tile_x && r.tile_y == request.tile_y
+        }) {
+            // Update to higher priority and finer mip level if new request is more urgent
+            if request.requested_mip < existing.requested_mip {
+                existing.requested_mip = request.requested_mip;
+            }
+            if request.priority > existing.priority {
+                existing.priority = request.priority;
+            }
+            return Ok(false);
+        }
+
+        if self.requests.len() >= self.capacity {
+            return Err(SamplerFeedbackError::QueueFull);
+        }
+
+        // Insert maintaining descending priority order
+        let insert_pos = self
+            .requests
+            .iter()
+            .position(|r| r.priority < request.priority)
+            .unwrap_or(self.requests.len());
+
+        self.requests.insert(insert_pos, request);
+        Ok(true)
+    }
+
+    /// Pops the highest-priority pending tile request.
+    pub fn pop(&mut self) -> Option<TileStreamingRequest> {
+        if self.requests.is_empty() {
+            None
+        } else {
+            Some(self.requests.remove(0))
+        }
+    }
+
+    /// Peeks at the highest-priority pending tile request without removing it.
+    #[inline]
+    pub fn peek(&self) -> Option<&TileStreamingRequest> {
+        self.requests.first()
+    }
+
+    /// Number of pending requests currently queued.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.requests.len()
+    }
+
+    /// Whether the queue is empty.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.requests.is_empty()
+    }
+
+    /// Maximum capacity of the queue.
+    #[inline]
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// Clears all pending requests.
+    pub fn clear(&mut self) {
+        self.requests.clear();
+    }
+}
