@@ -185,3 +185,130 @@ pub fn test_handheld_thermal_and_fan_subsystem() -> bool {
 
     true
 }
+
+
+/// Comprehensive verification self-test suite for Direct-to-Disk Kernel Hibernation (S4 State)
+/// and In-Kernel LZ4 Fast-Restoration Engine.
+///
+/// Emits sentinel [KNT-POWER-HIBERNATE-PASS] upon successful validation.
+pub fn test_power_hibernate_subsystem() -> bool {
+    // 1. Verify physical page frame bitmap scanner, memory exclusion, and swap header
+    if !verify_page_scanner_and_swap_header() {
+        return false;
+    }
+
+    // 2. Verify in-kernel LZ4 block compression/decompression and IEEE 802.3 CRC32 verification
+    if !verify_lz4_compression_and_crc32() {
+        return false;
+    }
+
+    // 3. Verify atomic memory restoration trampoline, collision avoidance, and page table rebuild
+    if !verify_atomic_restore_trampoline() {
+        return false;
+    }
+
+    // 4. End-to-end integration loopback test:
+    let total_ram_frames = 16_384;
+    let swap_lba = 4096;
+    let mut controller = HibernateController::new(total_ram_frames, swap_lba);
+
+    if controller.prepare_s4().is_err() {
+        return false;
+    }
+
+    let active_count = controller.scan_physical_memory(&[(256, 1024), (2048, 1024)]);
+    if active_count != 2048 || controller.scanner.excluded_free_frames() != (16_384 - 2048) {
+        return false;
+    }
+
+    let mut total_compressed_bytes = 0u64;
+    let mut image_crc = 0xFFFF_FFFFu32;
+
+    let mut page_a = [0x5Au8; PAGE_SIZE];
+    page_a[0..32].copy_from_slice(b"KNTONOS-KERNEL-HEAP-DATA-CHUNK01");
+    let comp_a = match Lz4CompressedPage::compress_page(256, &page_a) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    total_compressed_bytes += comp_a.compressed_data.len() as u64;
+    image_crc = crc32_update(image_crc, &page_a);
+    controller.layout_map.allocate_extent(256, comp_a.compressed_data.len() as u32, PAGE_SIZE as u32, comp_a.crc32);
+
+    let mut page_b = [0xA5u8; PAGE_SIZE];
+    page_b[0..32].copy_from_slice(b"KNTONOS-KERNEL-STACK-FRAME-DATA2");
+    let comp_b = match Lz4CompressedPage::compress_page(2048, &page_b) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    total_compressed_bytes += comp_b.compressed_data.len() as u64;
+    image_crc = crc32_update(image_crc, &page_b);
+    controller.layout_map.allocate_extent(2048, comp_b.compressed_data.len() as u32, PAGE_SIZE as u32, comp_b.crc32);
+
+    let cpu_context = CpuRegisterContext::capture(0x0010_0000, 0x7FFF_E000);
+    let entry_rip = 0xFFFF_8000_0010_2000u64;
+    let swap_hdr = controller.generate_swap_header(
+        cpu_context,
+        entry_rip,
+        0x0010_0000,
+        0x7FFF_E000,
+        total_compressed_bytes,
+        image_crc,
+    );
+
+    if !swap_hdr.is_valid() || swap_hdr.active_pages != 2048 {
+        return false;
+    }
+    if controller.state != HibernateState::PoweringOffS4 {
+        return false;
+    }
+
+    controller.state = HibernateState::RestoringFromDisk;
+    let trampoline_cr3 = 0x0008_0000;
+    let mut trampoline_engine = RestoreTrampolineEngine::new(trampoline_cr3);
+
+    controller.state = HibernateState::DecompressingMemory;
+    let mut staged_page_a = [0u8; PAGE_SIZE];
+    if comp_a.decompress_page(&mut staged_page_a).is_err() || staged_page_a != page_a {
+        return false;
+    }
+    if trampoline_engine.stage_page(0x2000_0000, 256, &staged_page_a).is_err() {
+        return false;
+    }
+
+    let mut staged_page_b = [0u8; PAGE_SIZE];
+    if comp_b.decompress_page(&mut staged_page_b).is_err() || staged_page_b != page_b {
+        return false;
+    }
+    if trampoline_engine.stage_page(0x2000_1000, 2048, &staged_page_b).is_err() {
+        return false;
+    }
+
+    if trampoline_engine.staging_map.detect_collisions(100, 100) != 0 {
+        return false;
+    }
+
+    controller.state = HibernateState::AtomicRestoring;
+    let mut restored_dest_a = [0u8; PAGE_SIZE];
+    if trampoline_engine.execute_atomic_page_restore(&mut restored_dest_a, 256, &staged_page_a, comp_a.crc32).is_err() {
+        return false;
+    }
+    let mut restored_dest_b = [0u8; PAGE_SIZE];
+    if trampoline_engine.execute_atomic_page_restore(&mut restored_dest_b, 2048, &staged_page_b, comp_b.crc32).is_err() {
+        return false;
+    }
+
+    if restored_dest_a != page_a || restored_dest_b != page_b {
+        return false;
+    }
+
+    if !trampoline_engine.verify_and_prepare_cpu_resume(&swap_hdr.cpu_context) {
+        return false;
+    }
+
+    controller.state = HibernateState::ResumedS0;
+
+    // 5. Emit deterministic boot sentinel
+    crate::serial_write_str("[KNT-POWER-HIBERNATE-PASS] Direct-to-disk kernel hibernation and LZ4 fast-restore verified\r\n");
+
+    true
+}

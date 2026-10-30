@@ -179,6 +179,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Handheld thermal and fan profile subsystem self-test failed!\r\n");
     }
 
+    // Initialize and verify Direct-to-Disk Kernel Hibernation (S4 State) & LZ4 Fast-Restore Engine
+    if !power::test_power_hibernate_subsystem() {
+        serial_write_str("[KNT-PANIC] Kernel hibernation and LZ4 fast-restore self-test failed!\r\n");
+    }
+
     // Initialize Virtual File System & mount demo initramfs
     fs::init();
     if !fs::test_vfs_subsystem() {
