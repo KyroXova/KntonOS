@@ -372,3 +372,268 @@ impl BarycentricSubdivisionTable {
         (coords, triangles)
     }
 }
+
+// -----------------------------------------------------------------------------
+// Compressed Displacement Payload & Decompression Engine
+// -----------------------------------------------------------------------------
+
+/// Compressed displacement binary buffer storing micro-vertex displacements.
+#[derive(Debug, Clone)]
+pub struct DisplacementPayload {
+    /// Raw byte payload containing encoded displacement values.
+    pub data: Vec<u8>,
+    /// Format used to decode the displacement bytes.
+    pub format: MicroMeshFormat,
+}
+
+impl DisplacementPayload {
+    /// Constructs a payload from uncompressed 3D vectors.
+    pub fn from_vec3_slice(vectors: &[Vec3]) -> Self {
+        let mut data = Vec::with_capacity(vectors.len() * 12);
+        for v in vectors {
+            data.extend_from_slice(&v.x.to_le_bytes());
+            data.extend_from_slice(&v.y.to_le_bytes());
+            data.extend_from_slice(&v.z.to_le_bytes());
+        }
+        Self {
+            data,
+            format: MicroMeshFormat::UncompressedVec3,
+        }
+    }
+
+    /// Packs a 3D unit/normalized displacement vector into a 32-bit 11-11-10 word.
+    ///
+    /// Components in `[-1.0, 1.0]` are mapped into 11-bit X (0..2047), 11-bit Y (0..2047), and 10-bit Z (0..1023).
+    pub fn pack_11_11_10(v: &Vec3) -> u32 {
+        let clamp_x = if v.x < -1.0 { -1.0 } else if v.x > 1.0 { 1.0 } else { v.x };
+        let clamp_y = if v.y < -1.0 { -1.0 } else if v.y > 1.0 { 1.0 } else { v.y };
+        let clamp_z = if v.z < -1.0 { -1.0 } else if v.z > 1.0 { 1.0 } else { v.z };
+
+        let ux = ((clamp_x + 1.0) * 0.5 * 2047.0 + 0.5) as u32;
+        let uy = ((clamp_y + 1.0) * 0.5 * 2047.0 + 0.5) as u32;
+        let uz = ((clamp_z + 1.0) * 0.5 * 1023.0 + 0.5) as u32;
+
+        (ux & 0x7FF) | ((uy & 0x7FF) << 11) | ((uz & 0x3FF) << 22)
+    }
+
+    /// Constructs a payload from an array of packed 32-bit 11-11-10 vectors.
+    pub fn from_packed_11_11_10(packed_words: &[u32]) -> Self {
+        let mut data = Vec::with_capacity(packed_words.len() * 4);
+        for &word in packed_words {
+            data.extend_from_slice(&word.to_le_bytes());
+        }
+        Self {
+            data,
+            format: MicroMeshFormat::Packed11_11_10,
+        }
+    }
+
+    /// Constructs a payload from 8-bit quantized scalar displacement values.
+    pub fn from_quantized_u8(scalars: &[u8]) -> Self {
+        Self {
+            data: scalars.to_vec(),
+            format: MicroMeshFormat::QuantizedScalar8,
+        }
+    }
+
+    /// Constructs a payload from 16-bit quantized scalar displacement values.
+    pub fn from_quantized_u16(scalars: &[u16]) -> Self {
+        let mut data = Vec::with_capacity(scalars.len() * 2);
+        for &s in scalars {
+            data.extend_from_slice(&s.to_le_bytes());
+        }
+        Self {
+            data,
+            format: MicroMeshFormat::QuantizedScalar16,
+        }
+    }
+
+    /// Decompresses the displacement vector for the micro-vertex at `index`.
+    pub fn decompress_at(
+        &self,
+        index: usize,
+        interpolated_normal: &Vec3,
+        scale: f32,
+        min_displacement: f32,
+        max_displacement: f32,
+    ) -> Vec3 {
+        match self.format {
+            MicroMeshFormat::UncompressedVec3 => {
+                let offset = index * 12;
+                if offset + 12 <= self.data.len() {
+                    let mut bx = [0u8; 4];
+                    let mut by = [0u8; 4];
+                    let mut bz = [0u8; 4];
+                    bx.copy_from_slice(&self.data[offset..offset + 4]);
+                    by.copy_from_slice(&self.data[offset + 4..offset + 8]);
+                    bz.copy_from_slice(&self.data[offset + 8..offset + 12]);
+                    let x = f32::from_le_bytes(bx) * scale;
+                    let y = f32::from_le_bytes(by) * scale;
+                    let z = f32::from_le_bytes(bz) * scale;
+                    Vec3::new(x, y, z)
+                } else {
+                    Vec3::zero()
+                }
+            }
+            MicroMeshFormat::Packed11_11_10 => {
+                let offset = index * 4;
+                if offset + 4 <= self.data.len() {
+                    let mut b = [0u8; 4];
+                    b.copy_from_slice(&self.data[offset..offset + 4]);
+                    let word = u32::from_le_bytes(b);
+
+                    let raw_x = word & 0x7FF;
+                    let raw_y = (word >> 11) & 0x7FF;
+                    let raw_z = (word >> 22) & 0x3FF;
+
+                    let fx = ((raw_x as f32) / 2047.0) * 2.0 - 1.0;
+                    let fy = ((raw_y as f32) / 2047.0) * 2.0 - 1.0;
+                    let fz = ((raw_z as f32) / 1023.0) * 2.0 - 1.0;
+
+                    Vec3::new(fx * scale, fy * scale, fz * scale)
+                } else {
+                    Vec3::zero()
+                }
+            }
+            MicroMeshFormat::QuantizedScalar8 => {
+                if index < self.data.len() {
+                    let raw = self.data[index];
+                    let norm = (raw as f32) / 255.0;
+                    let height = min_displacement + norm * (max_displacement - min_displacement);
+                    interpolated_normal.scale(height * scale)
+                } else {
+                    Vec3::zero()
+                }
+            }
+            MicroMeshFormat::QuantizedScalar16 => {
+                let offset = index * 2;
+                if offset + 2 <= self.data.len() {
+                    let mut b = [0u8; 2];
+                    b.copy_from_slice(&self.data[offset..offset + 2]);
+                    let raw = u16::from_le_bytes(b);
+                    let norm = (raw as f32) / 65535.0;
+                    let height = min_displacement + norm * (max_displacement - min_displacement);
+                    interpolated_normal.scale(height * scale)
+                } else {
+                    Vec3::zero()
+                }
+            }
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Displaced Micro-Mesh Container & Surface Normal Synthesis
+// -----------------------------------------------------------------------------
+
+/// Concrete displaced micro-mesh geometry container holding subdivided micro-vertices
+/// and micro-triangles.
+#[derive(Debug, Clone)]
+pub struct DisplacedMicroMesh {
+    /// Asset configuration descriptor.
+    pub desc: MicroMeshDescriptor,
+    /// Base triangle domain.
+    pub base_triangle: BaseTriangle,
+    /// Generated micro-vertices with final displaced positions.
+    pub vertices: Vec<MicroVertex>,
+    /// Sub-triangle index buffer.
+    pub triangles: Vec<MicroTriangle>,
+}
+
+impl DisplacedMicroMesh {
+    /// Generates fully displaced micro-vertices and micro-triangles from a base triangle
+    /// and a compressed displacement payload.
+    pub fn generate(
+        desc: MicroMeshDescriptor,
+        base_triangle: BaseTriangle,
+        payload: &DisplacementPayload,
+    ) -> Self {
+        let (bary_coords, triangles) =
+            BarycentricSubdivisionTable::generate_subdivision(desc.subdivision_level);
+
+        let mut vertices = Vec::with_capacity(bary_coords.len());
+
+        for (idx, bary) in bary_coords.iter().enumerate() {
+            let base_pos = base_triangle.evaluate_surface_point(bary);
+            let interp_normal = base_triangle.evaluate_interpolated_normal(bary);
+            let displacement = payload.decompress_at(
+                idx,
+                &interp_normal,
+                desc.displacement_scale,
+                desc.min_displacement,
+                desc.max_displacement,
+            );
+            let final_pos = base_pos.add(&displacement);
+
+            vertices.push(MicroVertex {
+                barycentric: *bary,
+                base_position: base_pos,
+                normal: interp_normal,
+                displacement,
+                final_position: final_pos,
+            });
+        }
+
+        let mut mesh = Self {
+            desc,
+            base_triangle,
+            vertices,
+            triangles,
+        };
+
+        mesh.synthesize_surface_normals();
+        mesh
+    }
+
+    /// Synthesizes high-frequency surface normals by accumulating displaced micro-triangle
+    /// facet cross-products onto micro-vertices.
+    pub fn synthesize_surface_normals(&mut self) {
+        if self.vertices.is_empty() || self.triangles.is_empty() {
+            return;
+        }
+
+        let mut accumulated_normals = alloc::vec![Vec3::zero(); self.vertices.len()];
+
+        // Accumulate facet normals for each micro-triangle
+        for tri in self.triangles.iter() {
+            let i0 = tri.v0 as usize;
+            let i1 = tri.v1 as usize;
+            let i2 = tri.v2 as usize;
+
+            if i0 < self.vertices.len() && i1 < self.vertices.len() && i2 < self.vertices.len() {
+                let p0 = self.vertices[i0].final_position;
+                let p1 = self.vertices[i1].final_position;
+                let p2 = self.vertices[i2].final_position;
+
+                let e1 = p1.sub(&p0);
+                let e2 = p2.sub(&p0);
+                let facet_normal = e1.cross(&e2);
+
+                accumulated_normals[i0] = accumulated_normals[i0].add(&facet_normal);
+                accumulated_normals[i1] = accumulated_normals[i1].add(&facet_normal);
+                accumulated_normals[i2] = accumulated_normals[i2].add(&facet_normal);
+            }
+        }
+
+        // Normalize and assign synthesized normals
+        for (i, v) in self.vertices.iter_mut().enumerate() {
+            let synth = accumulated_normals[i].normalize();
+            if synth.length_sq() > 1e-4 {
+                v.normal = synth;
+            }
+        }
+    }
+
+    /// Total number of generated micro-vertices.
+    #[inline(always)]
+    pub fn vertex_count(&self) -> usize {
+        self.vertices.len()
+    }
+
+    /// Total number of generated micro-triangles.
+    #[inline(always)]
+    pub fn triangle_count(&self) -> usize {
+        self.triangles.len()
+    }
+}
+
