@@ -176,6 +176,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] POSIX signals subsystem self-test failed!\r\n");
     }
 
+    // Initialize and verify State-Externalized Dual-Ring Resilient Partitions & Crash Recovery Engine
+    if !process::test_resilience_subsystem() {
+        serial_write_str("[KNT-PANIC] Resilient partitions & crash recovery self-test failed!\r\n");
+    }
+
     // Initialize Inter-Process Communication (IPC) Shared Memory Rings & Fast Futex Engine
     ipc::init();
     if !ipc::test_ipc_subsystem() {
