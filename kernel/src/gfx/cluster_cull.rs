@@ -255,6 +255,7 @@ impl ScreenRect {
 pub struct OcclusionBitGrid {
     pub width: u32,
     pub height: u32,
+    pub clear_depth: f32,
     pub depths: Vec<f32>,
 }
 
@@ -272,6 +273,7 @@ impl OcclusionBitGrid {
         Self {
             width: w,
             height: h,
+            clear_depth,
             depths: alloc::vec![clear_depth; total],
         }
     }
@@ -315,8 +317,8 @@ impl OcclusionBitGrid {
         for ty in start_ty..end_ty {
             for tx in start_tx..end_tx {
                 let tile_z = self.get_tile_depth(tx, ty);
-                if cluster_nearest_z <= tile_z {
-                    // Cluster is in front of at least one tile: NOT occluded
+                if tile_z >= self.clear_depth || cluster_nearest_z <= tile_z {
+                    // Cluster is in front of at least one tile, or tile has no occluder: NOT occluded
                     return false;
                 }
             }
@@ -392,7 +394,8 @@ impl GpuClusterCuller {
             (center_y + projected_radius_px).min(frustum.viewport_height_px),
         );
 
-        let nearest_z = (dist - cluster.bounding_sphere.radius).max(0.0) / 100.0; // normalized depth
+        let far_plane = 1000.0;
+        let nearest_z = ((dist - cluster.bounding_sphere.radius).max(0.0) / far_plane).min(1.0);
         if occlusion.is_rect_occluded(&screen_rect, nearest_z, frustum.viewport_width_px, frustum.viewport_height_px) {
             self.stats.culled_occlusion += 1;
             return false;
@@ -551,4 +554,219 @@ impl MeshClusterStreamer {
 
         visible_clusters
     }
+}
+
+
+// -----------------------------------------------------------------------------
+// Verification Self-Test Suite
+// -----------------------------------------------------------------------------
+
+/// Comprehensive verification self-test for D3D12 Mesh-Cluster Primitive Culling & LOD Streamer.
+///
+/// Emits sentinel [KNT-GPU-CLUSTER-CULL-PASS] upon successful verification.
+pub fn test_cluster_cull_subsystem() -> bool {
+    let frustum = ViewFrustumDesc {
+        camera_pos: [0.0, 0.0, -10.0],
+        view_dir: [0.0, 0.0, 1.0],
+        viewport_width_px: 1920.0,
+        viewport_height_px: 1080.0,
+        fov_y_rad: 1.04719755,
+        screen_error_threshold_px: 1.0,
+    };
+
+    // 1. Verify BoundingSphere distance calculation and validation
+    let sphere = BoundingSphere::new([0.0, 0.0, 0.0], 2.0);
+    if sphere.validate().is_err() {
+        return false;
+    }
+    let dist = sphere.distance_to(frustum.camera_pos);
+    if (dist - 10.0).abs() > 0.01 {
+        return false;
+    }
+
+    let mut invalid_sphere = sphere;
+    invalid_sphere.radius = -1.0;
+    if invalid_sphere.validate().is_ok() {
+        return false;
+    }
+
+    // 2. Verify NormalCone front-facing vs back-facing test
+    // Cone facing camera: axis = [0, 0, -1]
+    let front_cone = NormalCone::new([0.0, 0.0, 0.0], [0.0, 0.0, -1.0], 0.0);
+    if front_cone.is_backfacing(frustum.camera_pos) {
+        return false;
+    }
+
+    // Cone facing away from camera: axis = [0, 0, 1]
+    let back_cone = NormalCone::new([0.0, 0.0, 0.0], [0.0, 0.0, 1.0], 0.0);
+    if !back_cone.is_backfacing(frustum.camera_pos) {
+        return false;
+    }
+
+    // 3. Verify GPU Cluster Culler (Sub-pixel, Normal Cone, Occlusion Grid)
+    let mut culler = GpuClusterCuller::new(1.0); // 1.0 px subpixel threshold
+    let mut occlusion = OcclusionBitGrid::new(64, 64, 1.0);
+
+    // Test sub-pixel culling: tiny cluster far away
+    let subpixel_cluster = MeshClusterDesc {
+        cluster_id: 10,
+        lod_level: 2,
+        vertex_count: 32,
+        triangle_count: 64,
+        bounding_sphere: BoundingSphere::new([0.0, 0.0, 50.0], 0.001),
+        normal_cone: front_cone,
+        cluster_error: 0.1,
+        parent_error: 1.0,
+        parent_cluster_id: None,
+        boundary_edges: Vec::new(),
+    };
+    if culler.evaluate_cluster(&subpixel_cluster, &frustum, &occlusion) {
+        return false;
+    }
+    if culler.stats.culled_subpixel != 1 {
+        return false;
+    }
+
+    // Test backface cone culling
+    let backface_cluster = MeshClusterDesc {
+        cluster_id: 11,
+        lod_level: 0,
+        vertex_count: 32,
+        triangle_count: 64,
+        bounding_sphere: BoundingSphere::new([0.0, 0.0, 0.0], 1.5),
+        normal_cone: back_cone,
+        cluster_error: 0.0,
+        parent_error: 0.5,
+        parent_cluster_id: None,
+        boundary_edges: Vec::new(),
+    };
+    if culler.evaluate_cluster(&backface_cluster, &frustum, &occlusion) {
+        return false;
+    }
+    if culler.stats.culled_normal_cone != 1 {
+        return false;
+    }
+
+    // Test occlusion bit-grid culling
+    // Place a foreground occluder at depth 0.01 (closer than cluster at ~0.029)
+    for ty in 20..44 {
+        for tx in 20..44 {
+            occlusion.set_tile_depth(tx, ty, 0.01);
+        }
+    }
+
+    let occluded_cluster = MeshClusterDesc {
+        cluster_id: 12,
+        lod_level: 0,
+        vertex_count: 32,
+        triangle_count: 64,
+        bounding_sphere: BoundingSphere::new([0.0, 0.0, 20.0], 1.0), // distance ~30, depth ~0.029
+        normal_cone: front_cone,
+        cluster_error: 0.0,
+        parent_error: 0.5,
+        parent_cluster_id: None,
+        boundary_edges: Vec::new(),
+    };
+    if culler.evaluate_cluster(&occluded_cluster, &frustum, &occlusion) {
+        return false;
+    }
+    if culler.stats.culled_occlusion != 1 {
+        return false;
+    }
+
+    // 4. Verify Continuous Hierarchical LOD Selection (Nanite-style e_cluster <= tau < e_parent)
+    let mut streamer = MeshClusterStreamer::new(0.5);
+
+    // Shared boundary edge between adjacent clusters
+    let shared_seam = ClusterBoundaryEdge::new(0xAAAA, 0xBBBB);
+
+    // Coarse cluster (LOD 1): simplification error = 0.5 world units
+    let coarse_cluster = MeshClusterDesc {
+        cluster_id: 1,
+        lod_level: 1,
+        vertex_count: 32,
+        triangle_count: 40,
+        bounding_sphere: BoundingSphere::new([0.0, 0.0, 0.0], 2.0),
+        normal_cone: front_cone,
+        cluster_error: 0.5,
+        parent_error: f32::MAX, // Root of this group
+        parent_cluster_id: None,
+        boundary_edges: alloc::vec![shared_seam],
+    };
+
+    // Fine child cluster (LOD 0): simplification error = 0.01 world units
+    let fine_cluster = MeshClusterDesc {
+        cluster_id: 2,
+        lod_level: 0,
+        vertex_count: 64,
+        triangle_count: 120,
+        bounding_sphere: BoundingSphere::new([0.0, 0.0, 0.0], 2.0),
+        normal_cone: front_cone,
+        cluster_error: 0.01,
+        parent_error: 0.5, // Parent error is 0.5
+        parent_cluster_id: Some(1),
+        boundary_edges: alloc::vec![shared_seam],
+    };
+
+    // Adjacent fine neighbor cluster (LOD 0) sharing the seam
+    let fine_neighbor = MeshClusterDesc {
+        cluster_id: 3,
+        lod_level: 0,
+        vertex_count: 64,
+        triangle_count: 120,
+        bounding_sphere: BoundingSphere::new([3.0, 0.0, 0.0], 2.0),
+        normal_cone: front_cone,
+        cluster_error: 0.01,
+        parent_error: 0.5,
+        parent_cluster_id: Some(1),
+        boundary_edges: alloc::vec![shared_seam],
+    };
+
+    if streamer.register_cluster(coarse_cluster).is_err() {
+        return false;
+    }
+    if streamer.register_cluster(fine_cluster).is_err() {
+        return false;
+    }
+    if streamer.register_cluster(fine_neighbor).is_err() {
+        return false;
+    }
+
+    // View from nearby (distance = 10): fine detail should be selected (LOD 0)
+    let clear_occlusion = OcclusionBitGrid::new(64, 64, 1.0);
+    let visible = streamer.stream_visible_clusters(&frustum, &clear_occlusion);
+
+    // Fine clusters (2 and 3) must be visible, coarse cluster (1) omitted because its error > 1.0 px
+    if !visible.contains(&2) || !visible.contains(&3) {
+        return false;
+    }
+    if visible.contains(&1) {
+        return false;
+    }
+
+    // 5. Verify Crack-Free Boundary Stitcher verified the shared seam
+    if streamer.stitcher.total_seams_stitched == 0 {
+        return false;
+    }
+
+    // View from far away (distance = 500): coarse cluster (LOD 1) should be selected
+    let far_frustum = ViewFrustumDesc {
+        camera_pos: [0.0, 0.0, -500.0],
+        ..frustum
+    };
+    let far_visible = streamer.stream_visible_clusters(&far_frustum, &clear_occlusion);
+
+    // Coarse cluster 1 must be selected at far distance
+    if !far_visible.contains(&1) {
+        return false;
+    }
+    // Fine cluster 2 should not be selected at far distance
+    if far_visible.contains(&2) {
+        return false;
+    }
+
+    // 6. Emit deterministic boot sentinel
+    crate::serial_write_str("[KNT-GPU-CLUSTER-CULL-PASS] Direct3D 12 dynamic primitive culling and mesh-cluster LOD streamer engine verified\r\n");
+
+    true
 }

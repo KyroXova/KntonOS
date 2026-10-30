@@ -377,6 +377,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Direct3D 12 low-latency frame pacing self-test failed!\r\n");
     }
 
+    // Initialize and verify Direct3D 12 Dynamic Primitive Culling & Mesh-Cluster LOD Streamer Engine
+    if !gfx::test_cluster_cull_subsystem() {
+        serial_write_str("[KNT-PANIC] Direct3D 12 cluster cull & LOD streamer self-test failed!\r\n");
+    }
+
     // Initialize and verify AHCI SATA Persistent Storage Subsystem
     if !drivers::storage::test_ahci_sata_subsystem() {
         serial_write_str("[KNT-PANIC] AHCI SATA storage subsystem self-test failed!\r\n");
