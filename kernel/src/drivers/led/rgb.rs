@@ -658,12 +658,14 @@ impl GameStateAuraSync {
 
         // 3. Highest-priority damage flash overlay
         if self.damage_flash_remaining_ms > 0 {
-            let decay = (self.damage_flash_remaining_ms as f32) / 200.0;
-            let flash_color = Rgb8::WHITE.lerp(Rgb8::RED, 0.35).scale(self.damage_flash_peak * decay);
-            for slot in out_frame.iter_mut() {
-                *slot = slot.lerp(flash_color, decay * self.damage_flash_peak);
-            }
             self.damage_flash_remaining_ms = self.damage_flash_remaining_ms.saturating_sub(delta_ms);
+            if self.damage_flash_remaining_ms > 0 {
+                let decay = (self.damage_flash_remaining_ms as f32) / 200.0;
+                let flash_color = Rgb8::WHITE.lerp(Rgb8::RED, 0.35).scale(self.damage_flash_peak * decay);
+                for slot in out_frame.iter_mut() {
+                    *slot = slot.lerp(flash_color, decay * self.damage_flash_peak);
+                }
+            }
         }
     }
 }
@@ -686,10 +688,10 @@ pub mod ec_regs {
     pub const REG_ZONE_BASE: u8 = 0x10;
     /// Number of bytes allocated per lighting zone in EC register space (R, G, B, flags).
     pub const BYTES_PER_ZONE: usize = 4;
-    /// Hardware frame latch / commit command register.
-    pub const REG_COMMIT_LATCH: u8 = 0x30;
+    /// Hardware frame latch / commit command register (immediately follows 24 bytes of zone PWMs).
+    pub const REG_COMMIT_LATCH: u8 = 0x28;
     /// Hardware status and fault monitoring register.
-    pub const REG_STATUS: u8 = 0x31;
+    pub const REG_STATUS: u8 = 0x29;
 
     /// Command token to commit and latch pending PWM registers to physical LED pins.
     pub const CMD_LATCH_UPDATE: u8 = 0x01;
@@ -700,13 +702,12 @@ pub mod ec_regs {
 /// Output packet layout:
 /// - [0]: Target start register address (REG_ZONE_BASE: 0x10)
 /// - [1..24]: 6 zones * 4 bytes (Red PWM, Green PWM, Blue PWM, Zone flags)
-/// - [25]: Commit command register address (0x30)
-/// - [26]: Commit command byte (0x01)
+/// - [25]: Commit command byte (0x01) at REG_COMMIT_LATCH (0x28)
 pub fn serialize_ec_frame(
     frame: &[Rgb8; LED_ZONE_COUNT],
     out_buf: &mut [u8],
 ) -> usize {
-    if out_buf.len() < 27 {
+    if out_buf.len() < 26 {
         return 0;
     }
 
@@ -720,9 +721,8 @@ pub fn serialize_ec_frame(
         idx += ec_regs::BYTES_PER_ZONE;
     }
 
-    out_buf[idx] = ec_regs::REG_COMMIT_LATCH;
-    out_buf[idx + 1] = ec_regs::CMD_LATCH_UPDATE;
-    idx + 2
+    out_buf[idx] = ec_regs::CMD_LATCH_UPDATE;
+    idx + 1
 }
 
 /// Simulated Handheld Embedded Controller (EC) I2C peripheral for testing hardware register interactions.
@@ -1006,7 +1006,7 @@ pub fn verify_game_state_reactive_and_ec_mapping() -> bool {
 
     let mut packet = [0u8; 32];
     let packet_len = serialize_ec_frame(&test_frame, &mut packet);
-    if packet_len != 27 {
+    if packet_len != 26 {
         return false;
     }
     if packet[0] != ec_regs::REG_ZONE_BASE {
