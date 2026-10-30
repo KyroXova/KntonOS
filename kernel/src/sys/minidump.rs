@@ -1,18 +1,9 @@
 //! Kernel-Direct Crash Telemetry Core Dump & Instant Mini-Dump Restorer Engine.
-//!
 //! Provides ultra-low-latency, zero-allocation kernel panic crash dumps and instant game state
-//! recovery for handheld gaming PCs:
-//! - Standard Minidump format header and stream directory structures
-//! - x86-64 CPU architectural context record and exception record
-//! - Memory stream descriptors and thread crash contexts
-//! - Sub-10ms lockless crash dump writer directly streaming to raw NVMe sectors
-//! - Minidump reader, stack frame unwinder, and post-crash game state restorer
 
 extern crate alloc;
 
-// =============================================================================
 // 1. Minidump Header, Signatures & Stream Constants
-// =============================================================================
 
 /// Standard Microsoft/Google Breakpad Minidump signature ("MDMP" in little-endian).
 pub const MINIDUMP_SIGNATURE: u32 = 0x504D444D;
@@ -52,9 +43,7 @@ pub const CONTEXT_INTEGER: u32                  = CONTEXT_X86_64 | 0x00000002;
 pub const CONTEXT_SEGMENTS: u32                 = CONTEXT_X86_64 | 0x00000004;
 pub const CONTEXT_ALL: u32                      = CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_SEGMENTS;
 
-// -----------------------------------------------------------------------------
 // Header & Directory Structures
-// -----------------------------------------------------------------------------
 
 /// Standard 32-byte Minidump File Header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,9 +95,7 @@ impl MinidumpDirectory {
     }
 }
 
-// -----------------------------------------------------------------------------
 // CPU Context & Exception Structures
-// -----------------------------------------------------------------------------
 
 /// x86-64 Architectural CPU Context Record captured directly from panic state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -208,9 +195,7 @@ pub struct ThreadCrashContext {
     pub thread_context_size: u32,
 }
 
-// =============================================================================
 // 2. Lockless Crash Dump Writer & Direct NVMe Sector Streamer
-// =============================================================================
 
 pub const MINIDUMP_MAX_STREAMS: usize = 6;
 pub const NVME_SECTOR_SIZE: usize = 512;
@@ -449,9 +434,7 @@ impl RawNvmeCrashStreamer {
     }
 }
 
-// =============================================================================
 // 3. Minidump Reader, Stack Frame Unwinder & Game State Restorer
-// =============================================================================
 
 /// Parsed Minidump Reader for post-crash inspection and triage.
 pub struct MinidumpReader<'a> {
@@ -651,10 +634,7 @@ impl PostCrashGameRestorer {
     }
 }
 
-
-// =============================================================================
 // 4. Subsystem Verification Suite & Boot Sentinel
-// =============================================================================
 
 /// Verification test suite for Kernel-Direct Crash Telemetry Core Dump & Instant Mini-Dump Restorer Engine (TASK-KNT-115).
 pub fn test_minidump_subsystem() -> bool {
@@ -794,9 +774,7 @@ pub fn test_minidump_subsystem() -> bool {
     true
 }
 
-// -----------------------------------------------------------------------------
 // Unit Tests for Commit 1
-// -----------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -875,7 +853,6 @@ mod tests {
 
         // Construct synthetic 2-frame call stack:
         // offset 0x20: caller_rbp = 0xFFFF_8000_0040_0060, return_rip = 0xFFFF_8000_0010_4500
-        // offset 0x60: caller_rbp = 0, return_rip = 0xFFFF_8000_0010_4000
         let mut stack = [0u8; 256];
         let frame1_rbp = (0xFFFF_8000_0040_0060u64).to_le_bytes();
         let frame1_rip = (0xFFFF_8000_0010_4500u64).to_le_bytes();

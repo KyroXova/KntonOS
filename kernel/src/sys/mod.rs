@@ -1,9 +1,5 @@
 //! Milestone 100: KntonOS Micro-Kernel Unified Gaming Subsystem Health Matrix & Benchmark Supervisor.
-//!
 //! Celebrates Milestone 100 across KntonOS development!
-//! Provides unified health monitoring, telemetry metrics, readiness scoring,
-//! memory footprint auditing, and continuous microsecond response time
-//! benchmark profiling across all 13 core gaming micro-kernel subsystems.
 
 #![allow(dead_code)]
 
@@ -16,8 +12,6 @@ pub use checkpoint::*;
 
 /// Comprehensive verification self-test suite for Milestone 100:
 /// Unified Gaming Subsystem Health Matrix & Benchmark Supervisor.
-///
-/// Emits sentinel [KNT-MILESTONE-100-PASS] upon successful validation.
 pub fn test_milestone_100_health_matrix() -> bool {
     crate::serial_write_str("[KNT-MILESTONE-100-TEST] Running Milestone 100 Gaming Subsystem Health Matrix & Benchmark Supervisor...\r\n");
     crate::serial_write_str("  ====================================================================================\r\n");

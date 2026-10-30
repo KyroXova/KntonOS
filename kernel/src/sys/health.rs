@@ -1,19 +1,12 @@
 //! Milestone 100: Unified Gaming Subsystem Health Matrix & Telemetry Descriptors
 //! and Continuous Micro-Kernel Benchmark Supervisor.
-//!
-//! Defines the core data structures and metrics representing the health,
-//! operational state, microsecond response latencies, and memory footprints
-//! across all KntonOS micro-kernel gaming subsystems, along with the
-//! high-precision benchmark supervisor and response time profiler.
 
 #![allow(dead_code)]
 
 extern crate alloc;
 use alloc::vec::Vec;
 
-// -----------------------------------------------------------------------------
 // Subsystem Identification
-// -----------------------------------------------------------------------------
 
 /// Enumeration of all core KntonOS gaming micro-kernel subsystems.
 #[repr(u8)]
@@ -106,9 +99,7 @@ impl SubsystemId {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Operational State
-// -----------------------------------------------------------------------------
 
 /// Subsystem operational health status.
 #[repr(u8)]
@@ -140,9 +131,7 @@ impl SubsystemState {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Latency Profiling Metrics
-// -----------------------------------------------------------------------------
 
 /// Microsecond response and dispatch latency statistics.
 #[derive(Debug, Clone, Copy)]
@@ -190,9 +179,7 @@ impl LatencyMetrics {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Memory Footprint Audit
-// -----------------------------------------------------------------------------
 
 /// Memory utilization audit breakdown for a kernel subsystem.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -228,9 +215,7 @@ impl MemoryFootprint {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Subsystem Health Descriptor
-// -----------------------------------------------------------------------------
 
 /// Comprehensive health record for an individual gaming micro-kernel subsystem.
 #[derive(Debug, Clone, Copy)]
@@ -289,9 +274,7 @@ impl SubsystemHealthDescriptor {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Unified Health Matrix Registry
-// -----------------------------------------------------------------------------
 
 /// Centralized health matrix registry consolidating real-time telemetry across all 13 subsystems.
 #[derive(Debug)]
@@ -408,9 +391,7 @@ impl SubsystemHealthMatrix {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Subsystem Telemetry Collector
-// -----------------------------------------------------------------------------
 
 /// Automated telemetry collector polling kernel subsystems and updating the Health Matrix.
 pub struct SubsystemTelemetryCollector {
@@ -496,9 +477,7 @@ impl SubsystemTelemetryCollector {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Continuous Micro-Kernel Benchmark Supervisor
-// -----------------------------------------------------------------------------
 
 /// Benchmark execution category.
 #[repr(u8)]
@@ -741,9 +720,7 @@ impl BenchmarkSupervisor {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Unit Self-Tests for Descriptors, Registry, and Telemetry
-// -----------------------------------------------------------------------------
 
 /// Verify subsystem descriptor creation, status transitions, and latency statistics.
 pub fn test_subsystem_descriptors_and_latency() -> bool {
