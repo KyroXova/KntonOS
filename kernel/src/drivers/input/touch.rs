@@ -4,7 +4,7 @@
 //! - Up to 10 simultaneous capacitive contact points (`TouchContact`)
 //! - Raw ADC coordinate normalization to display resolution (e.g. 1280x800, 1920x1080)
 //! - Contact geometry tracking (major/minor ellipse axes, pressure 0..255)
-//! - Contact slot lifecycle state machine (Down, Move, Stationary, Up)
+//! - Temporal low-pass jitter smoothing and per-finger velocity/acceleration tracking ($v_x, v_y, a_x, a_y$)
 
 // -----------------------------------------------------------------------------
 // Constants and Configuration
@@ -100,7 +100,7 @@ impl DigitizerConfig {
 // Normalized Touch Contact & Frame
 // -----------------------------------------------------------------------------
 
-/// Fully normalized, display-calibrated contact point.
+/// Fully normalized, display-calibrated contact point with kinematic velocity tracking.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TouchContact {
     /// Contact tracking identifier (0..9).
@@ -109,6 +109,20 @@ pub struct TouchContact {
     pub x: f32,
     /// Screen Y coordinate in physical display pixels (0.0 .. display_height).
     pub y: f32,
+    /// Filtered screen X coordinate (jitter-suppressed).
+    pub filtered_x: f32,
+    /// Filtered screen Y coordinate (jitter-suppressed).
+    pub filtered_y: f32,
+    /// Horizontal velocity in pixels per second.
+    pub velocity_x: f32,
+    /// Vertical velocity in pixels per second.
+    pub velocity_y: f32,
+    /// Horizontal acceleration in pixels per second squared.
+    pub acceleration_x: f32,
+    /// Vertical acceleration in pixels per second squared.
+    pub acceleration_y: f32,
+    /// Overall speed magnitude in pixels per second.
+    pub speed: f32,
     /// Normalized horizontal coordinate in [0.0 .. 1.0].
     pub norm_x: f32,
     /// Normalized vertical coordinate in [0.0 .. 1.0].
@@ -133,6 +147,13 @@ impl TouchContact {
             id,
             x: 0.0,
             y: 0.0,
+            filtered_x: 0.0,
+            filtered_y: 0.0,
+            velocity_x: 0.0,
+            velocity_y: 0.0,
+            acceleration_x: 0.0,
+            acceleration_y: 0.0,
+            speed: 0.0,
             norm_x: 0.0,
             norm_y: 0.0,
             pressure: 0.0,
@@ -178,15 +199,46 @@ impl TouchFrame {
 }
 
 // -----------------------------------------------------------------------------
+// Temporal Jitter Filter & Kinematic State
+// -----------------------------------------------------------------------------
+
+/// Internal temporal filter and kinematic history per contact slot.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ContactFilterState {
+    pub prev_filtered_x: f32,
+    pub prev_filtered_y: f32,
+    pub prev_vx: f32,
+    pub prev_vy: f32,
+    pub prev_timestamp_us: u64,
+    pub initialized: bool,
+}
+
+impl ContactFilterState {
+    pub const fn new() -> Self {
+        Self {
+            prev_filtered_x: 0.0,
+            prev_filtered_y: 0.0,
+            prev_vx: 0.0,
+            prev_vy: 0.0,
+            prev_timestamp_us: 0,
+            initialized: false,
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
 // Touch Digitizer Driver
 // -----------------------------------------------------------------------------
 
-/// Capacitive touch digitizer controller tracking up to 10 simultaneous contacts.
+/// Capacitive touch digitizer controller tracking up to 10 simultaneous contacts
+/// with low-pass jitter smoothing and velocity/acceleration estimation.
 pub struct TouchDigitizer {
     /// Display geometry and coordinate transformation configuration.
     pub config: DigitizerConfig,
     /// Current contact slots.
     pub contacts: [TouchContact; MAX_TOUCH_CONTACTS],
+    /// Per-slot filter and kinematic states.
+    pub filter_states: [ContactFilterState; MAX_TOUCH_CONTACTS],
     /// Total frames processed.
     pub frame_counter: u64,
 }
@@ -208,11 +260,14 @@ impl TouchDigitizer {
                 TouchContact::inactive(8),
                 TouchContact::inactive(9),
             ],
+            filter_states: [ContactFilterState::new(); MAX_TOUCH_CONTACTS],
             frame_counter: 0,
         }
     }
 
-    /// Ingests a raw hardware digitizer report containing up to 10 touch points.
+    /// Ingests a raw hardware digitizer report containing up to 10 touch points,
+    /// performs coordinate normalization, applies temporal jitter filtering, and computes
+    /// per-finger velocities and accelerations.
     pub fn process_raw_frame(
         &mut self,
         timestamp_us: u64,
@@ -233,6 +288,7 @@ impl TouchDigitizer {
                 } else {
                     self.contacts[id].status = ContactStatus::Inactive;
                 }
+                self.filter_states[id].initialized = false;
                 continue;
             }
 
@@ -264,16 +320,70 @@ impl TouchDigitizer {
             let major_px = (point.major_axis as f32) * ((self.config.display_width as f32) / (self.config.raw_max_x as f32));
             let minor_px = (point.minor_axis as f32) * ((self.config.display_height as f32) / (self.config.raw_max_y as f32));
 
-            let status = if !self.contacts[id].active {
-                ContactStatus::Down
+            // Temporal Low-Pass Jitter Filtering & Kinematic Tracking
+            let (filtered_x, filtered_y, vx, vy, ax, ay, speed, status) = if !self.filter_states[id].initialized {
+                // First contact Down: initialize position and zero out velocity
+                self.filter_states[id].prev_filtered_x = px_x;
+                self.filter_states[id].prev_filtered_y = px_y;
+                self.filter_states[id].prev_vx = 0.0;
+                self.filter_states[id].prev_vy = 0.0;
+                self.filter_states[id].prev_timestamp_us = timestamp_us;
+                self.filter_states[id].initialized = true;
+
+                (px_x, px_y, 0.0, 0.0, 0.0, 0.0, 0.0, ContactStatus::Down)
             } else {
-                let dx = px_x - self.contacts[id].x;
-                let dy = px_y - self.contacts[id].y;
-                let dist_sq = dx * dx + dy * dy;
-                if dist_sq > 1.0 {
-                    ContactStatus::Move
+                let prev_state = self.filter_states[id];
+                let dt_us = timestamp_us.saturating_sub(prev_state.prev_timestamp_us);
+                let dt_sec = (dt_us as f32) / 1_000_000.0;
+
+                if dt_sec < 0.0005 {
+                    // Too fast / duplicate sample
+                    (
+                        prev_state.prev_filtered_x,
+                        prev_state.prev_filtered_y,
+                        prev_state.prev_vx,
+                        prev_state.prev_vy,
+                        0.0,
+                        0.0,
+                        crate::graphics::sqrt_f32(prev_state.prev_vx * prev_state.prev_vx + prev_state.prev_vy * prev_state.prev_vy),
+                        ContactStatus::Stationary,
+                    )
                 } else {
-                    ContactStatus::Stationary
+                    let raw_dx = px_x - prev_state.prev_filtered_x;
+                    let raw_dy = px_y - prev_state.prev_filtered_y;
+                    let raw_dist = crate::graphics::sqrt_f32(raw_dx * raw_dx + raw_dy * raw_dy);
+                    let raw_speed = raw_dist / dt_sec;
+
+                    // Dynamic alpha filter: low speed = 0.25 (aggressive smoothing), high speed = 0.85 (minimal lag)
+                    let progress = ((raw_speed - 20.0) / 180.0).clamp(0.0, 1.0);
+                    let alpha = 0.25 + 0.60 * progress;
+
+                    let filt_x = prev_state.prev_filtered_x + alpha * (px_x - prev_state.prev_filtered_x);
+                    let filt_y = prev_state.prev_filtered_y + alpha * (px_y - prev_state.prev_filtered_y);
+
+                    // Compute velocity from filtered position
+                    let curr_vx = (filt_x - prev_state.prev_filtered_x) / dt_sec;
+                    let curr_vy = (filt_y - prev_state.prev_filtered_y) / dt_sec;
+                    let curr_speed = crate::graphics::sqrt_f32(curr_vx * curr_vx + curr_vy * curr_vy);
+
+                    // Compute acceleration from velocity delta
+                    let curr_ax = (curr_vx - prev_state.prev_vx) / dt_sec;
+                    let curr_ay = (curr_vy - prev_state.prev_vy) / dt_sec;
+
+                    // Update filter history
+                    self.filter_states[id].prev_filtered_x = filt_x;
+                    self.filter_states[id].prev_filtered_y = filt_y;
+                    self.filter_states[id].prev_vx = curr_vx;
+                    self.filter_states[id].prev_vy = curr_vy;
+                    self.filter_states[id].prev_timestamp_us = timestamp_us;
+
+                    let stat = if raw_dist > 1.2 {
+                        ContactStatus::Move
+                    } else {
+                        ContactStatus::Stationary
+                    };
+
+                    (filt_x, filt_y, curr_vx, curr_vy, curr_ax, curr_ay, curr_speed, stat)
                 }
             };
 
@@ -281,6 +391,13 @@ impl TouchDigitizer {
                 id: id as u8,
                 x: px_x,
                 y: px_y,
+                filtered_x,
+                filtered_y,
+                velocity_x: vx,
+                velocity_y: vy,
+                acceleration_x: ax,
+                acceleration_y: ay,
+                speed,
                 norm_x: nx,
                 norm_y: ny,
                 pressure,
@@ -302,6 +419,7 @@ impl TouchDigitizer {
                 } else if self.contacts[id].status == ContactStatus::Up {
                     self.contacts[id].status = ContactStatus::Inactive;
                 }
+                self.filter_states[id].initialized = false;
             }
         }
 
@@ -356,8 +474,6 @@ pub fn verify_touch_digitizer_and_10_point_tracking() -> bool {
         if !c.active || c.status != ContactStatus::Down {
             return false;
         }
-        // Slot 0 at raw (0, 0) -> pixel (0.0, 0.0)
-        // Slot 5 at raw (2000, 2000) -> 2000 / 4095 * 1280 ~ 625.15
         if i == 0 && (c.x != 0.0 || c.y != 0.0) {
             return false;
         }
@@ -409,6 +525,93 @@ pub fn verify_touch_digitizer_and_10_point_tracking() -> bool {
         if frame4.contacts[i].status != ContactStatus::Inactive {
             return false;
         }
+    }
+
+    true
+}
+
+/// Unit test verifying temporal jitter filter and contact velocity / acceleration estimator.
+pub fn verify_touch_jitter_filter_and_kinematics() -> bool {
+    let config = DigitizerConfig::default_handheld_1280x800();
+    let mut digitizer = TouchDigitizer::new(config);
+
+    // 1. Initial Contact Down at (2000, 2000) at t = 0 ms
+    // 2000 / 4095 * 1280 ~ 625.15 px
+    let p_down = RawTouchPoint {
+        id: 0,
+        raw_x: 2000,
+        raw_y: 2000,
+        pressure: 150,
+        major_axis: 25,
+        minor_axis: 20,
+        is_touching: true,
+    };
+    let f1 = digitizer.process_raw_frame(100_000, &[p_down]);
+    let c1 = &f1.contacts[0];
+    if c1.velocity_x != 0.0 || c1.velocity_y != 0.0 || c1.speed != 0.0 {
+        return false;
+    }
+    if (c1.filtered_x - c1.x).abs() > 0.001 {
+        return false;
+    }
+
+    // 2. Stationary Micro-Jitter Suppression
+    // Oscillate raw coordinates by +/-2 raw units (~0.6 px) at 100Hz (every 10ms = 10_000 us)
+    let mut prev_filtered = c1.filtered_x;
+    for step in 1..=10 {
+        let jitter = if step % 2 == 0 { 2 } else { -2 };
+        let p_jitter = RawTouchPoint {
+            id: 0,
+            raw_x: (2000 + jitter) as u16,
+            raw_y: 2000,
+            pressure: 150,
+            major_axis: 25,
+            minor_axis: 20,
+            is_touching: true,
+        };
+        let fj = digitizer.process_raw_frame(100_000 + step * 10_000, &[p_jitter]);
+        let cj = &fj.contacts[0];
+        // Jitter should be dampened significantly (filtered change < 0.2 px per frame)
+        let delta = (cj.filtered_x - prev_filtered).abs();
+        if delta > 0.35 {
+            return false;
+        }
+        prev_filtered = cj.filtered_x;
+    }
+
+    // 3. Constant Velocity Translation
+    // Move along X at 500 px/sec.
+    // In 1280 display width: 500 px/s = 500 / 1280 * 4095 ~ 1600 raw units/sec
+    // In 20ms (20,000 us), delta_x = 10 px = 10 / 1280 * 4095 ~ 32 raw units
+    let mut raw_x = 2000u16;
+    let mut t = 200_000u64;
+    for _ in 0..15 {
+        t += 20_000; // 20ms steps
+        raw_x += 32;
+        let p_move = RawTouchPoint {
+            id: 0,
+            raw_x,
+            raw_y: 2000,
+            pressure: 150,
+            major_axis: 25,
+            minor_axis: 20,
+            is_touching: true,
+        };
+        digitizer.process_raw_frame(t, &[p_move]);
+    }
+
+    let final_c = &digitizer.contacts[0];
+    // Velocity along X should converge close to 500 px/sec (+/- 60 px/s)
+    if (final_c.velocity_x - 500.0).abs() > 60.0 {
+        return false;
+    }
+    // Velocity along Y should remain near 0 (+/- 5 px/s)
+    if final_c.velocity_y.abs() > 5.0 {
+        return false;
+    }
+    // Speed should match velocity_x
+    if (final_c.speed - final_c.velocity_x.abs()).abs() > 1.0 {
+        return false;
     }
 
     true
