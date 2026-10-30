@@ -2,9 +2,11 @@
 
 pub mod pwm;
 pub mod backlight;
+pub mod dp_alt;
 
 pub use pwm::*;
 pub use backlight::*;
+pub use dp_alt::*;
 
 
 use crate::serial_write_str;
