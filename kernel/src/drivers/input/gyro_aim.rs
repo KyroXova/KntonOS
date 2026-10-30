@@ -679,9 +679,9 @@ pub fn verify_stationary_drift_calibration() -> bool {
         return false;
     }
 
-    // 2. Feed 100 resting samples with intentional slow temperature drift (+0.40 °/s yaw, -0.30 °/s pitch)
-    // 100 steps * 10ms (0.01s) = 1.0 second total rest
-    for i in 0..100 {
+    // 2. Feed 200 resting samples with intentional slow temperature drift (+0.40 °/s yaw, -0.30 °/s pitch)
+    // 200 steps * 10ms (0.01s) = 2.0 seconds total rest
+    for i in 0..200 {
         let sample = GyroAngularVelocity::new(0.0, -0.30, 0.40, (i as u64) * 10_000);
         compensator.update(&sample, 0.01);
     }

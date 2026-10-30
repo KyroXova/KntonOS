@@ -565,6 +565,24 @@ pub fn test_gyro_aiming_and_motion_assist_subsystem() -> bool {
         return false;
     }
 
+    // 4. Verify Gyro Angular Velocity Structures, Bias Registers, and Aiming Curve Profiles
+    if !verify_gyro_angular_structures_and_curves() {
+        serial_write_str("[KNT-PANIC] Gyro angular structures and aiming curves verification failed!\r\n");
+        return false;
+    }
+
+    // 5. Verify Stationary Zero-Drift Auto-Calibration & Dynamic Bias Compensator
+    if !verify_stationary_drift_calibration() {
+        serial_write_str("[KNT-PANIC] Stationary zero-drift auto-calibration verification failed!\r\n");
+        return false;
+    }
+
+    // 6. Verify Motion Aiming Transfer Function, Tremor Deadzone & Yaw Auto-Centering Ratchet
+    if !verify_motion_transfer_and_yaw_autocentering() {
+        serial_write_str("[KNT-PANIC] Motion aiming transfer / yaw auto-centering verification failed!\r\n");
+        return false;
+    }
+
     serial_write_str("[KNT-INPUT-GYRO-AIM-PASS] Handheld gyro aiming and motion assist governor verified\r\n");
     true
 }
