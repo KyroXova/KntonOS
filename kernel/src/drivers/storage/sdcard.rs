@@ -370,6 +370,105 @@ pub enum SdCardState {
 }
 
 // -----------------------------------------------------------------------------
+// Card Register Formats (CID, CSD, OCR) & UHS-I Bus Modes
+// -----------------------------------------------------------------------------
+
+/// UHS-I Bus Speed Mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UhsiBusSpeed {
+    /// Legacy default speed: 25 MHz (12.5 MB/s).
+    DefaultSpeed25Mhz,
+    /// High Speed: 50 MHz (25 MB/s).
+    HighSpeed50Mhz,
+    /// UHS-I SDR50: 100 MHz (50 MB/s).
+    Sdr50_100Mhz,
+    /// UHS-I DDR50: 50 MHz dual data rate (50 MB/s).
+    Ddr50_50Mhz,
+    /// UHS-I SDR104: 208 MHz ultra high-speed (104 MB/s, requires tuning).
+    Sdr104_208Mhz,
+}
+
+/// Operation Conditions Register (OCR) decoded representation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OcrRegister {
+    pub raw: u32,
+    /// Card power up completed (false = busy, true = ready).
+    pub is_ready: bool,
+    /// Card Capacity Status (false = SDSC byte-addressed, true = SDHC/SDXC block-addressed).
+    pub is_high_capacity_ccs: bool,
+    /// 1.8V switching accepted by card for UHS-I operation (S18A).
+    pub supports_1_8v_s18a: bool,
+}
+
+impl OcrRegister {
+    pub fn parse(raw: u32) -> Self {
+        Self {
+            raw,
+            is_ready: (raw & (1 << 31)) != 0,
+            is_high_capacity_ccs: (raw & (1 << 30)) != 0,
+            supports_1_8v_s18a: (raw & (1 << 24)) != 0,
+        }
+    }
+}
+
+/// Card Specific Data (CSD) parsed metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CsdRegister {
+    /// CSD structure version (0 = v1.0 SDSC, 1 = v2.0 SDHC/SDXC).
+    pub structure_version: u8,
+    /// Device size field (C_SIZE).
+    pub c_size: u32,
+    /// Card capacity in 512-byte sectors/blocks.
+    pub capacity_blocks: u64,
+    /// Card capacity in bytes.
+    pub capacity_bytes: u64,
+    /// Max data transfer rate in MB/s.
+    pub max_tran_speed_mb_s: u32,
+}
+
+impl CsdRegister {
+    /// Decodes CSD v2.0 (High / Extended Capacity) from raw response registers.
+    pub fn parse_v2(c_size: u32) -> Self {
+        let capacity_blocks = ((c_size as u64) + 1) * 1024;
+        let capacity_bytes = capacity_blocks * 512;
+        Self {
+            structure_version: 1,
+            c_size,
+            capacity_blocks,
+            capacity_bytes,
+            max_tran_speed_mb_s: 104,
+        }
+    }
+}
+
+/// Card Identification (CID) register information.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CidRegister {
+    /// Manufacturer ID (MID).
+    pub manufacturer_id: u8,
+    /// OEM/Application ID (OID).
+    pub oem_id: [u8; 2],
+    /// Product name (PNM, 5 ASCII characters).
+    pub product_name: [u8; 5],
+    /// Product revision (PRV).
+    pub product_revision: u8,
+    /// 32-bit product serial number (PSN).
+    pub serial_number: u32,
+}
+
+impl CidRegister {
+    pub fn default_mock() -> Self {
+        Self {
+            manufacturer_id: 0x1B, // Samsung / SanDisk
+            oem_id: *b"SM",
+            product_name: *b"EVO51",
+            product_revision: 0x10,
+            serial_number: 0x1234_5678,
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
 // Unit Tests & Verification
 // -----------------------------------------------------------------------------
 
