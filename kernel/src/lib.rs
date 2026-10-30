@@ -448,6 +448,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Touchpad and virtual trackball emulation self-test failed!\r\n");
     }
 
+    // Initialize and verify Handheld PC Multi-Zone RGB Lighting Controller & Aura Sync Engine
+    if !drivers::led::test_rgb_lighting_subsystem() {
+        serial_write_str("[KNT-PANIC] RGB lighting and Aura Sync subsystem self-test failed!\r\n");
+    }
+
     // Initialize and verify Handheld Ambient Light Sensor (ALS) & HDR Auto-Brightness Governor
     if !drivers::sensor::test_als_and_brightness_subsystem() {
         serial_write_str("[KNT-PANIC] Handheld ALS and auto-brightness governor self-test failed!\r\n");
