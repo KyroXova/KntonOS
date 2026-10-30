@@ -698,3 +698,29 @@ pub fn test_biometric_fingerprint_subsystem() -> bool {
     serial_write_str("[KNT-SEC-BIOMETRIC-PASS] Handheld fingerprint sensor and Windows Hello token engine verified\r\n");
     true
 }
+
+/// Verification self-test suite for Handheld PC Multi-Zone Haptic Force-Feedback Trigger & Active Resistance Motor Governor.
+pub fn test_trigger_motor_subsystem() -> bool {
+    serial_write_str("[KNT-INPUT] Testing multi-zone haptic force-feedback trigger & active resistance motor governor...\r\n");
+
+    // 1. Verify Trigger Motor Descriptors, Resistance Profiles & PWM Wire Packet
+    if !verify_trigger_motor_descriptors_and_wire_format() {
+        serial_write_str("[KNT-PANIC] Trigger motor descriptors and wire format verification failed!\r\n");
+        return false;
+    }
+
+    // 2. Verify Active Resistance Governor Curves & Stall-Current Protection
+    if !verify_active_resistance_governor_and_stall_protection() {
+        serial_write_str("[KNT-PANIC] Trigger motor governor and stall protection verification failed!\r\n");
+        return false;
+    }
+
+    // 3. Verify Calibration Normalization, Game Effect Presets & Failsafe Neutralization
+    if !verify_calibration_and_effect_synthesizer() {
+        serial_write_str("[KNT-PANIC] Trigger calibration and effect synthesizer verification failed!\r\n");
+        return false;
+    }
+
+    serial_write_str("[KNT-INPUT-TRIGGER-MOTOR-PASS] Multi-zone haptic force-feedback trigger motor governor verified\r\n");
+    true
+}
