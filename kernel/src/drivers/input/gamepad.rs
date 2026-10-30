@@ -566,6 +566,11 @@ impl GamepadPipeline {
     }
 
     #[inline(always)]
+    pub fn last_state(&self) -> &GamepadState {
+        &self.last_state
+    }
+
+    #[inline(always)]
     pub fn total_reports(&self) -> u64 {
         self.total_reports_processed
     }

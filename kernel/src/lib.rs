@@ -245,6 +245,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] USB HID subsystem self-test failed!\r\n");
     }
 
+    // Initialize and verify 6-Axis IMU Sensor Fusion & 1000Hz Gamepad Input Pipeline
+    if !drivers::input::test_imu_and_gamepad_subsystem() {
+        serial_write_str("[KNT-PANIC] 6-Axis IMU sensor fusion and 1000Hz gamepad self-test failed!\r\n");
+    }
+
     // Initialize and verify USB Mass Storage Class (MSC) Bulk-Only Transport (BOT) Driver
     if !drivers::usb::test_usb_msc_subsystem() {
         serial_write_str("[KNT-PANIC] USB MSC BOT storage subsystem self-test failed!\r\n");
