@@ -5,11 +5,13 @@
 
 pub mod cmdbuf;
 pub mod compute;
+pub mod gpu_fence;
 pub mod gpu_queue;
 pub mod texture_stream;
 
 pub use cmdbuf::*;
 pub use compute::*;
+pub use gpu_fence::*;
 pub use gpu_queue::*;
 pub use texture_stream::*;
 
