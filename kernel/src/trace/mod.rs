@@ -16,3 +16,10 @@ pub use ring::{
     test_trace_ring_buffer, CachelineCursor, TraceRingBuffer, TraceRingHeader,
     DEFAULT_RING_CAPACITY,
 };
+
+pub mod filter;
+
+pub use filter::{
+    test_filter_and_export_engine, GlobalTraceCoordinator, TraceExportHeader, TraceFilterEngine,
+    ENGINE_RING_CAPACITY, MAX_TRACE_CORES, TRACE_EXPORT_MAGIC, TRACE_EXPORT_VERSION,
+};
