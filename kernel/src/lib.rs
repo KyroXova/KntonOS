@@ -386,6 +386,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Gamepad haptic and rumble self-test failed!\r\n");
     }
 
+    // Initialize and verify Handheld Multi-Zone LRA Haptics & Resonant Frequency Tracking Governor
+    if !drivers::input::test_lra_haptics_subsystem() {
+        serial_write_str("[KNT-PANIC] Multi-zone LRA haptics self-test failed!\r\n");
+    }
+
     // Initialize and verify Zero-Latency Fast Input Polling Ring & Micro-Jitter Smoothing Filter
     if !drivers::input::test_fast_input_ring_and_jitter_subsystem() {
         serial_write_str("[KNT-PANIC] Fast input ring and micro-jitter smoothing self-test failed!\r\n");

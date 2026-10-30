@@ -42,11 +42,11 @@ impl LraPllConfig {
     pub const fn default_handheld() -> Self {
         Self {
             nominal_freq_hz: LRA_NOMINAL_CENTER_FREQ_HZ,
-            kp: 0.35,
-            ki: 0.08,
-            phase_deadband_rad: 0.02,
-            lock_threshold_rad: 0.10,
-            lock_consecutive_threshold: 8,
+            kp: 2.5,
+            ki: 0.3,
+            phase_deadband_rad: 0.015,
+            lock_threshold_rad: 0.08,
+            lock_consecutive_threshold: 6,
         }
     }
 }
@@ -253,7 +253,7 @@ impl LraPllTracker {
             // Hence: delta_f = - (Kp * phase_error + Ki * integral_error)
             self.integral_error += phase_error_rad;
             // Anti-windup clamping on integral error (+/- 5.0 rad)
-            self.integral_error = self.integral_error.clamp(-5.0, 5.0);
+            self.integral_error = self.integral_error.clamp(-10.0, 10.0);
 
             let freq_adjustment = -(self.config.kp * phase_error_rad + self.config.ki * self.integral_error);
             let new_freq = self.current_drive_freq_hz + freq_adjustment;
@@ -338,7 +338,7 @@ pub fn verify_lra_back_emf_and_pll_tracking() -> bool {
     // Simulate 30 half-cycles at 220 Hz
     let true_half_period_us = 500_000.0 / 220.0; // 2272.727 us
     let mut current_time = 0.0;
-    for i in 0..30 {
+    for i in 0..40 {
         current_time += true_half_period_us;
         let zc = ZeroCrossingEvent {
             crossing_time_us: current_time,

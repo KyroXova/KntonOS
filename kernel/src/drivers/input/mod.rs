@@ -554,3 +554,29 @@ pub fn test_gyro_aiming_and_motion_assist_subsystem() -> bool {
     serial_write_str("[KNT-INPUT-GYRO-AIM-PASS] Handheld gyro aiming and motion assist governor verified\r\n");
     true
 }
+
+/// Verification self-test suite for Multi-Zone LRA Haptic Actuators & Dynamic Resonant Frequency Tracking Governor.
+pub fn test_lra_haptics_subsystem() -> bool {
+    serial_write_str("[KNT-INPUT] Testing multi-zone LRA haptics & resonant frequency tracking governor...\r\n");
+
+    // 1. Verify LRA Back-EMF Zero-Crossing Detector & Resonant Tracking PLL
+    if !verify_lra_back_emf_and_pll_tracking() {
+        serial_write_str("[KNT-PANIC] LRA back-EMF / PLL resonance tracking verification failed!\r\n");
+        return false;
+    }
+
+    // 2. Verify Multi-Zone Spatial Haptic Routing (Palm Grips & Resistive Triggers)
+    if !verify_multizone_spatial_routing() {
+        serial_write_str("[KNT-PANIC] Multi-zone spatial haptic routing verification failed!\r\n");
+        return false;
+    }
+
+    // 3. Verify Dynamic Active Reverse-Phase Braking Pulse Synthesizer (Sub-5ms Cutoff)
+    if !verify_active_reverse_phase_braking() {
+        serial_write_str("[KNT-PANIC] Active reverse-phase braking pulse synthesizer verification failed!\r\n");
+        return false;
+    }
+
+    serial_write_str("[KNT-HAPTIC-LRA-PASS] Multi-zone LRA haptics and dynamic braking governor verified\r\n");
+    true
+}
