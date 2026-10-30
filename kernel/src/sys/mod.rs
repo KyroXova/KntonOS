@@ -9,8 +9,10 @@
 
 pub mod health;
 pub mod minidump;
+pub mod checkpoint;
 
 pub use minidump::*;
+pub use checkpoint::*;
 
 /// Comprehensive verification self-test suite for Milestone 100:
 /// Unified Gaming Subsystem Health Matrix & Benchmark Supervisor.
