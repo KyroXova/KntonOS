@@ -1,31 +1,10 @@
-//! Unified Handheld PC Backlight Governor & Flicker-Free Hybrid DC Dimming.
-//!
-//! Provides advanced luminance control and eye comfort protection:
-//! - Hybrid DC-dimming governor: dynamically switches between pure analog DC current regulation
-//!   at medium-to-high luminance (>25%) for zero-strobe eye comfort, and high-frequency PWM
-//!   at low luminance (<25%) to maintain LED color uniformity and prevent diode extinction.
-//! - CIE 1931 perceptual luminance gamma mapping (L* -> Y) matching human ocular response.
-//! - Hysteresis band preventing rapid mode oscillation near the 25% transition threshold.
-//! - Gradual exponential / linear fade step pacing avoiding stepped flicker during transitions.
-//! - Ambient minimum brightness clamping and power-save battery limits.
-//! - OLED panel dark-mode scaling and Auto-Brightness Limiting (ABL) governor.
+//! Handheld PC backlight governor and flicker-free hybrid DC dimming.
 
 use crate::drivers::display::pwm::{PwmModulator, PWM_DUTY_MAX};
 
-// -----------------------------------------------------------------------------
-// CIE 1931 Perceptual Luminance Curve
-// -----------------------------------------------------------------------------
+// CIE 1931 perceptual luminance curve.
 
-/// Converts perceived lightness L* in [0.0..1.0] (e.g. linear user brightness slider)
-/// to linear physical luminance / radiant flux ratio Y in [0.0..1.0] based on the
-/// international CIE 1931 lightness standard.
-///
-/// Mathematical formulation:
-///   L*_100 = L* * 100.0
-///   If L*_100 <= 8.0:
-///     Y = (L*_100 / 903.3) / 100.0 = L* / 9.033
-///   Else:
-///     Y = ((L*_100 + 16.0) / 116.0)^3
+/// Converts perceived lightness L* [0.0..1.0] to linear physical luminance Y based on CIE 1931.
 pub fn cie1931_perceived_to_linear(perceived: f32) -> f32 {
     let p = perceived.clamp(0.0, 1.0);
     let l_star = p * 100.0;
@@ -59,9 +38,7 @@ pub fn cie1931_linear_to_perceived(linear: f32) -> f32 {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Display Technology & Dimming Modes
-// -----------------------------------------------------------------------------
+// Display technology and dimming modes.
 
 /// Display panel technology profile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,9 +69,7 @@ pub enum HybridDomain {
     PwmModulated,
 }
 
-// -----------------------------------------------------------------------------
-// Fade Pacer & Clamping
-// -----------------------------------------------------------------------------
+// Fade pacer and clamping.
 
 /// Temporal fade pacer providing smooth, gradual brightness transitions.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -155,9 +130,7 @@ impl FadePacer {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Backlight Configuration & Output State
-// -----------------------------------------------------------------------------
+// Backlight configuration and output state.
 
 /// Backlight governor configuration parameters.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -227,9 +200,7 @@ pub struct BacklightOutputState {
     pub abl_scaling: f32,
 }
 
-// -----------------------------------------------------------------------------
-// Backlight Governor
-// -----------------------------------------------------------------------------
+// Backlight governor.
 
 /// Unified backlight governor managing PWM modulation, flicker-free DC dimming,
 /// fade pacing, and OLED ABL scaling.
@@ -288,9 +259,7 @@ impl BacklightGovernor {
             return 1.0;
         }
 
-        // For OLED panels:
-        // APL <= 0.30: 1.0 (full peak luminance allowed on dark UI / small highlights)
-        // APL > 0.30: scales down linearly to oled_min_abl_multiplier at APL = 1.00 (full-field white)
+        // OLED APL: scales down linearly to oled_min_abl_multiplier at full-field white (APL=1.0).
         if apl <= 0.30 {
             1.0
         } else {
@@ -421,9 +390,7 @@ impl BacklightGovernor {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Unit Tests & Verification
-// -----------------------------------------------------------------------------
+// Unit tests and verification.
 
 /// Unit test verifying hybrid DC dimming transition governor and CIE 1931 perceptual curve.
 pub fn verify_hybrid_dc_dimming_and_cie1931() -> bool {
@@ -492,10 +459,7 @@ pub fn verify_hybrid_dc_dimming_and_cie1931() -> bool {
         return false;
     }
 
-    // 3d. Hysteresis test:
-    // With current_domain = PwmModulated, if linear rises to 0.24 (below 0.25 + 0.02 = 0.27),
-    // it MUST stay in PwmModulated!
-    // Perceived ~0.56 gives linear ~ 0.245
+    // Hysteresis test: linear at 0.24 remains in PwmModulated below (0.25 + 0.02 = 0.27).
     let state_hyst = governor.evaluate(0.56);
     if state_hyst.active_domain != HybridDomain::PwmModulated {
         return false;

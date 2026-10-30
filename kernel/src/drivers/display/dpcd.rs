@@ -1,18 +1,10 @@
-//! DisplayPort Configuration Data (DPCD) Parser & AUX Channel Engine.
-//!
-//! Implements VESA DisplayPort 1.4+ AUX Channel & Receiver Configuration (DPCD):
-//! - 1Mbps Manchester AUX Channel transaction engine (Native Read/Write, I2C over AUX)
-//! - Standard DPCD register map definitions (0x00000..0x00207)
-//! - Receiver capability parsing (DPCD revision, Max Link Rate, Max Lane Count, Enhanced Framing)
-//! - Link rate definitions: RBR (1.62 Gbps), HBR (2.7 Gbps), HBR2 (5.4 Gbps), HBR3 (8.1 Gbps)
+//! DisplayPort Configuration Data (DPCD) parser and AUX channel engine.
 
 #![allow(dead_code)]
 
 extern crate alloc;
 
-// -----------------------------------------------------------------------------
-// AUX Channel Command & Reply Definitions
-// -----------------------------------------------------------------------------
+// AUX channel command and reply definitions.
 
 /// AUX Channel Command types (VESA DP specification).
 #[repr(u8)]
@@ -77,9 +69,7 @@ pub struct AuxTransactionReply {
     pub data: [u8; 16],
 }
 
-// -----------------------------------------------------------------------------
-// DisplayPort Link Rates
-// -----------------------------------------------------------------------------
+// DisplayPort link rates.
 
 /// DisplayPort physical link signaling rates.
 #[repr(u8)]
@@ -118,9 +108,7 @@ impl DpLinkRate {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Standard DPCD Register Addresses
-// -----------------------------------------------------------------------------
+// Standard DPCD register addresses.
 
 pub const DPCD_REV: u32 = 0x00000;
 pub const DPCD_MAX_LINK_RATE: u32 = 0x00001;
@@ -143,9 +131,7 @@ pub const DPCD_LANE_ALIGN_STATUS_UPDATED: u32 = 0x00204;
 pub const DPCD_ADJUST_REQUEST_LANE0_1: u32 = 0x00206;
 pub const DPCD_ADJUST_REQUEST_LANE2_3: u32 = 0x00207;
 
-// -----------------------------------------------------------------------------
-// DPCD Receiver Capabilities
-// -----------------------------------------------------------------------------
+// DPCD receiver capabilities.
 
 /// Parsed sink / receiver capabilities from DPCD addresses 0x00000..0x0000F.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -193,9 +179,7 @@ impl DpcdReceiverCaps {
     }
 }
 
-// -----------------------------------------------------------------------------
-// AUX Channel Engine
-// -----------------------------------------------------------------------------
+// AUX channel engine.
 
 /// Controller simulating 1Mbps Manchester AUX channel transactions to the DPCD register bank.
 #[derive(Debug)]
@@ -299,9 +283,7 @@ impl AuxChannelEngine {
 }
 
 
-// -----------------------------------------------------------------------------
-// DisplayPort Link Training Engine
-// -----------------------------------------------------------------------------
+// DisplayPort link training engine.
 
 pub const DP_TRAINING_PATTERN_DISABLE: u8 = 0x00;
 pub const DP_TRAINING_PATTERN_1: u8 = 0x01;
@@ -416,9 +398,7 @@ impl DpLinkTrainingEngine {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Hot-Plug Detect (HPD) Daemon & Dynamic Multi-Display Modesetter
-// -----------------------------------------------------------------------------
+// Hot-Plug Detect (HPD) daemon and dynamic multi-display modesetter.
 
 /// Multi-display topology configuration for handheld gaming PC.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
