@@ -6,6 +6,8 @@ pub mod waveform;
 pub mod haptic;
 pub mod fast_ring;
 pub mod jitter;
+pub mod gyro_aim;
+pub mod motion_assist;
 
 pub use imu::*;
 pub use gamepad::*;
@@ -13,6 +15,8 @@ pub use waveform::*;
 pub use haptic::*;
 pub use fast_ring::*;
 pub use jitter::*;
+pub use gyro_aim::*;
+pub use motion_assist::*;
 
 use crate::serial_write_str;
 
@@ -518,5 +522,31 @@ pub fn test_fast_input_ring_and_jitter_subsystem() -> bool {
 
     // 5. Output deterministic boot sentinel
     serial_write_str("[KNT-INPUT-FAST-RING-PASS] Zero-latency fast input ring and micro-jitter smoothing verified\r\n");
+    true
+}
+
+/// Verification self-test suite for Handheld PC Gyro Aiming & Motion Assist Dynamic Angle Governor.
+pub fn test_gyro_aiming_and_motion_assist_subsystem() -> bool {
+    serial_write_str("[KNT-INPUT] Testing handheld gyro aiming and motion assist governor...\r\n");
+
+    // 1. Verify Gyro Angular Velocity Integrator & Natural Sensitivity Scale (NSS)
+    if !verify_gyro_angular_velocity_and_natural_sensitivity() {
+        serial_write_str("[KNT-PANIC] Gyro velocity integrator / NSS verification failed!\r\n");
+        return false;
+    }
+
+    // 2. Verify Capacitive Touch / Trigger Activation Modes & Stationary Drift Calibration
+    if !verify_activation_modes_and_calibration() {
+        serial_write_str("[KNT-PANIC] Gyro activation modes / calibration baseline verification failed!\r\n");
+        return false;
+    }
+
+    // 3. Verify Steady-Aim Tremor Dampening & High-Speed Flick Acceleration Governor
+    if !verify_steady_aim_and_flick_acceleration() {
+        serial_write_str("[KNT-PANIC] Steady-aim tremor dampener / flick acceleration verification failed!\r\n");
+        return false;
+    }
+
+    serial_write_str("[KNT-INPUT-GYRO-AIM-PASS] Handheld gyro aiming and motion assist governor verified\r\n");
     true
 }
