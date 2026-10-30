@@ -232,7 +232,154 @@ impl EnvelopeDetector {
 }
 
 // -----------------------------------------------------------------------------
-// Unit Tests for Commit 1
+// 3. Sub-Millisecond Lookahead Buffer & Real-Time Compressor Engine
+// -----------------------------------------------------------------------------
+
+/// Capacity of the lookahead circular buffer (64 samples = 1.33 ms at 48 kHz).
+pub const LOOKAHEAD_CAPACITY: usize = 64;
+pub const LOOKAHEAD_MASK: usize = LOOKAHEAD_CAPACITY - 1;
+
+/// Stereo lookahead delay ring buffer preventing transient overshoot.
+#[derive(Debug, Clone, Copy)]
+pub struct LookaheadBuffer {
+    left_buf: [f32; LOOKAHEAD_CAPACITY],
+    right_buf: [f32; LOOKAHEAD_CAPACITY],
+    write_idx: usize,
+    pub delay_samples: usize,
+}
+
+impl LookaheadBuffer {
+    pub const fn new(delay_samples: usize) -> Self {
+        let clamped = if delay_samples >= LOOKAHEAD_CAPACITY {
+            LOOKAHEAD_CAPACITY - 1
+        } else {
+            delay_samples
+        };
+
+        Self {
+            left_buf: [0.0; LOOKAHEAD_CAPACITY],
+            right_buf: [0.0; LOOKAHEAD_CAPACITY],
+            write_idx: 0,
+            delay_samples: clamped,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.left_buf = [0.0; LOOKAHEAD_CAPACITY];
+        self.right_buf = [0.0; LOOKAHEAD_CAPACITY];
+        self.write_idx = 0;
+    }
+
+    /// Pushes stereo sample into buffer and pops the delayed sample from `delay_samples` ago.
+    pub fn push_and_pop(&mut self, left: f32, right: f32) -> (f32, f32) {
+        if self.delay_samples == 0 {
+            return (left, right);
+        }
+
+        self.left_buf[self.write_idx] = left;
+        self.right_buf[self.write_idx] = right;
+
+        let read_idx = (self.write_idx + LOOKAHEAD_CAPACITY - self.delay_samples) & LOOKAHEAD_MASK;
+        self.write_idx = (self.write_idx + 1) & LOOKAHEAD_MASK;
+
+        (self.left_buf[read_idx], self.right_buf[read_idx])
+    }
+}
+
+/// Stereo Dynamic Range Compressor (DRC) with soft-knee gain computer, lookahead, and variable envelope detector.
+#[derive(Debug, Clone, Copy)]
+pub struct DynamicRangeCompressor {
+    pub params: CompressorParameters,
+    pub lookahead: LookaheadBuffer,
+    pub detector: EnvelopeDetector,
+    pub current_gr_db: f32,
+    pub sidechain_peak: f32,
+}
+
+impl DynamicRangeCompressor {
+    /// Creates a new compressor with the specified parameters and lookahead delay.
+    pub fn new(params: CompressorParameters, lookahead_samples: usize) -> Self {
+        let mut comp = Self {
+            params,
+            lookahead: LookaheadBuffer::new(lookahead_samples),
+            detector: EnvelopeDetector::new(params.sample_rate, params.attack_time_ms, params.release_time_ms),
+            current_gr_db: 0.0,
+            sidechain_peak: 0.0,
+        };
+        comp.detector.envelope_db = 0.0; // Initial gain reduction is 0 dB
+        comp
+    }
+
+    pub fn reset(&mut self) {
+        self.lookahead.reset();
+        self.detector.reset();
+        self.detector.envelope_db = 0.0;
+        self.current_gr_db = 0.0;
+        self.sidechain_peak = 0.0;
+    }
+
+    pub fn set_parameters(&mut self, params: CompressorParameters) {
+        self.params = params;
+        self.detector.update_coefficients(params.sample_rate, params.attack_time_ms, params.release_time_ms);
+    }
+
+    /// Processes a single stereo sample pair, returning compressed and leveled stereo audio.
+    pub fn process_sample(&mut self, left_in: f32, right_in: f32) -> (f32, f32) {
+        // 1. Stereo-linked peak detection (prevents stereo image shifting)
+        let abs_l = if left_in < 0.0 { -left_in } else { left_in };
+        let abs_r = if right_in < 0.0 { -right_in } else { right_in };
+        let peak = if abs_l > abs_r { abs_l } else { abs_r };
+        self.sidechain_peak = peak;
+
+        // 2. Convert to decibels and compute static target gain reduction
+        let peak_db = linear_to_db(peak);
+        let target_gr_db = self.params.calculate_gain_reduction_db(peak_db); // <= 0.0 dB
+
+        // 3. Smooth gain reduction through decoupled attack/release filter
+        // In gain reduction domain:
+        // When signal rises, target_gr_db becomes MORE negative -> attack phase
+        // When signal drops, target_gr_db recovers towards 0.0 dB -> release phase
+        if target_gr_db < self.detector.envelope_db {
+            // Attack phase
+            self.detector.envelope_db = self.detector.attack_coeff * self.detector.envelope_db
+                + (1.0 - self.detector.attack_coeff) * target_gr_db;
+        } else {
+            // Release phase
+            self.detector.envelope_db = self.detector.release_coeff * self.detector.envelope_db
+                + (1.0 - self.detector.release_coeff) * target_gr_db;
+        }
+        self.current_gr_db = self.detector.envelope_db;
+
+        // 4. Retrieve lookahead delayed audio samples
+        let (del_l, del_r) = self.lookahead.push_and_pop(left_in, right_in);
+
+        // 5. Calculate total net linear gain (gain reduction + makeup gain)
+        let total_gain_db = self.current_gr_db + self.params.makeup_gain_db;
+        let linear_gain = db_to_linear(total_gain_db);
+
+        // 6. Apply gain to delayed audio
+        (del_l * linear_gain, del_r * linear_gain)
+    }
+
+    /// Processes an audio frame slice in-place or buffer-to-buffer.
+    pub fn process_frame(
+        &mut self,
+        in_left: &[f32],
+        in_right: &[f32],
+        out_left: &mut [f32],
+        out_right: &mut [f32],
+    ) {
+        let count = in_left.len().min(in_right.len()).min(out_left.len()).min(out_right.len());
+        for i in 0..count {
+            let (l, r) = self.process_sample(in_left[i], in_right[i]);
+            out_left[i] = l;
+            out_right[i] = r;
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Unit Tests
 // -----------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -284,5 +431,46 @@ mod tests {
             env.step(0.0);
         }
         assert!(env.envelope_db > -1.0);
+    }
+    #[test]
+    pub fn test_lookahead_buffer_and_compressor() {
+        let mut lookahead = LookaheadBuffer::new(4);
+        assert_eq!(lookahead.delay_samples, 4);
+
+        // Push 1, 2, 3, 4 -> outputs should be 0.0 initially
+        for i in 1..=4 {
+            let (l, r) = lookahead.push_and_pop(i as f32, i as f32);
+            assert_eq!(l, 0.0);
+            assert_eq!(r, 0.0);
+        }
+
+        // Push 5 -> pop 1
+        let (l5, r5) = lookahead.push_and_pop(5.0, 5.0);
+        assert_eq!(l5, 1.0);
+        assert_eq!(r5, 1.0);
+
+        // Test DynamicRangeCompressor with high-amplitude input
+        let mut params = CompressorParameters::default_gaming();
+        params.makeup_gain_db = 0.0; // 0 dB makeup gain to observe pure compression
+        params.threshold_db = -12.0;
+        params.ratio = 4.0;
+        params.attack_time_ms = 0.5;
+        params.release_time_ms = 20.0;
+
+        let mut compressor = DynamicRangeCompressor::new(params, 16);
+
+        // Feed quiet signal (-30 dBFS -> amp ~ 0.0316)
+        for _ in 0..100 {
+            compressor.process_sample(0.0316, 0.0316);
+        }
+        assert!((compressor.current_gr_db - 0.0).abs() < 0.1);
+
+        // Feed loud step signal (0 dBFS -> amp 1.0)
+        for _ in 0..200 {
+            compressor.process_sample(1.0, 1.0);
+        }
+        // At 0 dBFS input and -12 dB threshold with 4:1 ratio:
+        // Expected GR is (0 - 12) * (1 - 1/4) = 12 * 0.75 = -9.0 dB
+        assert!(compressor.current_gr_db < -7.0 && compressor.current_gr_db > -10.0);
     }
 }
