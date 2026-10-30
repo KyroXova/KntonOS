@@ -225,6 +225,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Shell subsystem self-test failed!\r\n");
     }
 
+    // Verify Virtual Terminal ANSI 24-bit TrueColor Terminal Emulator & PTY Subsystem
+    if !terminal::test_pty_and_ansi_subsystem() {
+        serial_write_str("[KNT-PANIC] Terminal PTY and TrueColor subsystem self-test failed!\r\n");
+    }
+
     // Initialize and verify USB 3.0 xHCI & HID Keyboard/Mouse Input Pipeline
     if !drivers::usb::test_usb_hid_subsystem() {
         serial_write_str("[KNT-PANIC] USB HID subsystem self-test failed!\r\n");
