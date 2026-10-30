@@ -5,6 +5,9 @@
 
 pub mod thp;
 pub mod numa;
+pub mod compactor;
+
+pub use compactor::*;
 
 pub use numa::{
     CoreAffinityHint, CpuVendor, MemoryAffinityPolicy, NumaCore, NumaDistanceMatrix, NumaNode,
