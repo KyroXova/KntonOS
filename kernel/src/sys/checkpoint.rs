@@ -559,6 +559,290 @@ impl MemoryDeltaCompressor {
 }
 
 // -----------------------------------------------------------------------------
+// 5. Direct NVMe Checkpoint Ring Streamer & Instant Game Resumption Engine
+// -----------------------------------------------------------------------------
+
+/// Base LBA sector on NVMe storage reserved for the Micro-Checkpoint Ring partition.
+pub const CHECKPOINT_RING_BASE_LBA: u64 = 0x0020_0000;
+
+/// Number of 512-byte sectors per checkpoint ring slot (128 sectors = 64 KiB).
+pub const CHECKPOINT_SLOT_SECTORS: usize = 128;
+
+/// Number of rolling checkpoint slots in the circular NVMe ring.
+pub const CHECKPOINT_RING_SLOTS: usize = 8;
+
+use crate::sys::minidump::NVME_SECTOR_SIZE;
+
+/// Direct NVMe Checkpoint Ring Streamer.
+///
+/// Streams compressed micro-checkpoints into reserved NVMe ring sectors without intermediate heap copies.
+#[derive(Debug, Clone, Copy)]
+pub struct NvmeCheckpointRingStreamer {
+    pub head_slot: usize,
+    pub total_checkpoints_written: u64,
+}
+
+impl NvmeCheckpointRingStreamer {
+    pub const fn new() -> Self {
+        Self {
+            head_slot: 0,
+            total_checkpoints_written: 0,
+        }
+    }
+
+    pub fn get_slot_base_lba(&self, slot_idx: usize) -> u64 {
+        CHECKPOINT_RING_BASE_LBA + ((slot_idx % CHECKPOINT_RING_SLOTS) * CHECKPOINT_SLOT_SECTORS) as u64
+    }
+
+    /// Streams raw checkpoint data into the current head slot across consecutive 512-byte NVMe sectors.
+    pub fn stream_to_slot<F>(
+        &mut self,
+        checkpoint_data: &[u8],
+        mut sector_sink: F,
+    ) -> Result<(usize, u64), &'static str>
+    where
+        F: FnMut(u64, &[u8; NVME_SECTOR_SIZE]) -> Result<(), &'static str>,
+    {
+        let slot = self.head_slot;
+        let base_lba = self.get_slot_base_lba(slot);
+        let max_bytes = CHECKPOINT_SLOT_SECTORS * NVME_SECTOR_SIZE;
+
+        if checkpoint_data.len() > max_bytes {
+            return Err("Checkpoint data exceeds maximum NVMe slot sector allocation");
+        }
+
+        let mut sector_buf = [0u8; NVME_SECTOR_SIZE];
+        let mut offset = 0;
+        let mut current_lba = base_lba;
+
+        while offset < checkpoint_data.len() {
+            let chunk_len = (checkpoint_data.len() - offset).min(NVME_SECTOR_SIZE);
+            sector_buf[..chunk_len].copy_from_slice(&checkpoint_data[offset..offset + chunk_len]);
+            if chunk_len < NVME_SECTOR_SIZE {
+                sector_buf[chunk_len..].fill(0);
+            }
+
+            sector_sink(current_lba, &sector_buf)?;
+            current_lba += 1;
+            offset += chunk_len;
+        }
+
+        self.head_slot = (self.head_slot + 1) % CHECKPOINT_RING_SLOTS;
+        self.total_checkpoints_written += 1;
+
+        Ok((slot, base_lba))
+    }
+}
+
+/// Result of an instantaneous game state resumption operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InstantGameResumptionResult {
+    pub restored_checkpoint_id: u64,
+    pub restored_frame_number: u64,
+    pub restored_dirty_pages: u32,
+    pub thread_state: ThreadCheckpointState,
+}
+
+/// Instantaneous Game State Resumption Engine.
+pub struct InstantGameResumer;
+
+impl InstantGameResumer {
+    /// Inspects and restores process state and memory pages from a serialized micro-checkpoint buffer.
+    pub fn resume_from_snapshot(
+        snapshot_data: &[u8],
+        target_pages: &mut [([u8; PAGE_SIZE], u64)],
+    ) -> Result<InstantGameResumptionResult, &'static str> {
+        let header_size = core::mem::size_of::<CheckpointHeader>();
+        let state_size = core::mem::size_of::<ThreadCheckpointState>();
+        let desc_size = core::mem::size_of::<PageDeltaDescriptor>();
+
+        if snapshot_data.len() < header_size + state_size + 4 {
+            return Err("Snapshot buffer too short for headers");
+        }
+
+        // 1. Validate Header
+        let header = unsafe { *(snapshot_data.as_ptr() as *const CheckpointHeader) };
+        if !header.is_valid() {
+            return Err("Invalid checkpoint header signature or version");
+        }
+
+        // Verify Adler-32 integrity
+        let computed_checksum = compute_adler32(&snapshot_data[header_size..]);
+        if header.checksum_adler32 != 0 && header.checksum_adler32 != computed_checksum {
+            return Err("Checkpoint payload Adler-32 checksum mismatch (corrupted snapshot)");
+        }
+
+        // 2. Extract Thread Checkpoint State
+        let state_offset = header_size;
+        let thread_state = unsafe { *(snapshot_data[state_offset..].as_ptr() as *const ThreadCheckpointState) };
+
+        // 3. Extract Page Descriptors
+        let desc_count_offset = state_offset + state_size;
+        let desc_count = u32::from_le_bytes(
+            snapshot_data[desc_count_offset..desc_count_offset + 4]
+                .try_into()
+                .unwrap_or([0; 4]),
+        ) as usize;
+
+        let descs_start = desc_count_offset + 4;
+        let descs_end = descs_start + desc_count * desc_size;
+        if descs_end > snapshot_data.len() {
+            return Err("Page descriptors out of snapshot bounds");
+        }
+
+        // 4. Restore Modified Pages
+        for i in 0..desc_count {
+            let desc_offset = descs_start + i * desc_size;
+            let desc = unsafe { *(snapshot_data[desc_offset..].as_ptr() as *const PageDeltaDescriptor) };
+
+            let comp_start = desc.compressed_offset as usize;
+            let comp_end = comp_start + desc.compressed_size as usize;
+            if comp_end > snapshot_data.len() {
+                return Err("Compressed page stream out of snapshot bounds");
+            }
+
+            // Find matching target page by virtual address
+            for (page_data, vaddr) in target_pages.iter_mut() {
+                if *vaddr == desc.virtual_address {
+                    MemoryDeltaCompressor::decompress_page(&snapshot_data[comp_start..comp_end], page_data)?;
+                    break;
+                }
+            }
+        }
+
+        Ok(InstantGameResumptionResult {
+            restored_checkpoint_id: header.checkpoint_id,
+            restored_frame_number: thread_state.frame_number,
+            restored_dirty_pages: header.dirty_pages_count,
+            thread_state,
+        })
+    }
+}
+
+/// Integrated Micro-Checkpoint Fast State Snapshot & Instant Resumption Engine.
+pub struct MicroCheckpointManager {
+    pub tracker: DirtyPageBitmapTracker,
+    pub freezer: CowPageSnapshotFreezer,
+    pub streamer: NvmeCheckpointRingStreamer,
+    pub current_checkpoint_id: u64,
+}
+
+impl MicroCheckpointManager {
+    pub fn new(base_virtual_address: u64) -> Self {
+        Self {
+            tracker: DirtyPageBitmapTracker::new(base_virtual_address),
+            freezer: CowPageSnapshotFreezer::new(base_virtual_address),
+            streamer: NvmeCheckpointRingStreamer::new(),
+            current_checkpoint_id: 0,
+        }
+    }
+
+    /// Captures a sub-5ms micro-checkpoint of the game process and serializes into output buffer.
+    pub fn capture_checkpoint(
+        &mut self,
+        game_pid: u32,
+        cr3_root: u64,
+        thread_state: &ThreadCheckpointState,
+        active_pages: &[([u8; PAGE_SIZE], u64)],
+        out_buf: &mut [u8],
+    ) -> Result<usize, &'static str> {
+        self.current_checkpoint_id += 1;
+        let chk_id = self.current_checkpoint_id;
+
+        // 1. Sub-5ms COW freeze
+        let dirty_count = self.freezer.freeze_dirty_pages(&mut self.tracker);
+
+        let header_size = core::mem::size_of::<CheckpointHeader>();
+        let state_size = core::mem::size_of::<ThreadCheckpointState>();
+        let desc_size = core::mem::size_of::<PageDeltaDescriptor>();
+
+        let min_required = header_size + state_size + 4 + dirty_count * desc_size;
+        if out_buf.len() < min_required {
+            return Err("Output buffer too small for checkpoint metadata");
+        }
+
+        // 2. Copy Thread State
+        let state_offset = header_size;
+        let state_bytes = unsafe {
+            core::slice::from_raw_parts(
+                thread_state as *const _ as *const u8,
+                state_size,
+            )
+        };
+        out_buf[state_offset..state_offset + state_size].copy_from_slice(state_bytes);
+
+        // 3. Write Descriptors Count
+        let desc_count_offset = state_offset + state_size;
+        out_buf[desc_count_offset..desc_count_offset + 4].copy_from_slice(&(dirty_count as u32).to_le_bytes());
+
+        // 4. Compress Dirty Pages into Buffer
+        let descs_start = desc_count_offset + 4;
+        let mut stream_cursor = descs_start + dirty_count * desc_size;
+        let mut compressed_total = 0u64;
+
+        for i in 0..dirty_count {
+            let record = match self.freezer.frozen_records[i] {
+                Some(r) => r,
+                None => continue,
+            };
+
+            // Find matching page payload in active_pages
+            let mut page_found = false;
+            for (page_slice, vaddr) in active_pages {
+                if *vaddr == record.virtual_address {
+                    page_found = true;
+                    let comp_start = stream_cursor;
+                    let comp_size = MemoryDeltaCompressor::compress_page(page_slice, &mut out_buf[comp_start..])?;
+                    stream_cursor += comp_size;
+                    compressed_total += comp_size as u64;
+
+                    let mut desc = PageDeltaDescriptor::new(record.virtual_address, record.original_frame, 0x03);
+                    desc.compressed_offset = comp_start as u32;
+                    desc.compressed_size = comp_size as u32;
+                    desc.page_adler32 = compute_adler32(&page_slice[..]);
+
+                    let desc_bytes = unsafe {
+                        core::slice::from_raw_parts(
+                            &desc as *const _ as *const u8,
+                            desc_size,
+                        )
+                    };
+                    let d_off = descs_start + i * desc_size;
+                    out_buf[d_off..d_off + desc_size].copy_from_slice(desc_bytes);
+                    break;
+                }
+            }
+
+            if !page_found {
+                return Err("Dirty page frame not located in active pages set");
+            }
+        }
+
+        // 5. Finalize Checkpoint Header with Adler-32 Checksum
+        let checksum = compute_adler32(&out_buf[header_size..stream_cursor]);
+        let mut header = CheckpointHeader::new(
+            chk_id,
+            game_pid,
+            cr3_root,
+            dirty_count as u32,
+            FLAG_DELTA_SNAPSHOT | FLAG_COW_ACTIVE | FLAG_COMPRESSED_LZ4,
+        );
+        header.compressed_bytes = compressed_total;
+        header.checksum_adler32 = checksum;
+
+        let header_bytes = unsafe {
+            core::slice::from_raw_parts(
+                &header as *const _ as *const u8,
+                header_size,
+            )
+        };
+        out_buf[..header_size].copy_from_slice(header_bytes);
+
+        Ok(stream_cursor)
+    }
+}
+
+// -----------------------------------------------------------------------------
 // Unit Tests
 // -----------------------------------------------------------------------------
 
@@ -695,5 +979,78 @@ mod tests {
 
         assert_eq!(decomp_size, PAGE_SIZE);
         assert_eq!(original_page, restored_page);
+    }
+    #[test]
+    pub fn test_nvme_streamer_and_instant_resumption() {
+        let base_vaddr = 0x0040_0000;
+        let mut manager = MicroCheckpointManager::new(base_vaddr);
+
+        // Prepare 4 simulated active pages
+        let mut page0 = [0x11u8; PAGE_SIZE];
+        let mut page1 = [0x22u8; PAGE_SIZE];
+        let mut page2 = [0x33u8; PAGE_SIZE];
+        let mut page3 = [0x44u8; PAGE_SIZE];
+
+        let vaddr0 = base_vaddr;
+        let vaddr1 = base_vaddr + 1 * (PAGE_SIZE as u64);
+        let vaddr2 = base_vaddr + 2 * (PAGE_SIZE as u64);
+        let vaddr3 = base_vaddr + 3 * (PAGE_SIZE as u64);
+
+        for (idx, vaddr) in [(0, vaddr0), (1, vaddr1), (2, vaddr2), (3, vaddr3)] {
+            manager.freezer.map_page(idx, 0x1000_0000 + (idx as u64) * 0x1000, PTE_PRESENT | PTE_WRITABLE);
+        }
+
+        // Mark page 0 and 2 dirty
+        manager.tracker.mark_page_dirty(0);
+        manager.tracker.mark_page_dirty(2);
+
+        let mut thread_state = ThreadCheckpointState::default();
+        thread_state.rip = 0x0040_5000;
+        thread_state.frame_number = 60_000;
+
+        let active_set = [
+            (page0, vaddr0),
+            (page1, vaddr1),
+            (page2, vaddr2),
+            (page3, vaddr3),
+        ];
+
+        let mut snap_buf = [0u8; 16384];
+        let snap_size = manager.capture_checkpoint(10, 0x100_0000, &thread_state, &active_set, &mut snap_buf)
+            .expect("Capture checkpoint failed");
+        assert!(snap_size > 0 && snap_size < 16384);
+
+        // Stream into NVMe ring
+        let mut streamed_sectors = 0;
+        let stream_res = manager.streamer.stream_to_slot(&snap_buf[..snap_size], |_lba, _sector| {
+            streamed_sectors += 1;
+            Ok(())
+        });
+        assert!(stream_res.is_ok());
+        assert!(streamed_sectors > 0);
+
+        // Corrupt memory to simulate unwanted post-checkpoint modifications
+        page0.fill(0xEE);
+        page2.fill(0xFF);
+
+        let mut restore_set = [
+            (page0, vaddr0),
+            (page1, vaddr1),
+            (page2, vaddr2),
+            (page3, vaddr3),
+        ];
+
+        // Execute instant resumption
+        let resume_res = InstantGameResumer::resume_from_snapshot(&snap_buf[..snap_size], &mut restore_set)
+            .expect("Instant resumption failed");
+
+        assert_eq!(resume_res.restored_checkpoint_id, 1);
+        assert_eq!(resume_res.restored_frame_number, 60_000);
+        assert_eq!(resume_res.restored_dirty_pages, 2);
+        assert_eq!(resume_res.thread_state.rip, 0x0040_5000);
+
+        // Verify page0 and page2 were restored to original 0x11 and 0x33
+        assert_eq!(restore_set[0].0[0], 0x11);
+        assert_eq!(restore_set[2].0[0], 0x33);
     }
 }
