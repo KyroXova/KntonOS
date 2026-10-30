@@ -1,12 +1,4 @@
 //! USB Mass Storage Class (MSC) & SCSI Primary / Block Command Subsystem.
-//!
-//! Implements SCSI Primary Commands (SPC) and SCSI Block Commands (SBC) for
-//! USB MSC Bulk-Only Transport devices:
-//! - TEST UNIT READY (0x00)
-//! - REQUEST SENSE (0x03)
-//! - INQUIRY (0x12)
-//! - READ CAPACITY 10 (0x25)
-//! - READ 10 (0x28) / WRITE 10 (0x2A)
 
 use alloc::string::String;
 use crate::drivers::usb::bot::{
@@ -14,7 +6,7 @@ use crate::drivers::usb::bot::{
     CSW_STATUS_PASSED,
 };
 
-// --- SCSI Command Operation Codes ---
+// SCSI Command Operation Codes.
 pub const SCSI_CMD_TEST_UNIT_READY: u8 = 0x00;
 pub const SCSI_CMD_REQUEST_SENSE: u8 = 0x03;
 pub const SCSI_CMD_INQUIRY: u8 = 0x12;
@@ -24,13 +16,13 @@ pub const SCSI_CMD_READ_CAPACITY_10: u8 = 0x25;
 pub const SCSI_CMD_READ_10: u8 = 0x28;
 pub const SCSI_CMD_WRITE_10: u8 = 0x2A;
 
-// --- SCSI Peripheral Device Types (SPC-3) ---
+// SCSI Peripheral Device Types (SPC-3).
 pub const SCSI_DEV_TYPE_DIRECT_ACCESS: u8 = 0x00; // Block device (e.g., Flash drive, HDD)
 pub const SCSI_DEV_TYPE_CD_DVD: u8 = 0x05;         // CD/DVD-ROM (MMC)
 pub const SCSI_DEV_TYPE_OPTICAL_MEMORY: u8 = 0x07; // Optical memory
 pub const SCSI_DEV_TYPE_UNKNOWN: u8 = 0x1F;
 
-// --- Standard Allocation Lengths ---
+// Standard Allocation Lengths.
 pub const SCSI_INQUIRY_ALLOCATION_LEN: u32 = 36;
 pub const SCSI_READ_CAPACITY_10_LEN: u32 = 8;
 pub const SCSI_REQUEST_SENSE_LEN: u32 = 18;
@@ -331,9 +323,7 @@ pub fn verify_scsi_commands() -> bool {
     true
 }
 
-// ============================================================================
-// USB MSC Block Device Abstraction & Sector DMA Engine
-// ============================================================================
+// USB MSC Block Device Abstraction & Sector DMA Engine.
 
 /// Block Storage Device abstraction for USB Mass Storage Class Drives (e.g., /dev/sdb).
 #[derive(Debug, Clone)]
