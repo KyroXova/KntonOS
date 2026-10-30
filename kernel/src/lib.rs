@@ -191,6 +191,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Kernel hibernation and LZ4 fast-restore self-test failed!\r\n");
     }
 
+    // Initialize and verify Handheld Battery Fuel Gauge, Coulomb Counter & Smart Charging State Machine
+    if !power::test_battery_and_charger_subsystem() {
+        serial_write_str("[KNT-PANIC] Battery fuel gauge and smart charger self-test failed!\r\n");
+    }
+
     // Initialize Virtual File System & mount demo initramfs
     fs::init();
     if !fs::test_vfs_subsystem() {
