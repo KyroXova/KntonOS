@@ -850,3 +850,419 @@ impl HdrTonemapper {
         Ok(bytes_written)
     }
 }
+
+
+// -----------------------------------------------------------------------------
+// Display Mirroring Network Packet Streamer & Scanline Chunker
+// -----------------------------------------------------------------------------
+
+/// Individual packet slice containing binary header and network payload.
+#[derive(Debug, Clone)]
+pub struct StreamChunk {
+    /// 32-byte standardized packet header.
+    pub header: MirrorStreamPacketHeader,
+    /// Chunk payload bytes (up to `MAX_CHUNK_PAYLOAD_SIZE`).
+    pub payload: Vec<u8>,
+}
+
+/// Congestion levels governing adaptive display mirroring streaming.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CongestionLevel {
+    /// Nominal link performance (<25% queue depth, low latency). Full quality & frame rate.
+    Nominal = 0,
+    /// Mild network/USB buffering (25-50% queue depth). Modulate bitrate or color format.
+    Mild = 1,
+    /// Severe congestion (50-80% queue depth). Drop non-key frames and halve frame rate.
+    Severe = 2,
+    /// Critical backlog (>80% queue depth). Drop all delta frames; emit low-res recovery keyframes.
+    Critical = 3,
+}
+
+/// Adaptive congestion and bitrate governor monitoring link backpressure.
+pub struct AdaptiveCongestionGovernor {
+    /// Current evaluated congestion state.
+    pub level: CongestionLevel,
+    /// Active transmission queue depth.
+    pub tx_queue_depth: usize,
+    /// Maximum transmission queue capacity.
+    pub tx_queue_capacity: usize,
+    /// Smoothed round-trip time in microseconds.
+    pub smoothed_rtt_us: u32,
+    /// Packet loss count reported by receiver feedback.
+    pub packet_loss_count: u32,
+    /// Total frames evaluated by the governor.
+    pub frames_evaluated: u64,
+    /// Total frames successfully transmitted.
+    pub frames_transmitted: u64,
+    /// Total frames dropped due to backpressure.
+    pub frames_dropped: u64,
+    /// Current target streaming bitrate in kilobits per second.
+    pub target_bitrate_kbps: u32,
+}
+
+impl AdaptiveCongestionGovernor {
+    /// Create a new adaptive congestion governor.
+    pub fn new(tx_queue_capacity: usize, base_bitrate_kbps: u32) -> Self {
+        Self {
+            level: CongestionLevel::Nominal,
+            tx_queue_depth: 0,
+            tx_queue_capacity: if tx_queue_capacity == 0 { 64 } else { tx_queue_capacity },
+            smoothed_rtt_us: 1000, // 1 ms initial estimate
+            packet_loss_count: 0,
+            frames_evaluated: 0,
+            frames_transmitted: 0,
+            frames_dropped: 0,
+            target_bitrate_kbps: base_bitrate_kbps,
+        }
+    }
+
+    /// Update network feedback statistics and modulate congestion state.
+    pub fn update_network_stats(&mut self, queue_depth: usize, rtt_us: u32, packets_lost: u32) {
+        self.tx_queue_depth = queue_depth;
+        self.packet_loss_count = packets_lost;
+
+        // Exponential moving average for RTT
+        self.smoothed_rtt_us = (self.smoothed_rtt_us * 7 + rtt_us) / 8;
+
+        let queue_ratio_pct = (queue_depth * 100) / self.tx_queue_capacity;
+
+        if queue_ratio_pct > 80 || packets_lost > 10 || self.smoothed_rtt_us > 35_000 {
+            self.level = CongestionLevel::Critical;
+            self.target_bitrate_kbps = self.target_bitrate_kbps.saturating_mul(50) / 100;
+        } else if queue_ratio_pct > 50 || packets_lost > 3 || self.smoothed_rtt_us > 20_000 {
+            self.level = CongestionLevel::Severe;
+            self.target_bitrate_kbps = self.target_bitrate_kbps.saturating_mul(75) / 100;
+        } else if queue_ratio_pct > 25 || packets_lost > 0 || self.smoothed_rtt_us > 10_000 {
+            self.level = CongestionLevel::Mild;
+            self.target_bitrate_kbps = self.target_bitrate_kbps.saturating_mul(90) / 100;
+        } else {
+            self.level = CongestionLevel::Nominal;
+            // Gradually recover bitrate up to maximum
+            self.target_bitrate_kbps = (self.target_bitrate_kbps + 1000).min(50_000);
+        }
+    }
+
+    /// Determine whether an incoming frame should be dropped due to backpressure.
+    pub fn should_drop_frame(&mut self, is_keyframe: bool) -> bool {
+        self.frames_evaluated = self.frames_evaluated.wrapping_add(1);
+
+        let drop = match self.level {
+            CongestionLevel::Nominal => false,
+            CongestionLevel::Mild => {
+                // Drop every 4th non-keyframe to relieve mild pressure
+                !is_keyframe && (self.frames_evaluated % 4 == 0)
+            }
+            CongestionLevel::Severe => {
+                // Drop every other non-keyframe (halve framerate)
+                !is_keyframe && (self.frames_evaluated % 2 != 0)
+            }
+            CongestionLevel::Critical => {
+                // In critical backlog, drop all non-keyframes
+                !is_keyframe
+            }
+        };
+
+        if drop {
+            self.frames_dropped = self.frames_dropped.wrapping_add(1);
+        } else {
+            self.frames_transmitted = self.frames_transmitted.wrapping_add(1);
+        }
+
+        drop
+    }
+
+    /// Return the optimal pixel format recommended under current network congestion.
+    pub fn recommended_pixel_format(&self) -> HdrPixelFormat {
+        match self.level {
+            CongestionLevel::Nominal => HdrPixelFormat::SdrRgba8888,
+            CongestionLevel::Mild => HdrPixelFormat::SdrRgba8888,
+            CongestionLevel::Severe | CongestionLevel::Critical => HdrPixelFormat::SdrRgb565,
+        }
+    }
+}
+
+/// Presentation Timestamp (PTS) synchronization engine for zero-stutter display mirrors.
+pub struct PtsSyncGovernor {
+    /// Host local clock baseline in microseconds.
+    pub source_clock_base_us: u64,
+    /// Clock offset between host and receiver in microseconds.
+    pub target_clock_offset_us: i64,
+    /// Smoothed RTT in microseconds.
+    pub smoothed_rtt_us: u32,
+    /// Maximum acceptable pipeline latency before a frame is considered stale.
+    pub max_acceptable_latency_us: u32,
+    /// PTS of the most recent presented frame.
+    pub last_presented_pts_us: u64,
+}
+
+impl PtsSyncGovernor {
+    /// Create a new PTS synchronization governor with maximum latency threshold.
+    pub fn new(max_acceptable_latency_us: u32) -> Self {
+        Self {
+            source_clock_base_us: 0,
+            target_clock_offset_us: 0,
+            smoothed_rtt_us: 1000,
+            max_acceptable_latency_us: if max_acceptable_latency_us == 0 {
+                33_333 // 33.3 ms default threshold (~2 frames at 60 Hz)
+            } else {
+                max_acceptable_latency_us
+            },
+            last_presented_pts_us: 0,
+        }
+    }
+
+    /// Process round-trip time and clock synchronization feedback packet from the receiver.
+    pub fn record_clock_sync(&mut self, source_pts_us: u64, receiver_pts_us: u64, rtt_us: u32) {
+        self.smoothed_rtt_us = (self.smoothed_rtt_us * 3 + rtt_us) / 4;
+        let one_way_delay = (self.smoothed_rtt_us / 2) as i64;
+        let estimated_remote_at_source = (receiver_pts_us as i64) - one_way_delay;
+        self.target_clock_offset_us = estimated_remote_at_source - (source_pts_us as i64);
+    }
+
+    /// Check if a captured frame's PTS is already stale relative to current presentation clock.
+    pub fn is_frame_stale(&self, frame_pts_us: u64, current_clock_us: u64) -> bool {
+        if frame_pts_us < self.last_presented_pts_us {
+            return true;
+        }
+        if current_clock_us > frame_pts_us {
+            let latency = current_clock_us - frame_pts_us;
+            if latency > (self.max_acceptable_latency_us as u64) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Compute synchronized target presentation timestamp for receiver playback.
+    pub fn compute_target_pts(&mut self, frame_pts_us: u64) -> u64 {
+        self.last_presented_pts_us = frame_pts_us;
+        let offset = self.target_clock_offset_us;
+        let target = (frame_pts_us as i64) + offset;
+        if target > 0 { target as u64 } else { frame_pts_us }
+    }
+}
+
+/// Scanline Chunker breaking tonemapped scanlines into MTU-sized streaming packets.
+pub struct ScanlineChunker {
+    /// Maximum payload bytes per chunk packet.
+    pub max_payload_size: usize,
+}
+
+impl ScanlineChunker {
+    /// Construct a scanline chunker with specified MTU payload boundary.
+    pub fn new(max_payload_size: usize) -> Self {
+        Self {
+            max_payload_size: if max_payload_size == 0 {
+                MAX_CHUNK_PAYLOAD_SIZE
+            } else {
+                max_payload_size
+            },
+        }
+    }
+
+    /// Slice a tonemapped pixel buffer into an array of streaming chunks.
+    pub fn chunk_frame(
+        &self,
+        frame_id: u32,
+        pts_us: u64,
+        is_keyframe: bool,
+        tonemapped_buffer: &[u8],
+        width: usize,
+        height: usize,
+        format: HdrPixelFormat,
+    ) -> Vec<StreamChunk> {
+        let bpp = format.bytes_per_pixel();
+        let stride = width * bpp;
+        if stride == 0 || height == 0 || tonemapped_buffer.is_empty() {
+            return Vec::new();
+        }
+
+        let total_bytes = tonemapped_buffer.len();
+        let chunk_count = (total_bytes + self.max_payload_size - 1) / self.max_payload_size;
+        let mut chunks = Vec::with_capacity(chunk_count);
+
+        for chunk_idx in 0..chunk_count {
+            let offset = chunk_idx * self.max_payload_size;
+            let end = (offset + self.max_payload_size).min(total_bytes);
+            let payload = tonemapped_buffer[offset..end].to_vec();
+
+            let start_line = (offset / stride).min(height - 1) as u16;
+            let end_line = ((end + stride - 1) / stride).min(height) as u16;
+            let line_count = (end_line - start_line).max(1);
+
+            let mut flags = PACKET_FLAG_TONEMAPPED;
+            if is_keyframe {
+                flags |= PACKET_FLAG_KEYFRAME;
+            }
+            if chunk_idx + 1 == chunk_count {
+                flags |= PACKET_FLAG_LAST_CHUNK;
+            }
+
+            let mut header = MirrorStreamPacketHeader::new(
+                StreamPacketType::ScanlineChunk,
+                flags,
+                frame_id,
+                chunk_idx as u16,
+                chunk_count as u16,
+                start_line,
+                line_count,
+                pts_us,
+                payload.len() as u16,
+            );
+            header.crc16 = MirrorStreamPacketHeader::compute_crc16(&payload);
+
+            chunks.push(StreamChunk { header, payload });
+        }
+
+        chunks
+    }
+}
+
+/// End-to-end Display Mirroring Streamer Pipeline coordinating capture, tonemapping, chunking, and transmission.
+pub struct DisplayMirrorStreamer {
+    /// Zero-copy compositor frame capture ring buffer.
+    pub capture_ring: FrameCaptureRing,
+    /// Fixed-point HDR tonemapper and gamut compressor.
+    pub tonemapper: HdrTonemapper,
+    /// Presentation timestamp synchronizer.
+    pub pts_governor: PtsSyncGovernor,
+    /// Adaptive network/USB congestion governor.
+    pub congestion_governor: AdaptiveCongestionGovernor,
+    /// Scanline slicing and packetization engine.
+    pub chunker: ScanlineChunker,
+    /// Transmission output ring queue.
+    pub tx_queue: Vec<StreamChunk>,
+    /// Capacity limit for transmission queue.
+    pub tx_queue_capacity: usize,
+    /// Keyframe interval counter.
+    pub keyframe_interval: u32,
+}
+
+impl DisplayMirrorStreamer {
+    /// Construct a new end-to-end display mirroring streamer.
+    pub fn new(
+        slot_count: usize,
+        slot_bytes: usize,
+        tonemap_params: TonemapParameters,
+        tx_queue_capacity: usize,
+    ) -> Self {
+        Self {
+            capture_ring: FrameCaptureRing::new(slot_count, slot_bytes),
+            tonemapper: HdrTonemapper::new(tonemap_params),
+            pts_governor: PtsSyncGovernor::new(33_333),
+            congestion_governor: AdaptiveCongestionGovernor::new(tx_queue_capacity, 25_000),
+            chunker: ScanlineChunker::new(MAX_CHUNK_PAYLOAD_SIZE),
+            tx_queue: Vec::with_capacity(tx_queue_capacity),
+            tx_queue_capacity,
+            keyframe_interval: 30, // Every 30 frames
+        }
+    }
+
+    /// Process a completed capture slot: tonemap HDR to SDR, chunk scanlines, and enqueue streaming packets.
+    pub fn process_capture_slot(
+        &mut self,
+        slot_id: u8,
+        current_clock_us: u64,
+    ) -> Result<usize, &'static str> {
+        let idx = slot_id as usize;
+        if idx >= self.capture_ring.slots.len() {
+            return Err("Invalid slot_id");
+        }
+
+        let slot = &self.capture_ring.slots[idx];
+        if slot.state != CaptureSlotState::Ready {
+            return Err("Capture slot is not in Ready state");
+        }
+
+        let frame_id = slot.frame_id;
+        let pts_us = slot.pts_us;
+        let width = slot.width as usize;
+        let height = slot.height as usize;
+        let src_format = slot.format;
+        let is_keyframe = (frame_id % self.keyframe_interval) == 0;
+
+        // 1. Check if frame is stale based on presentation timeline
+        if self.pts_governor.is_frame_stale(pts_us, current_clock_us) {
+            let _ = self.capture_ring.release_frame(slot_id);
+            self.congestion_governor.frames_dropped += 1;
+            return Err("Frame dropped: PTS is stale");
+        }
+
+        // 2. Query congestion governor for frame dropping
+        if self.congestion_governor.should_drop_frame(is_keyframe) {
+            let _ = self.capture_ring.release_frame(slot_id);
+            return Ok(0);
+        }
+
+        // 3. Determine target SDR format based on link congestion
+        let dst_format = self.congestion_governor.recommended_pixel_format();
+        let dst_stride = width * dst_format.bytes_per_pixel();
+        let dst_total_bytes = dst_stride * height;
+        let mut tonemapped_buf = alloc::vec![0u8; dst_total_bytes];
+
+        // 4. Execute fixed-point tonemapping across scanlines
+        let src_stride = slot.stride_bytes as usize;
+        self.tonemapper.tonemap_slice(
+            &slot.buffer,
+            &mut tonemapped_buf,
+            src_stride,
+            dst_stride,
+            width,
+            0,
+            height,
+            src_format,
+            dst_format,
+        )?;
+
+        // 5. Compute target presentation timestamp with clock sync
+        let target_pts = self.pts_governor.compute_target_pts(pts_us);
+
+        // 6. Slice tonemapped scanlines into packet chunks
+        let chunks = self.chunker.chunk_frame(
+            frame_id,
+            target_pts,
+            is_keyframe,
+            &tonemapped_buf,
+            width,
+            height,
+            dst_format,
+        );
+
+        let chunks_count = chunks.len();
+
+        // 7. Enqueue chunks into transmission queue
+        for chunk in chunks {
+            if self.tx_queue.len() < self.tx_queue_capacity {
+                self.tx_queue.push(chunk);
+            } else {
+                // Queue overflow: drop packet
+                break;
+            }
+        }
+
+        // 8. Release capture slot back to ring
+        self.capture_ring.release_frame(slot_id)?;
+
+        Ok(chunks_count)
+    }
+
+    /// Poll up to `max_packets` from the transmission queue for hardware MAC or USB submission.
+    pub fn poll_transmit_packets(&mut self, max_packets: usize) -> Vec<StreamChunk> {
+        let count = max_packets.min(self.tx_queue.len());
+        self.tx_queue.drain(0..count).collect()
+    }
+
+    /// Handle congestion feedback packet returned from the receiver.
+    pub fn receive_feedback(
+        &mut self,
+        source_pts_us: u64,
+        receiver_pts_us: u64,
+        rtt_us: u32,
+        packets_lost: u32,
+    ) {
+        self.pts_governor.record_clock_sync(source_pts_us, receiver_pts_us, rtt_us);
+        let q_depth = self.tx_queue.len();
+        self.congestion_governor.update_network_stats(q_depth, rtt_us, packets_lost);
+    }
+}
