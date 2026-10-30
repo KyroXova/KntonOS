@@ -1,15 +1,10 @@
 //! In-Game Hardware Plane Overlay (Plane #2) Abstraction & Alpha Presentation.
-//!
 //! Maps a dedicated hardware display overlay plane (Plane #2 / zpos 1) above the primary
-//! game rendering plane (Plane #1 / zpos 0) and below hardware cursor (Plane #3 / zpos 2).
-//! Provides per-pixel ARGB8888 and plane-wide alpha blending without disturbing primary game buffers.
 
 use alloc::vec::Vec;
 use crate::compositor::dirty::Rect;
 
-// -----------------------------------------------------------------------------
 // Constants and Plane Identifier Defaults
-// -----------------------------------------------------------------------------
 
 /// Standard hardware plane IDs in DRM/KMS scanout pipeline
 pub const HARDWARE_PLANE_PRIMARY_ID: u32 = 1;
@@ -22,9 +17,7 @@ pub const OVERLAY_ZPOS: u32 = 1;
 /// Color format for alpha-blended overlay plane
 pub const OVERLAY_FORMAT_ARGB8888: u32 = 0x34325241; // FourCC AR24
 
-// -----------------------------------------------------------------------------
 // Hardware Overlay Plane Abstraction
-// -----------------------------------------------------------------------------
 
 /// State and geometry of the dedicated hardware overlay plane (Plane #2).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -199,18 +192,12 @@ impl HardwareOverlayPlane {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Unit Tests & Verification
-// -----------------------------------------------------------------------------
 
-// -----------------------------------------------------------------------------
 // Global Overlay Shortcut Interceptor & Controller Trigger
-// -----------------------------------------------------------------------------
 
 /// Controller / Keyboard Overlay Toggle Trigger.
 /// Intercepts:
-/// - Controller: Guide + A combo
-/// - Keyboard: Super / Meta (Windows key) + G combo
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct OverlayShortcutInterceptor {
     pub guide_pressed: bool,
@@ -248,7 +235,6 @@ impl OverlayShortcutInterceptor {
 
     /// Evaluates USB / PS2 keyboard scancodes.
     /// Standard USB HID usages: Left GUI = 0xE3, Right GUI = 0xE7, Key 'G' = 0x0A.
-    /// PS/2 set 1: Left Windows = 0x5B (or 0xE05B), Key 'G' = 0x22.
     pub fn process_key_event(&mut self, scancode: u16, pressed: bool) -> bool {
         let is_meta = scancode == 0xE3 || scancode == 0xE7 || scancode == 0x5B || scancode == 0xE05B;
         let is_g = scancode == 0x0A || scancode == 0x22 || scancode == 0x47;
