@@ -890,6 +890,150 @@ impl PredictiveWordLattice {
     }
 }
 
+
+// =============================================================================
+// 4. Subsystem Verification Suite & Boot Sentinel
+// =============================================================================
+
+/// Verification test suite for Unified Handheld PC Virtual Keyboard & Predictive Swipe IME Gesture Engine (TASK-KNT-112).
+pub fn test_virtual_keyboard_and_swipe_ime_subsystem() -> bool {
+    crate::serial_write_str("[KNT-UI-KEYBOARD-TEST] Running Handheld PC Virtual Keyboard & Predictive Swipe IME verification suite...\r\n");
+
+    // 1. Multi-layout keyboard maps and spatial hit-test grid
+    let mut layout = VirtualKeyboardLayout::new(1280, 800, KeyboardLayoutMode::FullQwerty);
+    if layout.keys.len() < 30 {
+        return false;
+    }
+    let space_key = match layout.keys.iter().find(|k| k.id == VirtualKeyId::Space) {
+        Some(k) => k,
+        None => return false,
+    };
+    let hit = match layout.hit_test(space_key.center_x, space_key.center_y) {
+        Some(h) => h,
+        None => return false,
+    };
+    if hit.id != VirtualKeyId::Space {
+        return false;
+    }
+
+    layout.cycle_layout_mode(); // CompactThumbPad
+    if layout.mode != KeyboardLayoutMode::CompactThumbPad || layout.keys.is_empty() {
+        return false;
+    }
+    layout.cycle_layout_mode(); // DualSplitPad
+    if layout.mode != KeyboardLayoutMode::DualSplitPad || layout.keys.is_empty() {
+        return false;
+    }
+    crate::serial_write_str("  * Multi-layout keyboard maps and spatial hit-test grid verified\r\n");
+
+    // 2. Catmull-Rom spline trajectory smoothing and sub-pixel interpolation
+    let raw_pts = [
+        TouchPoint::new(100.0, 600.0, 10_000),
+        TouchPoint::new(200.0, 620.0, 20_000),
+        TouchPoint::new(300.0, 580.0, 30_000),
+        TouchPoint::new(400.0, 600.0, 40_000),
+    ];
+    let smoothed = CatmullRomSmoother::smooth_trajectory(&raw_pts, 4);
+    if smoothed.len() != (raw_pts.len() - 1) * 4 + 1 {
+        return false;
+    }
+    if smoothed[0].x != 100.0 || smoothed[smoothed.len() - 1].x != 400.0 {
+        return false;
+    }
+    crate::serial_write_str("  * Catmull-Rom spline trajectory smoothing and sub-pixel interpolation verified\r\n");
+
+    // 3. Shape-writing curve tokenizer and corner feature detection
+    layout.mode = KeyboardLayoutMode::FullQwerty;
+    layout.build_layout();
+
+    let corner_pts = [
+        TouchPoint::new(150.0, 500.0, 1000),
+        TouchPoint::new(350.0, 500.0, 2000),
+        TouchPoint::new(350.0, 700.0, 3000),
+    ];
+    let corner_smoothed = CatmullRomSmoother::smooth_trajectory(&corner_pts, 6);
+    let features = ShapeWritingTokenizer::extract_features(&corner_smoothed, &layout);
+    if features.is_empty() || features[0].feature_type != GestureFeatureType::StrokeStart {
+        return false;
+    }
+    crate::serial_write_str("  * Shape-writing curve tokenizer and corner feature detection verified\r\n");
+
+    // 4. Spatial error tolerance ellipse and predictive N-gram word candidate lattice
+    let ellipse = SpatialErrorEllipse::default_handheld();
+    let exact_score = ellipse.score(100.0, 100.0, 100.0, 100.0);
+    if (exact_score - 1.0).abs() > 0.001 {
+        return false;
+    }
+    let offset_score = ellipse.score(140.0, 100.0, 100.0, 100.0);
+    if (offset_score - 0.5).abs() > 0.05 {
+        return false;
+    }
+
+    let lattice = PredictiveWordLattice::new();
+    if lattice.vocabulary.is_empty() {
+        return false;
+    }
+    crate::serial_write_str("  * Spatial error tolerance ellipse and predictive N-gram word candidate lattice verified\r\n");
+
+    // 5. Win32 virtual key event injector and event dispatch queue
+    let mut injector = KeyEventInjector::new();
+    injector.inject_char_keystroke('A', 50_000);
+    if injector.pending_count() != 2 {
+        return false;
+    }
+    let ev_down = match injector.pop_event() {
+        Some(e) => e,
+        None => return false,
+    };
+    let ev_up = match injector.pop_event() {
+        Some(e) => e,
+        None => return false,
+    };
+    if ev_down.vk_code != b'A' || ev_down.is_up || ev_up.vk_code != b'A' || !ev_up.is_up {
+        return false;
+    }
+    crate::serial_write_str("  * Win32 virtual key event injector and event dispatch queue verified\r\n");
+
+    // 6. End-to-end continuous swipe gesture to Win32 key injection pipeline
+    let g_key = match layout.keys.iter().find(|k| k.id == VirtualKeyId::Char('G')) {
+        Some(k) => k,
+        None => return false,
+    };
+    let a_key = match layout.keys.iter().find(|k| k.id == VirtualKeyId::Char('A')) {
+        Some(k) => k,
+        None => return false,
+    };
+    let m_key = match layout.keys.iter().find(|k| k.id == VirtualKeyId::Char('M')) {
+        Some(k) => k,
+        None => return false,
+    };
+    let e_key = match layout.keys.iter().find(|k| k.id == VirtualKeyId::Char('E')) {
+        Some(k) => k,
+        None => return false,
+    };
+
+    let swipe_raw = [
+        TouchPoint::new(g_key.center_x, g_key.center_y, 100_000),
+        TouchPoint::new(a_key.center_x, a_key.center_y, 200_000),
+        TouchPoint::new(m_key.center_x, m_key.center_y, 300_000),
+        TouchPoint::new(e_key.center_x, e_key.center_y, 400_000),
+    ];
+    let swipe_smoothed = CatmullRomSmoother::smooth_trajectory(&swipe_raw, 5);
+    let candidates = lattice.rank_candidates(&swipe_smoothed, &layout);
+    if candidates.is_empty() || candidates[0].word != "GAME" {
+        return false;
+    }
+
+    injector.inject_word(&candidates[0].word, 500_000);
+    if injector.pending_count() != 10 {
+        return false;
+    }
+    crate::serial_write_str("  * End-to-end continuous swipe gesture to Win32 key injection pipeline verified\r\n");
+
+    crate::serial_write_str("[KNT-UI-KEYBOARD-PASS] Handheld PC virtual keyboard and predictive swipe IME engine operational\r\n");
+    true
+}
+
 // -----------------------------------------------------------------------------
 // Unit Tests for Commit 1
 // -----------------------------------------------------------------------------

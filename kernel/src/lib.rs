@@ -418,6 +418,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Game state overlay compositor and cursor plane self-test failed!\r\n");
     }
 
+    // Verify Unified Handheld PC Virtual Keyboard & Predictive Swipe IME Gesture Engine (TASK-KNT-112)
+    if !ui::test_virtual_keyboard_and_swipe_ime_subsystem() {
+        serial_write_str("[KNT-PANIC] Virtual keyboard and swipe IME self-test failed!\r\n");
+    }
+
     // Initialize Desktop Shell Compositor & Window Manager
     compositor::init(320, 240);
     if !compositor::test_compositor_subsystem() {
