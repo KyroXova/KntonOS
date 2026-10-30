@@ -19,8 +19,10 @@ pub use ring::{
 
 pub mod filter;
 pub mod detour;
+pub mod kprobes;
 
 pub use detour::*;
+pub use kprobes::*;
 pub use filter::{
     test_filter_and_export_engine, GlobalTraceCoordinator, TraceExportHeader, TraceFilterEngine,
     ENGINE_RING_CAPACITY, MAX_TRACE_CORES, TRACE_EXPORT_MAGIC, TRACE_EXPORT_VERSION,
