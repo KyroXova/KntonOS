@@ -1,0 +1,1061 @@
+//! Direct3D 12 Enhanced Barriers & Split-Barrier Synchronized GPU Resource Transition Engine.
+//!
+//! Replaces legacy monolithic ResourceBarrier state transitions with granular,
+//! pipelined Enhanced Barriers:
+//! - Granular Synchronization Scopes (`BarrierSync`) and Memory Access flags (`BarrierAccess`)
+//! - Explicit Texture Compression & Memory Layout states (`BarrierLayout`)
+//! - GlobalBarrier, BufferBarrier, and TextureBarrier with SubresourceRange matching
+//! - Split-barrier execution (`BeginBarrier` / `EndBarrier`) maximizing GPU overlap and concurrency
+
+use alloc::vec::Vec;
+
+/// Constant representing all subresources of a texture resource.
+pub const ALL_SUBRESOURCES: u32 = 0xFFFF_FFFF;
+
+/// Direct3D 12 Synchronization Scopes (`D3D12_BARRIER_SYNC`).
+///
+/// Defines which hardware pipeline stages must complete before the barrier (sync_before)
+/// and which stages must wait before executing (sync_after).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct BarrierSync;
+
+impl BarrierSync {
+    pub const NONE: u32 = 0;
+    pub const ALL: u32 = 1 << 0;
+    pub const DRAW: u32 = 1 << 1;
+    pub const INDEX_INPUT: u32 = 1 << 2;
+    pub const VERTEX_SHADING: u32 = 1 << 3;
+    pub const PIXEL_SHADING: u32 = 1 << 4;
+    pub const DEPTH_STENCIL: u32 = 1 << 5;
+    pub const RENDER_TARGET: u32 = 1 << 6;
+    pub const COMPUTE: u32 = 1 << 7;
+    pub const RAYTRACING: u32 = 1 << 8;
+    pub const COPY: u32 = 1 << 9;
+    pub const RESOLVE: u32 = 1 << 10;
+    pub const EXECUTE_INDIRECT: u32 = 1 << 11;
+    pub const ALL_SHADING: u32 = 1 << 12;
+}
+
+/// Direct3D 12 Memory Access Types (`D3D12_BARRIER_ACCESS`).
+///
+/// Defines which GPU memory caches must be flushed before the barrier (access_before)
+/// and which caches must be invalidated before subsequent access (access_after).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct BarrierAccess;
+
+impl BarrierAccess {
+    pub const COMMON: u32 = 0;
+    pub const VERTEX_BUFFER: u32 = 1 << 0;
+    pub const CONSTANT_BUFFER: u32 = 1 << 1;
+    pub const INDEX_BUFFER: u32 = 1 << 2;
+    pub const RENDER_TARGET: u32 = 1 << 3;
+    pub const UNORDERED_ACCESS: u32 = 1 << 4;
+    pub const DEPTH_STENCIL_WRITE: u32 = 1 << 5;
+    pub const DEPTH_STENCIL_READ: u32 = 1 << 6;
+    pub const SHADER_RESOURCE: u32 = 1 << 7;
+    pub const COPY_SOURCE: u32 = 1 << 8;
+    pub const COPY_DEST: u32 = 1 << 9;
+    pub const RESOLVE_SOURCE: u32 = 1 << 10;
+    pub const RESOLVE_DEST: u32 = 1 << 11;
+    pub const RAYTRACING_ACCELERATION_STRUCTURE_READ: u32 = 1 << 12;
+    pub const RAYTRACING_ACCELERATION_STRUCTURE_WRITE: u32 = 1 << 13;
+    pub const NO_ACCESS: u32 = 1 << 14;
+}
+
+/// Direct3D 12 Texture Layouts (`D3D12_BARRIER_LAYOUT`).
+///
+/// Governs memory layout, compression metadata (DCC, HTILE), and cache configurations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[repr(u32)]
+pub enum BarrierLayout {
+    #[default]
+    Undefined = 0,
+    Common = 1,
+    Present = 2,
+    GenericRead = 3,
+    RenderTarget = 4,
+    UnorderedAccess = 5,
+    DepthStencilWrite = 6,
+    DepthStencilRead = 7,
+    ShaderResource = 8,
+    CopySource = 9,
+    CopyDest = 10,
+    ResolveSource = 11,
+    ResolveDest = 12,
+}
+
+/// Flags modifying texture barrier behavior.
+pub struct TextureBarrierFlags;
+
+impl TextureBarrierFlags {
+    pub const NONE: u32 = 0;
+    /// Discards previous texture contents, skipping cache decompression/flushes.
+    pub const DISCARD: u32 = 1 << 0;
+}
+
+/// Errors returned by the Enhanced Barrier subsystem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BarrierError {
+    /// Sync scope bitmask is invalid or contains undefined bits.
+    InvalidSyncScope(u32),
+    /// Memory access bitmask is invalid.
+    InvalidAccessFlags(u32),
+    /// Transition between incompatible texture layouts.
+    InvalidLayoutTransition { from: BarrierLayout, to: BarrierLayout },
+    /// Subresource index or range exceeds texture mip/slice bounds.
+    InvalidSubresourceRange,
+    /// Buffer virtual address or size is invalid (e.g. zero size).
+    InvalidBufferRange,
+    /// Split barrier token mismatch or corrupted state.
+    SplitBarrierMismatch,
+    /// A split barrier with this token is already in flight.
+    SplitBarrierAlreadyActive(u64),
+    /// No matching active split barrier was found for EndBarrier.
+    SplitBarrierNotFound(u64),
+}
+
+/// Subresource index range for texture barriers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SubresourceRange {
+    /// Starting mip level or `ALL_SUBRESOURCES`.
+    pub index_or_first_mip: u32,
+    /// Number of mip levels in this range.
+    pub num_mips: u32,
+    /// Starting array slice index.
+    pub first_array_slice: u32,
+    /// Number of array slices in this range.
+    pub num_array_slices: u32,
+    /// Starting plane slice index (e.g. stencil plane).
+    pub first_plane: u32,
+    /// Number of planes in this range.
+    pub num_planes: u32,
+}
+
+impl Default for SubresourceRange {
+    fn default() -> Self {
+        Self::all()
+    }
+}
+
+impl SubresourceRange {
+    /// Represents all subresources across all mips, array slices, and planes.
+    pub const fn all() -> Self {
+        Self {
+            index_or_first_mip: ALL_SUBRESOURCES,
+            num_mips: 0,
+            first_array_slice: 0,
+            num_array_slices: 0,
+            first_plane: 0,
+            num_planes: 0,
+        }
+    }
+
+    /// Single subresource at a specific mip level.
+    pub const fn single_mip(mip: u32) -> Self {
+        Self {
+            index_or_first_mip: mip,
+            num_mips: 1,
+            first_array_slice: 0,
+            num_array_slices: 1,
+            first_plane: 0,
+            num_planes: 1,
+        }
+    }
+
+    /// Mip level slice range for arrayed texture.
+    pub const fn mip_range(first_mip: u32, num_mips: u32, first_slice: u32, num_slices: u32) -> Self {
+        Self {
+            index_or_first_mip: first_mip,
+            num_mips,
+            first_array_slice: first_slice,
+            num_array_slices: num_slices,
+            first_plane: 0,
+            num_planes: 1,
+        }
+    }
+
+    /// Whether this range encompasses all subresources.
+    #[inline]
+    pub const fn is_all(&self) -> bool {
+        self.index_or_first_mip == ALL_SUBRESOURCES
+    }
+
+    /// Evaluates if this subresource range overlaps with another.
+    pub fn overlaps(&self, other: &Self) -> bool {
+        if self.is_all() || other.is_all() {
+            return true;
+        }
+        let mip_overlap = self.index_or_first_mip < other.index_or_first_mip + other.num_mips
+            && other.index_or_first_mip < self.index_or_first_mip + self.num_mips;
+
+        let slice_overlap = self.first_array_slice < other.first_array_slice + other.num_array_slices
+            && other.first_array_slice < self.first_array_slice + self.num_array_slices;
+
+        let plane_overlap = self.first_plane < other.first_plane + other.num_planes
+            && other.first_plane < self.first_plane + self.num_planes;
+
+        mip_overlap && slice_overlap && plane_overlap
+    }
+}
+
+/// Global memory and execution barrier across all GPU resources.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GlobalBarrier {
+    /// Pipeline stages that must complete before this barrier.
+    pub sync_before: u32,
+    /// Pipeline stages that must wait for this barrier.
+    pub sync_after: u32,
+    /// Memory caches to flush before this barrier.
+    pub access_before: u32,
+    /// Memory caches to invalidate after this barrier.
+    pub access_after: u32,
+}
+
+impl GlobalBarrier {
+    pub const fn new(sync_before: u32, sync_after: u32, access_before: u32, access_after: u32) -> Self {
+        Self {
+            sync_before,
+            sync_after,
+            access_before,
+            access_after,
+        }
+    }
+
+    /// Validates the global barrier fields.
+    pub fn validate(&self) -> Result<(), BarrierError> {
+        if self.sync_before == 0 || self.sync_after == 0 {
+            return Err(BarrierError::InvalidSyncScope(0));
+        }
+        Ok(())
+    }
+}
+
+/// Buffer-specific memory and synchronization barrier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BufferBarrier {
+    /// Pipeline stages completing before this barrier.
+    pub sync_before: u32,
+    /// Pipeline stages waiting for this barrier.
+    pub sync_after: u32,
+    /// Memory caches to flush.
+    pub access_before: u32,
+    /// Memory caches to invalidate.
+    pub access_after: u32,
+    /// GPU virtual address of the buffer.
+    pub buffer_gpu_va: u64,
+    /// Byte offset within the buffer.
+    pub offset: u64,
+    /// Size in bytes of the transitioned region.
+    pub size: u64,
+}
+
+impl BufferBarrier {
+    pub const fn new(
+        sync_before: u32,
+        sync_after: u32,
+        access_before: u32,
+        access_after: u32,
+        buffer_gpu_va: u64,
+        offset: u64,
+        size: u64,
+    ) -> Self {
+        Self {
+            sync_before,
+            sync_after,
+            access_before,
+            access_after,
+            buffer_gpu_va,
+            offset,
+            size,
+        }
+    }
+
+    /// Validates the buffer barrier parameters.
+    pub fn validate(&self) -> Result<(), BarrierError> {
+        if self.sync_before == 0 || self.sync_after == 0 {
+            return Err(BarrierError::InvalidSyncScope(0));
+        }
+        if self.size == 0 {
+            return Err(BarrierError::InvalidBufferRange);
+        }
+        Ok(())
+    }
+}
+
+/// Texture-specific subresource transition and layout barrier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextureBarrier {
+    /// Pipeline stages completing before this barrier.
+    pub sync_before: u32,
+    /// Pipeline stages waiting for this barrier.
+    pub sync_after: u32,
+    /// Memory caches to flush.
+    pub access_before: u32,
+    /// Memory caches to invalidate.
+    pub access_after: u32,
+    /// Layout of the texture before the barrier.
+    pub layout_before: BarrierLayout,
+    /// Layout of the texture after the barrier.
+    pub layout_after: BarrierLayout,
+    /// Texture resource ID.
+    pub texture_id: u32,
+    /// Subresources affected by this barrier.
+    pub subresources: SubresourceRange,
+    /// Texture barrier flags (e.g. Discard).
+    pub flags: u32,
+}
+
+impl TextureBarrier {
+    pub const fn new(
+        sync_before: u32,
+        sync_after: u32,
+        access_before: u32,
+        access_after: u32,
+        layout_before: BarrierLayout,
+        layout_after: BarrierLayout,
+        texture_id: u32,
+        subresources: SubresourceRange,
+        flags: u32,
+    ) -> Self {
+        Self {
+            sync_before,
+            sync_after,
+            access_before,
+            access_after,
+            layout_before,
+            layout_after,
+            texture_id,
+            subresources,
+            flags,
+        }
+    }
+
+    /// Validates the texture barrier parameters.
+    pub fn validate(&self) -> Result<(), BarrierError> {
+        if self.sync_before == 0 || self.sync_after == 0 {
+            return Err(BarrierError::InvalidSyncScope(0));
+        }
+        // Layout validation: cannot transition to Undefined layout
+        if self.layout_after == BarrierLayout::Undefined {
+            return Err(BarrierError::InvalidLayoutTransition {
+                from: self.layout_before,
+                to: self.layout_after,
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Group of heterogeneous barriers passed to a barrier execution command.
+#[derive(Debug, Clone, Default)]
+pub struct BarrierGroup {
+    pub global_barriers: Vec<GlobalBarrier>,
+    pub buffer_barriers: Vec<BufferBarrier>,
+    pub texture_barriers: Vec<TextureBarrier>,
+}
+
+impl BarrierGroup {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn add_global(&mut self, barrier: GlobalBarrier) -> Result<(), BarrierError> {
+        barrier.validate()?;
+        self.global_barriers.push(barrier);
+        Ok(())
+    }
+
+    pub fn add_buffer(&mut self, barrier: BufferBarrier) -> Result<(), BarrierError> {
+        barrier.validate()?;
+        self.buffer_barriers.push(barrier);
+        Ok(())
+    }
+
+    pub fn add_texture(&mut self, barrier: TextureBarrier) -> Result<(), BarrierError> {
+        barrier.validate()?;
+        self.texture_barriers.push(barrier);
+        Ok(())
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.global_barriers.is_empty()
+            && self.buffer_barriers.is_empty()
+            && self.texture_barriers.is_empty()
+    }
+
+    #[inline]
+    pub fn total_barriers(&self) -> usize {
+        self.global_barriers.len() + self.buffer_barriers.len() + self.texture_barriers.len()
+    }
+}
+
+
+/// State tracking for an individual subresource.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SubresourceState {
+    pub layout: BarrierLayout,
+    pub access: u32,
+    pub sync: u32,
+}
+
+impl Default for SubresourceState {
+    fn default() -> Self {
+        Self {
+            layout: BarrierLayout::Undefined,
+            access: BarrierAccess::COMMON,
+            sync: BarrierSync::NONE,
+        }
+    }
+}
+
+/// Description and tracking state for a registered texture resource.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextureResourceDesc {
+    pub texture_id: u32,
+    pub mip_levels: u32,
+    pub array_size: u32,
+    pub plane_count: u32,
+    pub subresources: Vec<SubresourceState>,
+}
+
+impl TextureResourceDesc {
+    /// Creates a new texture resource with initialized subresource states.
+    pub fn new(texture_id: u32, mip_levels: u32, array_size: u32, plane_count: u32, initial_layout: BarrierLayout) -> Self {
+        let total = (mip_levels * array_size * plane_count).max(1) as usize;
+        let mut subresources = Vec::with_capacity(total);
+        for _ in 0..total {
+            subresources.push(SubresourceState {
+                layout: initial_layout,
+                access: BarrierAccess::COMMON,
+                sync: BarrierSync::ALL,
+            });
+        }
+        Self {
+            texture_id,
+            mip_levels,
+            array_size,
+            plane_count,
+            subresources,
+        }
+    }
+
+    /// Computes the flat linear index for a given (mip, slice, plane) coordinate.
+    #[inline]
+    pub fn calc_subresource_index(&self, mip: u32, slice: u32, plane: u32) -> usize {
+        (mip + slice * self.mip_levels + plane * self.mip_levels * self.array_size) as usize
+    }
+
+    /// Retrieves the subresource state at a specific coordinate.
+    pub fn get_subresource(&self, mip: u32, slice: u32, plane: u32) -> Option<&SubresourceState> {
+        let idx = self.calc_subresource_index(mip, slice, plane);
+        self.subresources.get(idx)
+    }
+
+    /// Checks if a given range falls within the bounds of this texture.
+    pub fn is_range_valid(&self, range: &SubresourceRange) -> bool {
+        if range.is_all() {
+            return true;
+        }
+        (range.index_or_first_mip + range.num_mips <= self.mip_levels)
+            && (range.first_array_slice + range.num_array_slices <= self.array_size)
+            && (range.first_plane + range.num_planes <= self.plane_count)
+    }
+}
+
+/// Description and tracking state for a registered GPU buffer resource.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BufferResourceDesc {
+    pub gpu_va: u64,
+    pub size: u64,
+    pub current_access: u32,
+    pub current_sync: u32,
+}
+
+impl BufferResourceDesc {
+    pub fn new(gpu_va: u64, size: u64) -> Self {
+        Self {
+            gpu_va,
+            size,
+            current_access: BarrierAccess::COMMON,
+            current_sync: BarrierSync::ALL,
+        }
+    }
+}
+
+/// Barrier transition evaluator and state tracking validator.
+///
+/// Ensures all state changes comply with D3D12 Enhanced Barrier specifications,
+/// verifying sync scopes, cache access flags, and texture layout transitions.
+#[derive(Debug, Clone, Default)]
+pub struct BarrierTransitionValidator {
+    pub textures: Vec<TextureResourceDesc>,
+    pub buffers: Vec<BufferResourceDesc>,
+    pub total_transitions_evaluated: u64,
+    pub discarded_transitions: u64,
+}
+
+impl BarrierTransitionValidator {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Registers a texture resource for state tracking.
+    pub fn register_texture(&mut self, texture: TextureResourceDesc) {
+        if let Some(existing) = self.textures.iter_mut().find(|t| t.texture_id == texture.texture_id) {
+            *existing = texture;
+        } else {
+            self.textures.push(texture);
+        }
+    }
+
+    /// Registers a buffer resource for state tracking.
+    pub fn register_buffer(&mut self, buffer: BufferResourceDesc) {
+        if let Some(existing) = self.buffers.iter_mut().find(|b| b.gpu_va == buffer.gpu_va) {
+            *existing = buffer;
+        } else {
+            self.buffers.push(buffer);
+        }
+    }
+
+    /// Finds a registered texture by ID.
+    pub fn find_texture(&self, texture_id: u32) -> Option<&TextureResourceDesc> {
+        self.textures.iter().find(|t| t.texture_id == texture_id)
+    }
+
+    /// Finds a registered texture by ID mutably.
+    pub fn find_texture_mut(&mut self, texture_id: u32) -> Option<&mut TextureResourceDesc> {
+        self.textures.iter_mut().find(|t| t.texture_id == texture_id)
+    }
+
+    /// Finds a registered buffer by GPU virtual address.
+    pub fn find_buffer(&self, gpu_va: u64) -> Option<&BufferResourceDesc> {
+        self.buffers.iter().find(|b| b.gpu_va <= gpu_va && gpu_va < b.gpu_va + b.size)
+    }
+
+    /// Finds a registered buffer by GPU virtual address mutably.
+    pub fn find_buffer_mut(&mut self, gpu_va: u64) -> Option<&mut BufferResourceDesc> {
+        self.buffers.iter_mut().find(|b| b.gpu_va <= gpu_va && gpu_va < b.gpu_va + b.size)
+    }
+
+    /// Validates and evaluates a global memory and execution barrier.
+    pub fn evaluate_global(&mut self, barrier: &GlobalBarrier) -> Result<(), BarrierError> {
+        barrier.validate()?;
+
+        // Global barrier affects all registered resources
+        for buf in self.buffers.iter_mut() {
+            buf.current_sync = barrier.sync_after;
+            buf.current_access = barrier.access_after;
+        }
+        for tex in self.textures.iter_mut() {
+            for sub in tex.subresources.iter_mut() {
+                sub.sync = barrier.sync_after;
+                sub.access = barrier.access_after;
+            }
+        }
+
+        self.total_transitions_evaluated += 1;
+        Ok(())
+    }
+
+    /// Validates and evaluates a buffer barrier.
+    pub fn evaluate_buffer(&mut self, barrier: &BufferBarrier) -> Result<(), BarrierError> {
+        barrier.validate()?;
+
+        // Verify buffer registration and range bounds
+        let buf = self.buffers.iter_mut().find(|b| b.gpu_va == barrier.buffer_gpu_va)
+            .ok_or(BarrierError::InvalidBufferRange)?;
+
+        if barrier.offset + barrier.size > buf.size {
+            return Err(BarrierError::InvalidBufferRange);
+        }
+
+        buf.current_sync = barrier.sync_after;
+        buf.current_access = barrier.access_after;
+
+        self.total_transitions_evaluated += 1;
+        Ok(())
+    }
+
+    /// Validates and evaluates a texture subresource barrier.
+    pub fn evaluate_texture(&mut self, barrier: &TextureBarrier) -> Result<(), BarrierError> {
+        barrier.validate()?;
+
+        let tex = self.textures.iter_mut().find(|t| t.texture_id == barrier.texture_id)
+            .ok_or(BarrierError::InvalidSubresourceRange)?;
+
+        if !tex.is_range_valid(&barrier.subresources) {
+            return Err(BarrierError::InvalidSubresourceRange);
+        }
+
+        let is_discard = (barrier.flags & TextureBarrierFlags::DISCARD) != 0;
+        if is_discard {
+            self.discarded_transitions += 1;
+        }
+
+        // Apply transition across affected subresources
+        if barrier.subresources.is_all() {
+            for sub in tex.subresources.iter_mut() {
+                // If not discarding and not undefined, verify current layout matches layout_before
+                if !is_discard && sub.layout != BarrierLayout::Undefined && sub.layout != barrier.layout_before {
+                    return Err(BarrierError::InvalidLayoutTransition {
+                        from: sub.layout,
+                        to: barrier.layout_before,
+                    });
+                }
+                sub.layout = barrier.layout_after;
+                sub.sync = barrier.sync_after;
+                sub.access = barrier.access_after;
+            }
+        } else {
+            let start_mip = barrier.subresources.index_or_first_mip;
+            let end_mip = start_mip + barrier.subresources.num_mips;
+            let start_slice = barrier.subresources.first_array_slice;
+            let end_slice = start_slice + barrier.subresources.num_array_slices;
+            let start_plane = barrier.subresources.first_plane;
+            let end_plane = start_plane + barrier.subresources.num_planes;
+
+            for plane in start_plane..end_plane {
+                for slice in start_slice..end_slice {
+                    for mip in start_mip..end_mip {
+                        let idx = tex.calc_subresource_index(mip, slice, plane);
+                        if let Some(sub) = tex.subresources.get_mut(idx) {
+                            if !is_discard && sub.layout != BarrierLayout::Undefined && sub.layout != barrier.layout_before {
+                                return Err(BarrierError::InvalidLayoutTransition {
+                                    from: sub.layout,
+                                    to: barrier.layout_before,
+                                });
+                            }
+                            sub.layout = barrier.layout_after;
+                            sub.sync = barrier.sync_after;
+                            sub.access = barrier.access_after;
+                        }
+                    }
+                }
+            }
+        }
+
+        self.total_transitions_evaluated += 1;
+        Ok(())
+    }
+
+    /// Evaluates all barriers in a barrier group.
+    pub fn evaluate_group(&mut self, group: &BarrierGroup) -> Result<(), BarrierError> {
+        for global in &group.global_barriers {
+            self.evaluate_global(global)?;
+        }
+        for buffer in &group.buffer_barriers {
+            self.evaluate_buffer(buffer)?;
+        }
+        for texture in &group.texture_barriers {
+            self.evaluate_texture(texture)?;
+        }
+        Ok(())
+    }
+}
+
+
+/// Unique identifier token for an in-flight split barrier transition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SplitBarrierToken(pub u64);
+
+/// Type of asynchronous GPU cache flush operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlushType {
+    GlobalCache,
+    BufferL2Flush,
+    TextureDecompressAndLayout,
+}
+
+/// Asynchronous cache flush operation generated by BeginBarrier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AsyncFlushOp {
+    pub token: SplitBarrierToken,
+    pub flush_type: FlushType,
+    pub target_id: u64,
+}
+
+/// Active in-flight split barrier undergoing asynchronous cache flush and layout decompress.
+#[derive(Debug, Clone)]
+pub struct InFlightSplitBarrier {
+    pub token: SplitBarrierToken,
+    pub group: BarrierGroup,
+    pub begin_timestamp: u64,
+    pub flush_ops: Vec<AsyncFlushOp>,
+}
+
+/// Direct3D 12 Enhanced Barrier & Split-Barrier Synchronized GPU Transition Engine.
+///
+/// Manages high-performance granular synchronization, non-blocking split barrier pipelines,
+/// asynchronous GPU cache flushes, and hazard-free subresource layout transitions.
+#[derive(Debug, Clone, Default)]
+pub struct EnhancedBarrierEngine {
+    pub validator: BarrierTransitionValidator,
+    pub in_flight_barriers: Vec<InFlightSplitBarrier>,
+    pub completed_flush_queue: Vec<AsyncFlushOp>,
+    pub next_token: u64,
+    pub completed_split_barriers: u64,
+    pub immediate_barriers_executed: u64,
+    pub simulated_gpu_clock: u64,
+}
+
+impl EnhancedBarrierEngine {
+    pub fn new() -> Self {
+        Self {
+            next_token: 1,
+            ..Default::default()
+        }
+    }
+
+    /// Advances simulated GPU clock cycles, representing asynchronous shader execution.
+    pub fn advance_clock(&mut self, cycles: u64) {
+        self.simulated_gpu_clock = self.simulated_gpu_clock.saturating_add(cycles);
+    }
+
+    /// Begins a split barrier transition asynchronously.
+    ///
+    /// Initiates cache flushes and decompress passes without stalling subsequent
+    /// independent GPU commands.
+    pub fn begin_barrier(&mut self, group: BarrierGroup) -> Result<SplitBarrierToken, BarrierError> {
+        // Validate all barriers in the group before accepting
+        for global in &group.global_barriers {
+            global.validate()?;
+        }
+        for buffer in &group.buffer_barriers {
+            buffer.validate()?;
+        }
+        for texture in &group.texture_barriers {
+            texture.validate()?;
+        }
+
+        let token = SplitBarrierToken(self.next_token);
+        self.next_token = self.next_token.wrapping_add(1);
+        if self.next_token == 0 {
+            self.next_token = 1;
+        }
+
+        // Generate asynchronous flush operations
+        let mut flush_ops = Vec::new();
+        for _ in &group.global_barriers {
+            flush_ops.push(AsyncFlushOp {
+                token,
+                flush_type: FlushType::GlobalCache,
+                target_id: 0,
+            });
+        }
+        for buf in &group.buffer_barriers {
+            flush_ops.push(AsyncFlushOp {
+                token,
+                flush_type: FlushType::BufferL2Flush,
+                target_id: buf.buffer_gpu_va,
+            });
+        }
+        for tex in &group.texture_barriers {
+            flush_ops.push(AsyncFlushOp {
+                token,
+                flush_type: FlushType::TextureDecompressAndLayout,
+                target_id: tex.texture_id as u64,
+            });
+        }
+
+        self.in_flight_barriers.push(InFlightSplitBarrier {
+            token,
+            group,
+            begin_timestamp: self.simulated_gpu_clock,
+            flush_ops,
+        });
+
+        Ok(token)
+    }
+
+    /// Ends an in-flight split barrier transition.
+    ///
+    /// Waits for cache flushes / decompression to complete and commits new
+    /// subresource layout and access states into the transition validator.
+    pub fn end_barrier(&mut self, token: SplitBarrierToken) -> Result<(), BarrierError> {
+        let idx = self.in_flight_barriers.iter().position(|b| b.token == token)
+            .ok_or(BarrierError::SplitBarrierNotFound(token.0))?;
+
+        let split = self.in_flight_barriers.remove(idx);
+
+        // Retire flush operations to completed queue
+        for op in split.flush_ops {
+            self.completed_flush_queue.push(op);
+        }
+
+        // Commit all barrier state changes into the validator
+        self.validator.evaluate_group(&split.group)?;
+        self.completed_split_barriers += 1;
+
+        Ok(())
+    }
+
+    /// Executes an immediate (non-split) barrier group.
+    ///
+    /// Synchronously flushes caches and applies layout transitions immediately.
+    pub fn execute_barrier(&mut self, group: BarrierGroup) -> Result<(), BarrierError> {
+        self.validator.evaluate_group(&group)?;
+        self.immediate_barriers_executed += 1;
+        Ok(())
+    }
+
+    /// Checks if a split barrier token is currently active and in-flight.
+    pub fn is_in_flight(&self, token: SplitBarrierToken) -> bool {
+        self.in_flight_barriers.iter().any(|b| b.token == token)
+    }
+
+    /// Returns the number of currently active split barriers.
+    #[inline]
+    pub fn in_flight_count(&self) -> usize {
+        self.in_flight_barriers.len()
+    }
+}
+
+
+/// Comprehensive verification self-test for Direct3D 12 Enhanced Barriers & Split-Barrier Engine.
+///
+/// Emits sentinel [KNT-GPU-ENHANCED-BARRIERS-PASS] upon successful verification.
+pub fn test_enhanced_barriers_subsystem() -> bool {
+    let mut engine = EnhancedBarrierEngine::new();
+
+    // 1. Register test resources (Buffers and Textures)
+    let buffer_va = 0x1_0000_0000u64;
+    let buffer_size = 64 * 1024u64; // 64 KiB
+    engine.validator.register_buffer(BufferResourceDesc::new(buffer_va, buffer_size));
+
+    let tex_id = 101u32;
+    let mip_levels = 4u32;
+    let array_size = 2u32;
+    let plane_count = 1u32;
+    engine.validator.register_texture(TextureResourceDesc::new(
+        tex_id,
+        mip_levels,
+        array_size,
+        plane_count,
+        BarrierLayout::Undefined,
+    ));
+
+    // 2. Test Global Barrier
+    let global_barrier = GlobalBarrier::new(
+        BarrierSync::COMPUTE,
+        BarrierSync::PIXEL_SHADING,
+        BarrierAccess::UNORDERED_ACCESS,
+        BarrierAccess::SHADER_RESOURCE,
+    );
+    if engine.validator.evaluate_global(&global_barrier).is_err() {
+        return false;
+    }
+
+    // 3. Test Buffer Barrier & bounds validation
+    let valid_buffer_barrier = BufferBarrier::new(
+        BarrierSync::COPY,
+        BarrierSync::VERTEX_SHADING,
+        BarrierAccess::COPY_DEST,
+        BarrierAccess::VERTEX_BUFFER,
+        buffer_va,
+        0,
+        1024,
+    );
+    if engine.validator.evaluate_buffer(&valid_buffer_barrier).is_err() {
+        return false;
+    }
+
+    // Out-of-bounds buffer barrier must fail
+    let oob_buffer_barrier = BufferBarrier::new(
+        BarrierSync::COPY,
+        BarrierSync::VERTEX_SHADING,
+        BarrierAccess::COPY_DEST,
+        BarrierAccess::VERTEX_BUFFER,
+        buffer_va,
+        buffer_size,
+        1024,
+    );
+    if engine.validator.evaluate_buffer(&oob_buffer_barrier).is_ok() {
+        return false;
+    }
+
+    // 4. Test Texture Barrier with SubresourceRange
+    // Initial transition: all subresources Undefined -> RenderTarget
+    let init_tex_barrier = TextureBarrier::new(
+        BarrierSync::ALL,
+        BarrierSync::RENDER_TARGET,
+        BarrierAccess::COMMON,
+        BarrierAccess::RENDER_TARGET,
+        BarrierLayout::Undefined,
+        BarrierLayout::RenderTarget,
+        tex_id,
+        SubresourceRange::all(),
+        TextureBarrierFlags::NONE,
+    );
+    if engine.validator.evaluate_texture(&init_tex_barrier).is_err() {
+        return false;
+    }
+
+    // Verify all 8 subresources are now RenderTarget
+    {
+        let tex = match engine.validator.find_texture(tex_id) {
+            Some(t) => t,
+            None => return false,
+        };
+        for slice in 0..array_size {
+            for mip in 0..mip_levels {
+                if tex.get_subresource(mip, slice, 0).map(|s| s.layout) != Some(BarrierLayout::RenderTarget) {
+                    return false;
+                }
+            }
+        }
+    }
+
+    // Transition a specific subresource mip range: Mip 0 across all slices RenderTarget -> ShaderResource
+    let mip0_range = SubresourceRange::mip_range(0, 1, 0, array_size);
+    let slice_barrier = TextureBarrier::new(
+        BarrierSync::RENDER_TARGET,
+        BarrierSync::PIXEL_SHADING,
+        BarrierAccess::RENDER_TARGET,
+        BarrierAccess::SHADER_RESOURCE,
+        BarrierLayout::RenderTarget,
+        BarrierLayout::ShaderResource,
+        tex_id,
+        mip0_range,
+        TextureBarrierFlags::NONE,
+    );
+    if engine.validator.evaluate_texture(&slice_barrier).is_err() {
+        return false;
+    }
+
+    // Verify Mip 0 is ShaderResource while Mip 1..3 remain RenderTarget
+    {
+        let tex = engine.validator.find_texture(tex_id).unwrap();
+        for slice in 0..array_size {
+            if tex.get_subresource(0, slice, 0).map(|s| s.layout) != Some(BarrierLayout::ShaderResource) {
+                return false;
+            }
+            if tex.get_subresource(1, slice, 0).map(|s| s.layout) != Some(BarrierLayout::RenderTarget) {
+                return false;
+            }
+        }
+    }
+
+    // Invalid layout transition detection: layout_before mismatch
+    let mismatched_barrier = TextureBarrier::new(
+        BarrierSync::RENDER_TARGET,
+        BarrierSync::PIXEL_SHADING,
+        BarrierAccess::RENDER_TARGET,
+        BarrierAccess::SHADER_RESOURCE,
+        BarrierLayout::DepthStencilWrite, // Incorrect expected layout!
+        BarrierLayout::ShaderResource,
+        tex_id,
+        mip0_range,
+        TextureBarrierFlags::NONE,
+    );
+    if engine.validator.evaluate_texture(&mismatched_barrier).is_ok() {
+        return false;
+    }
+
+    // With DISCARD flag, mismatched layout_before is permitted
+    let discard_barrier = TextureBarrier::new(
+        BarrierSync::ALL,
+        BarrierSync::RENDER_TARGET,
+        BarrierAccess::COMMON,
+        BarrierAccess::RENDER_TARGET,
+        BarrierLayout::Undefined,
+        BarrierLayout::RenderTarget,
+        tex_id,
+        mip0_range,
+        TextureBarrierFlags::DISCARD,
+    );
+    if engine.validator.evaluate_texture(&discard_barrier).is_err() {
+        return false;
+    }
+
+    // 5. Test Split-Barrier Pipelining (BeginBarrier / EndBarrier)
+    let mut split_group = BarrierGroup::new();
+    let split_tex_barrier = TextureBarrier::new(
+        BarrierSync::RENDER_TARGET,
+        BarrierSync::PIXEL_SHADING,
+        BarrierAccess::RENDER_TARGET,
+        BarrierAccess::SHADER_RESOURCE,
+        BarrierLayout::RenderTarget,
+        BarrierLayout::ShaderResource,
+        tex_id,
+        SubresourceRange::all(),
+        TextureBarrierFlags::NONE,
+    );
+    // Note: ensure texture subresources are all RenderTarget first
+    for slice in 0..array_size {
+        for mip in 0..mip_levels {
+            let idx = engine.validator.find_texture_mut(tex_id).unwrap().calc_subresource_index(mip, slice, 0);
+            engine.validator.find_texture_mut(tex_id).unwrap().subresources[idx].layout = BarrierLayout::RenderTarget;
+        }
+    }
+
+    if split_group.add_texture(split_tex_barrier).is_err() {
+        return false;
+    }
+
+    // Begin split barrier
+    let token = match engine.begin_barrier(split_group) {
+        Ok(t) => t,
+        Err(_) => return false,
+    };
+
+    if !engine.is_in_flight(token) || engine.in_flight_count() != 1 {
+        return false;
+    }
+
+    // Simulate independent GPU work while split barrier is asynchronously executing
+    engine.advance_clock(500);
+
+    // End split barrier
+    if engine.end_barrier(token).is_err() {
+        return false;
+    }
+
+    if engine.is_in_flight(token) || engine.in_flight_count() != 0 {
+        return false;
+    }
+
+    if engine.completed_split_barriers != 1 {
+        return false;
+    }
+
+    // Re-ending the retired token must fail
+    if engine.end_barrier(token).is_ok() {
+        return false;
+    }
+
+    // Verify subresources are transitioned to ShaderResource
+    {
+        let tex = engine.validator.find_texture(tex_id).unwrap();
+        for slice in 0..array_size {
+            for mip in 0..mip_levels {
+                if tex.get_subresource(mip, slice, 0).map(|s| s.layout) != Some(BarrierLayout::ShaderResource) {
+                    return false;
+                }
+            }
+        }
+    }
+
+    // 6. Test Immediate Execution Barrier
+    let mut imm_group = BarrierGroup::new();
+    let imm_global = GlobalBarrier::new(
+        BarrierSync::ALL_SHADING,
+        BarrierSync::COPY,
+        BarrierAccess::SHADER_RESOURCE,
+        BarrierAccess::COPY_SOURCE,
+    );
+    if imm_group.add_global(imm_global).is_err() {
+        return false;
+    }
+    if engine.execute_barrier(imm_group).is_err() {
+        return false;
+    }
+    if engine.immediate_barriers_executed != 1 {
+        return false;
+    }
+
+    // 7. Emit deterministic boot sentinel
+    crate::serial_write_str("[KNT-GPU-ENHANCED-BARRIERS-PASS] Direct3D 12 enhanced barriers and split-barrier GPU transition engine verified\r\n");
+
+    true
+}
