@@ -147,3 +147,93 @@ pub fn test_audio_eq_and_bass_subsystem() -> bool {
     crate::serial_write_str("[KNT-AUDIO-EQ-PASS] Real-time game audio equalizer and dynamic bass booster operational\r\n");
     true
 }
+
+/// Verification self-test suite for Zero-Copy Shared-Memory Audio Client Protocol & Real-Time Waveform Mixer Ring.
+pub fn test_audio_client_protocol_subsystem() -> bool {
+    crate::serial_write_str("[KNT-AUDIO-CLIENT-TEST] Running Shared-Memory Audio Client Protocol & Mixer verification suite...\r\n");
+
+    // 1. Verify lock-free SPSC circular ring buffer and channel gain computation
+    if !client_ring::test_audio_client_ring_and_channel() {
+        crate::serial_write_str("[KNT-PANIC] Audio client ring and channel verification failed!\r\n");
+        return false;
+    }
+    crate::serial_write_str("  * Lock-free SPSC shared-memory ring buffer and panning gain computation verified\r\n");
+
+    // 2. Verify sub-millisecond audio frame pacing and underrun starvation recovery
+    if !client_ring::test_audio_frame_pacing_and_underrun_handler() {
+        crate::serial_write_str("[KNT-PANIC] Audio frame pacing and underrun handler verification failed!\r\n");
+        return false;
+    }
+    crate::serial_write_str("  * Sub-millisecond audio frame pacing and underrun starvation recovery verified\r\n");
+
+    // 3. Verify SIMD-accelerated multi-stream float-to-PCM mixer, soft clipping, and TPDF dithering
+    if !simd_mix::test_simd_mixer_and_tpdf_dithering() {
+        crate::serial_write_str("[KNT-PANIC] SIMD mixer and TPDF dithering verification failed!\r\n");
+        return false;
+    }
+    crate::serial_write_str("  * SIMD multi-stream float-to-PCM mixer, soft clipping, and TPDF dithering verified\r\n");
+
+    // 4. End-to-end multi-channel mixing stress test (4 concurrent clients)
+    let mut manager = client_ring::AudioClientManager::new(48, 0);
+    let mut mixer = simd_mix::AudioSimdMixer::new();
+
+    let c_sfx = match manager.register_client("sfx") {
+        Some(id) => id,
+        None => return false,
+    };
+    let c_voice = match manager.register_client("voice") {
+        Some(id) => id,
+        None => return false,
+    };
+    let c_music = match manager.register_client("music") {
+        Some(id) => id,
+        None => return false,
+    };
+    let c_ui = match manager.register_client("ui") {
+        Some(id) => id,
+        None => return false,
+    };
+
+    // Configure volumes and panning
+    if let Some(c) = manager.get_client_mut(c_sfx) {
+        c.volume = 0.8;
+        c.pan = -0.5;
+        let frames = [client_ring::AudioFrame::new(0.4, 0.4); 144];
+        c.ring.write_frames(&frames);
+    }
+    if let Some(c) = manager.get_client_mut(c_voice) {
+        c.volume = 1.0;
+        c.pan = 0.0;
+        let frames = [client_ring::AudioFrame::new(0.3, 0.3); 144];
+        c.ring.write_frames(&frames);
+    }
+    if let Some(c) = manager.get_client_mut(c_music) {
+        c.volume = 0.6;
+        c.pan = 0.5;
+        let frames = [client_ring::AudioFrame::new(0.2, 0.2); 144];
+        c.ring.write_frames(&frames);
+    }
+    if let Some(c) = manager.get_client_mut(c_ui) {
+        c.volume = 0.4;
+        c.pan = 0.0;
+        let frames = [client_ring::AudioFrame::new(0.1, 0.1); 144];
+        c.ring.write_frames(&frames);
+    }
+
+    // Run 3 consecutive mixer periods (48 frames each = 144 frames total)
+    let mut mixed_output = [0i16; 96]; // 48 stereo frames * 2 channels
+    for _ in 0..3 {
+        let mixed = mixer.mix_clients(&mut manager, 48, &mut mixed_output);
+        if mixed != 48 {
+            return false;
+        }
+    }
+
+    if mixer.total_mixed_frames() != 144 || mixer.peak_amplitude() == 0.0 {
+        return false;
+    }
+
+    crate::serial_write_str("  * End-to-end 4-channel concurrent audio streaming and real-time mixing verified\r\n");
+    crate::serial_write_str("[KNT-AUDIO-CLIENT-PASS] Zero-copy shared-memory audio client protocol and real-time mixer operational\r\n");
+    true
+}

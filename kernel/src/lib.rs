@@ -447,6 +447,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Game audio equalizer and bass booster self-test failed!\r\n");
     }
 
+    // Initialize and verify Zero-Copy Shared-Memory Audio Client Protocol & Real-Time Waveform Mixer Ring
+    if !audio::test_audio_client_protocol_subsystem() {
+        serial_write_str("[KNT-PANIC] Audio client protocol and mixer ring self-test failed!\r\n");
+    }
+
     // Initialize and verify Hardware RNG & ChaCha20 Cryptographic Entropy Pool
     crypto::init_kernel_rng();
     if !crypto::test_crypto_rng_subsystem() {
