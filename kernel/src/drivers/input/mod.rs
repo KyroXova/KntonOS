@@ -3,10 +3,12 @@
 pub mod imu;
 pub mod gamepad;
 pub mod waveform;
+pub mod haptic;
 
 pub use imu::*;
 pub use gamepad::*;
 pub use waveform::*;
+pub use haptic::*;
 
 use crate::serial_write_str;
 
