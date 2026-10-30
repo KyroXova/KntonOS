@@ -539,3 +539,263 @@ pub fn verify_dual_imu_fusion_and_gravity_isolation() -> bool {
 
     true
 }
+
+// -----------------------------------------------------------------------------
+// Commit 3: Zero-Velocity Update (ZUPT) & Sub-Millimeter Dead Reckoning Tracker
+// -----------------------------------------------------------------------------
+
+/// Zero-Velocity Update (ZUPT) detector state machine.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ZuptDetector {
+    /// Angular velocity still threshold in rad/s (nominally 0.05 rad/s ~ 2.8 deg/s).
+    pub gyro_still_threshold_rad_s: f32,
+    /// Dynamic linear acceleration still threshold in m/s^2 (nominally 0.15 m/s^2).
+    pub accel_still_threshold_mss: f32,
+    /// Number of consecutive stationary samples observed.
+    pub stationary_counter: u32,
+    /// Required stationary samples to trigger ZUPT lock (nominally 20 samples = 20ms).
+    pub trigger_window_samples: u32,
+    /// True if handheld chassis is currently classified as stationary.
+    pub is_stationary: bool,
+    /// Online bias adaptation learning rate during stationary periods.
+    pub bias_learning_rate: f32,
+}
+
+impl ZuptDetector {
+    /// Creates a new ZUPT detector with standard 1000 Hz parameters.
+    pub const fn new() -> Self {
+        Self {
+            gyro_still_threshold_rad_s: 0.05,
+            accel_still_threshold_mss: 0.15,
+            stationary_counter: 0,
+            trigger_window_samples: 20,
+            is_stationary: true,
+            bias_learning_rate: 0.005,
+        }
+    }
+
+    /// Evaluates current kinematics and returns true if ZUPT is active.
+    pub fn update(&mut self, kinematics: &FusedKinematics) -> bool {
+        let gyro_mag = sqrt_f32(
+            kinematics.angular_velocity_rad_s[0] * kinematics.angular_velocity_rad_s[0]
+                + kinematics.angular_velocity_rad_s[1] * kinematics.angular_velocity_rad_s[1]
+                + kinematics.angular_velocity_rad_s[2] * kinematics.angular_velocity_rad_s[2],
+        );
+
+        let dynamic_accel_mag = sqrt_f32(
+            kinematics.dynamic_linear_accel_mss[0] * kinematics.dynamic_linear_accel_mss[0]
+                + kinematics.dynamic_linear_accel_mss[1] * kinematics.dynamic_linear_accel_mss[1]
+                + kinematics.dynamic_linear_accel_mss[2] * kinematics.dynamic_linear_accel_mss[2],
+        );
+
+        let is_still = gyro_mag < self.gyro_still_threshold_rad_s
+            && dynamic_accel_mag < self.accel_still_threshold_mss;
+
+        if is_still {
+            self.stationary_counter = self.stationary_counter.saturating_add(1);
+            if self.stationary_counter >= self.trigger_window_samples {
+                self.is_stationary = true;
+            }
+        } else {
+            self.stationary_counter = 0;
+            self.is_stationary = false;
+        }
+
+        self.is_stationary
+    }
+}
+
+/// Instantaneous dead-reckoning tracking snapshot.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DeadReckoningState {
+    /// 3D Position in meters [X, Y, Z] relative to origin.
+    pub position_m: [f32; 3],
+    /// 3D Linear velocity in m/s [X, Y, Z].
+    pub velocity_m_s: [f32; 3],
+    /// 3D Dynamic linear acceleration in m/s^2 [X, Y, Z].
+    pub linear_accel_mss: [f32; 3],
+    /// Orientation quaternion.
+    pub orientation: SpatialQuaternion,
+    /// Euler angles in radians (Pitch, Roll, Yaw).
+    pub euler_angles_rad: (f32, f32, f32),
+    /// True if ZUPT zero-velocity clamp is actively engaged.
+    pub is_zupt_locked: bool,
+}
+
+/// 1000 Hz Sub-Millimeter Dual-IMU Dead Reckoning Engine.
+pub struct DualImuDeadReckoningEngine {
+    /// Sensor fusion filter.
+    pub fusion: DualImuFusionFilter,
+    /// Zero-Velocity Update state machine.
+    pub zupt: ZuptDetector,
+    /// Integrated 3D position in meters [X, Y, Z].
+    pub position_m: [f32; 3],
+    /// Integrated 3D velocity in m/s [X, Y, Z].
+    pub velocity_m_s: [f32; 3],
+    /// Leaky velocity damping coefficient (prevents unbounded integration drift).
+    pub velocity_damping: f32,
+    /// Most recent state.
+    pub state: DeadReckoningState,
+}
+
+impl DualImuDeadReckoningEngine {
+    /// Creates a new dead-reckoning engine initialized with standard handheld topology.
+    pub const fn new(topology: DualImuTopology) -> Self {
+        Self {
+            fusion: DualImuFusionFilter::new(topology),
+            zupt: ZuptDetector::new(),
+            position_m: [0.0, 0.0, 0.0],
+            velocity_m_s: [0.0, 0.0, 0.0],
+            velocity_damping: 0.995, // Leaky integrator damping
+            state: DeadReckoningState {
+                position_m: [0.0, 0.0, 0.0],
+                velocity_m_s: [0.0, 0.0, 0.0],
+                linear_accel_mss: [0.0, 0.0, 0.0],
+                orientation: SpatialQuaternion::identity(),
+                euler_angles_rad: (0.0, 0.0, 0.0),
+                is_zupt_locked: true,
+            },
+        }
+    }
+
+    /// Processes a single 1000 Hz dual-IMU discrete update step.
+    pub fn process_step(
+        &mut self,
+        left: &PhysicalImuSample,
+        right: &PhysicalImuSample,
+    ) -> DeadReckoningState {
+        let dt = self.fusion.topology.dt_s;
+
+        // 1. Run 1000 Hz dual-IMU sensor fusion & gravity isolation
+        let kinematics = self.fusion.update(left, right);
+
+        // 2. Evaluate Zero-Velocity Update (ZUPT)
+        let is_stationary = self.zupt.update(&kinematics);
+
+        if is_stationary {
+            // ZUPT clamp: force velocity to zero
+            self.velocity_m_s = [0.0, 0.0, 0.0];
+
+            // Online bias adaptation during stationary resting phases:
+            // Slowly cancel residual accelerometer & gyro biases
+            let alpha = self.zupt.bias_learning_rate;
+            self.fusion.gyro_bias[0] += kinematics.angular_velocity_rad_s[0] * alpha;
+            self.fusion.gyro_bias[1] += kinematics.angular_velocity_rad_s[1] * alpha;
+            self.fusion.gyro_bias[2] += kinematics.angular_velocity_rad_s[2] * alpha;
+
+            self.fusion.accel_bias[0] += kinematics.dynamic_linear_accel_mss[0] * alpha;
+            self.fusion.accel_bias[1] += kinematics.dynamic_linear_accel_mss[1] * alpha;
+            self.fusion.accel_bias[2] += kinematics.dynamic_linear_accel_mss[2] * alpha;
+        } else {
+            // Dynamic motion: integrate world-frame linear acceleration into velocity
+            let a_w = kinematics.world_linear_accel_mss;
+
+            self.velocity_m_s[0] = (self.velocity_m_s[0] + a_w[0] * dt) * self.velocity_damping;
+            self.velocity_m_s[1] = (self.velocity_m_s[1] + a_w[1] * dt) * self.velocity_damping;
+            self.velocity_m_s[2] = (self.velocity_m_s[2] + a_w[2] * dt) * self.velocity_damping;
+
+            // Integrate velocity into position
+            self.position_m[0] += self.velocity_m_s[0] * dt;
+            self.position_m[1] += self.velocity_m_s[1] * dt;
+            self.position_m[2] += self.velocity_m_s[2] * dt;
+        }
+
+        let euler = kinematics.orientation.to_euler_angles();
+
+        self.state = DeadReckoningState {
+            position_m: self.position_m,
+            velocity_m_s: self.velocity_m_s,
+            linear_accel_mss: kinematics.world_linear_accel_mss,
+            orientation: kinematics.orientation,
+            euler_angles_rad: euler,
+            is_zupt_locked: is_stationary,
+        };
+
+        self.state
+    }
+
+    /// Resets integrated trajectory position and velocity to origin.
+    pub fn reset_trajectory(&mut self) {
+        self.position_m = [0.0, 0.0, 0.0];
+        self.velocity_m_s = [0.0, 0.0, 0.0];
+        self.state.position_m = [0.0, 0.0, 0.0];
+        self.state.velocity_m_s = [0.0, 0.0, 0.0];
+    }
+
+    /// Returns position in millimeters [X, Y, Z].
+    pub fn get_position_mm(&self) -> [f32; 3] {
+        [
+            self.position_m[0] * 1000.0,
+            self.position_m[1] * 1000.0,
+            self.position_m[2] * 1000.0,
+        ]
+    }
+}
+
+/// Verification helper for Commit 3 ZUPT drift cancellation and dead reckoning algorithms.
+pub fn verify_zupt_drift_cancellation_and_dead_reckoning() -> bool {
+    let topo = DualImuTopology::standard_handheld();
+    let mut engine = DualImuDeadReckoningEngine::new(topo);
+
+    // 1. Stationary resting test: simulate 1000 steps (1 full second at 1000 Hz)
+    // with static +1g gravity on Z and tiny residual noise on X/Y (0.01 m/s^2)
+    let s_static = PhysicalImuSample {
+        location: ImuLocation::LeftGrip,
+        accel_mss: [0.01, 0.01, GRAVITY_MSS],
+        gyro_rad_s: [0.001, 0.001, 0.0],
+        temp_c: 25.0,
+        timestamp_us: 1000,
+    };
+
+    for _ in 0..1000 {
+        engine.process_step(&s_static, &s_static);
+    }
+
+    // ZUPT must be actively locked
+    if !engine.state.is_zupt_locked {
+        return false;
+    }
+    // Velocity must be clamped to exactly 0.0
+    if engine.state.velocity_m_s[0] != 0.0
+        || engine.state.velocity_m_s[1] != 0.0
+        || engine.state.velocity_m_s[2] != 0.0
+    {
+        return false;
+    }
+    // Sub-millimeter constraint: integrated position drift after 1 second of resting must be < 0.5 mm
+    let pos_mm = engine.get_position_mm();
+    let dist_mm = sqrt_f32(pos_mm[0] * pos_mm[0] + pos_mm[1] * pos_mm[1] + pos_mm[2] * pos_mm[2]);
+    if dist_mm > 0.5 {
+        return false;
+    }
+
+    // 2. Dynamic translational pulse test: simulate a 100ms forward push gesture (+1.5 m/s^2 along Y)
+    engine.reset_trajectory();
+
+    let s_pulse = PhysicalImuSample {
+        location: ImuLocation::LeftGrip,
+        accel_mss: [0.0, 1.5, GRAVITY_MSS],
+        gyro_rad_s: [0.0, 0.0, 0.0],
+        temp_c: 25.0,
+        timestamp_us: 2000,
+    };
+
+    for _ in 0..100 {
+        engine.process_step(&s_pulse, &s_pulse);
+    }
+
+    // During active push, ZUPT must unlock
+    if engine.state.is_zupt_locked {
+        return false;
+    }
+    // Velocity should be positive along Y
+    if engine.state.velocity_m_s[1] <= 0.05 {
+        return false;
+    }
+    // Position should have translated forward along Y
+    if engine.position_m[1] <= 0.001 {
+        return false;
+    }
+
+    true
+}
