@@ -224,6 +224,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Hardware VRR and dynamic timing self-test failed!\r\n");
     }
 
+    // Initialize and verify Native Hardware Display Scanout Rotation & Panel Orientation Subsystem
+    if !drivers::gpu::test_display_rotation_and_panel_subsystem() {
+        serial_write_str("[KNT-PANIC] Display scanout rotation and panel orientation self-test failed!\r\n");
+    }
+
     // Initialize and verify AHCI SATA Persistent Storage Subsystem
     if !drivers::storage::test_ahci_sata_subsystem() {
         serial_write_str("[KNT-PANIC] AHCI SATA storage subsystem self-test failed!\r\n");
