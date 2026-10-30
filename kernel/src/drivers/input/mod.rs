@@ -6,6 +6,7 @@ pub mod waveform;
 pub mod haptic;
 pub mod fast_ring;
 pub mod jitter;
+pub mod gyro_aim;
 
 pub use imu::*;
 pub use gamepad::*;
@@ -13,6 +14,7 @@ pub use waveform::*;
 pub use haptic::*;
 pub use fast_ring::*;
 pub use jitter::*;
+pub use gyro_aim::*;
 
 use crate::serial_write_str;
 
