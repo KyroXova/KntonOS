@@ -568,3 +568,199 @@ impl LowLatencyPacingEngine {
         Ok(())
     }
 }
+
+
+// -----------------------------------------------------------------------------
+// Verification Self-Test Suite
+// -----------------------------------------------------------------------------
+
+/// Comprehensive verification self-test for Direct3D 12 Low-Latency Frame Pacing Engine.
+///
+/// Emits sentinel [KNT-GPU-FRAME-PACING-PASS] upon successful verification.
+pub fn test_frame_pacing_subsystem() -> bool {
+    // 1. Verify latency marker recording and frame duration breakdown
+    let mut ring = FrameTimelineRing::new(16);
+    let f0 = ring.allocate_frame();
+
+    let sim_start = 1_000_000u64;
+    let sim_end = 3_000_000u64;
+    let render_start = 3_100_000u64;
+    let render_end = 5_000_000u64;
+    let driver_sub = 5_200_000u64;
+    let present_start = 5_300_000u64;
+    let present_end = 6_000_000u64;
+    let gpu_start = 6_500_000u64;
+    let gpu_end = 12_000_000u64;
+
+    if ring.set_marker(f0, LatencyMarkerType::SimulationStart, sim_start).is_err() {
+        return false;
+    }
+    if ring.set_marker(f0, LatencyMarkerType::SimulationEnd, sim_end).is_err() {
+        return false;
+    }
+    if ring.set_marker(f0, LatencyMarkerType::RenderSubmitStart, render_start).is_err() {
+        return false;
+    }
+    if ring.set_marker(f0, LatencyMarkerType::RenderSubmitEnd, render_end).is_err() {
+        return false;
+    }
+    if ring.set_marker(f0, LatencyMarkerType::DriverSubmit, driver_sub).is_err() {
+        return false;
+    }
+    if ring.set_marker(f0, LatencyMarkerType::PresentStart, present_start).is_err() {
+        return false;
+    }
+    if ring.set_marker(f0, LatencyMarkerType::PresentEnd, present_end).is_err() {
+        return false;
+    }
+    if ring.set_marker(f0, LatencyMarkerType::GpuRenderStart, gpu_start).is_err() {
+        return false;
+    }
+    if ring.set_marker(f0, LatencyMarkerType::GpuRenderEnd, gpu_end).is_err() {
+        return false;
+    }
+
+    let frame = match ring.get_frame(f0) {
+        Some(f) => f,
+        None => return false,
+    };
+
+    if frame.status != FrameStatus::Completed {
+        return false;
+    }
+
+    let bd = frame.breakdown();
+    if bd.sim_time_ns != 2_000_000
+        || bd.render_time_ns != 1_900_000
+        || bd.present_time_ns != 700_000
+        || bd.cpu_total_ns != 5_000_000
+        || bd.gpu_render_time_ns != 5_500_000
+        || bd.end_to_end_latency_ns != 11_000_000
+    {
+        return false;
+    }
+
+    // 2. Verify Proactive CPU Sleep Pacing (Reflex / Anti-Lag Mode)
+    let mut engine = LowLatencyPacingEngine::new(32, PacingMode::LowLatencyReflex, 144.0);
+
+    // Prime moving averages: CPU takes 4ms, GPU takes 10ms (GPU-bound bottleneck)
+    engine.regulator.moving_avg_cpu_time_ns = 4_000_000;
+    engine.regulator.moving_avg_gpu_time_ns = 10_000_000;
+
+    // Simulate Frame 0 execution
+    let (frame0_id, sleep0) = match engine.begin_frame() {
+        Ok(res) => res,
+        Err(_) => return false,
+    };
+    if sleep0 != 0 {
+        return false; // First frame has no GPU work in-flight, so 0 sleep
+    }
+
+    engine.advance_clock(2_000_000);
+    if engine.mark_simulation_end(frame0_id).is_err() {
+        return false;
+    }
+
+    engine.advance_clock(100_000);
+    if engine.mark_render_submit_start(frame0_id).is_err() {
+        return false;
+    }
+
+    engine.advance_clock(1_900_000);
+    if engine.mark_render_submit_end(frame0_id).is_err() {
+        return false;
+    }
+
+    if engine.mark_driver_submit(frame0_id).is_err() {
+        return false;
+    }
+
+    if engine.mark_present_start(frame0_id).is_err() {
+        return false;
+    }
+
+    engine.advance_clock(500_000);
+    let fence0 = 100u64;
+    if engine.mark_present_end(frame0_id, fence0).is_err() {
+        return false;
+    }
+
+    if engine.in_flight_frames_count != 1 {
+        return false;
+    }
+
+    // Frame 1 attempts to begin while GPU is busy with Frame 0:
+    // Pacing regulator must inject proactive sleep so CPU completes precisely as GPU finishes Frame 0!
+    let (frame1_id, sleep1) = match engine.begin_frame() {
+        Ok(res) => res,
+        Err(_) => return false,
+    };
+
+    if sleep1 == 0 {
+        return false; // Proactive sleep must be > 0 to prevent queue backlog
+    }
+    if engine.regulator.total_proactive_sleep_ns == 0 {
+        return false;
+    }
+
+    // Simulate GPU finishing Frame 0
+    let f0_gpu_start = 5_000_000u64;
+    let f0_gpu_end = 15_000_000u64;
+    if engine.signal_gpu_completion(frame0_id, f0_gpu_start, f0_gpu_end).is_err() {
+        return false;
+    }
+
+    if engine.last_completed_gpu_fence != fence0 {
+        return false;
+    }
+
+    // 3. Verify PresentWait synchronization
+    let wait_res = match engine.wait_for_gpu_fence(fence0) {
+        Ok(w) => w,
+        Err(_) => return false,
+    };
+    if wait_res != 0 {
+        return false; // Already signaled, so wait time must be 0
+    }
+
+    // Complete Frame 1
+    if engine.mark_simulation_end(frame1_id).is_err() {
+        return false;
+    }
+    if engine.mark_render_submit_start(frame1_id).is_err() {
+        return false;
+    }
+    if engine.mark_render_submit_end(frame1_id).is_err() {
+        return false;
+    }
+    if engine.mark_driver_submit(frame1_id).is_err() {
+        return false;
+    }
+    if engine.mark_present_start(frame1_id).is_err() {
+        return false;
+    }
+    let fence1 = 101u64;
+    if engine.mark_present_end(frame1_id, fence1).is_err() {
+        return false;
+    }
+    if engine.signal_gpu_completion(frame1_id, 16_000_000, 26_000_000).is_err() {
+        return false;
+    }
+
+    // 4. Verify Latency Metric Profiler
+    let profiler = engine.profiler;
+    if profiler.total_samples != 2 {
+        return false;
+    }
+    if profiler.min_end_to_end_latency_ns == 0 || profiler.max_end_to_end_latency_ns == 0 {
+        return false;
+    }
+    if profiler.avg_end_to_end_latency_ns == 0 {
+        return false;
+    }
+
+    // 5. Emit deterministic boot sentinel
+    crate::serial_write_str("[KNT-GPU-FRAME-PACING-PASS] Direct3D 12 low-latency frame pacing and latency marker engine verified\r\n");
+
+    true
+}

@@ -372,6 +372,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Direct3D 12 depth bounds & conservative rasterization self-test failed!\r\n");
     }
 
+    // Initialize and verify Direct3D 12 Low-Latency Frame Pacing & Latency Marker Engine
+    if !gfx::test_frame_pacing_subsystem() {
+        serial_write_str("[KNT-PANIC] Direct3D 12 low-latency frame pacing self-test failed!\r\n");
+    }
+
     // Initialize and verify AHCI SATA Persistent Storage Subsystem
     if !drivers::storage::test_ahci_sata_subsystem() {
         serial_write_str("[KNT-PANIC] AHCI SATA storage subsystem self-test failed!\r\n");
