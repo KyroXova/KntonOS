@@ -19,6 +19,7 @@ pub mod loader;
 pub mod graphics;
 pub mod terminal;
 pub mod power;
+pub mod mm;
 
 pub use memory::ALLOCATOR;
 
