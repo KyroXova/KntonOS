@@ -4,5 +4,7 @@
 //! handheld quick-access menu (QAM) management, and in-game performance sliders.
 
 pub mod overlay_plane;
+pub mod keyboard;
 
 pub use overlay_plane::*;
+pub use keyboard::*;
