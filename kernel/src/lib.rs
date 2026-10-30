@@ -19,6 +19,7 @@ pub mod loader;
 pub mod graphics;
 pub mod terminal;
 pub mod power;
+pub mod mm;
 
 pub use memory::ALLOCATOR;
 
@@ -119,6 +120,11 @@ pub extern "C" fn kmain() -> ! {
     // Initialize and verify Demand Paging & Copy-on-Write (COW) Fork Engine
     if !memory::test_cow_and_demand_paging() {
         serial_write_str("[KNT-PANIC] Demand paging and COW fork self-test failed!\r\n");
+    }
+
+    // Initialize and verify Transparent Huge Pages (THP 2MB) & AMD 3D V-Cache NUMA Topology
+    if !mm::test_thp_and_numa_subsystem() {
+        serial_write_str("[KNT-PANIC] THP and NUMA V-Cache self-test failed!\r\n");
     }
 
     // Initialize SMP multi-core discovery and Local APIC timer
