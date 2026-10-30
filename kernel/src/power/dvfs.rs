@@ -13,6 +13,21 @@ pub const MAX_DVFS_CORES: usize = 16;
 pub const MIN_SAFE_VOLTAGE_MV: u32 = 680;  // 0.680 V minimum stable logic rail
 pub const MAX_SAFE_VOLTAGE_MV: u32 = 1250; // 1.250 V maximum safe thermal rail
 
+/// Target 60 FPS frame time in microseconds (16.666 ms).
+pub const FRAME_TIME_TARGET_60FPS_US: u32 = 16_666;
+
+/// Number of consecutive smooth frames required before decaying boost frequency (hysteresis window).
+pub const BOOST_COOLDOWN_SMOOTH_FRAMES: u32 = 20;
+
+/// Thermal throttle trip temperature (in degrees Celsius).
+pub const THERMAL_THROTTLE_TRIP_CELSIUS: u32 = 92;
+
+/// Thermal throttle hysteresis clear temperature (in degrees Celsius).
+pub const THERMAL_THROTTLE_CLEAR_CELSIUS: u32 = 82;
+
+/// Clamped maximum frequency while thermally throttled (2.0 GHz).
+pub const THERMAL_THROTTLE_MAX_FREQ_MHZ: u32 = 2000;
+
 /// Maximum allowed undervolt offset (-100 mV).
 pub const MAX_UNDERVOLT_OFFSET_MV: i32 = -100;
 /// Minimum allowed undervolt offset (0 mV = factory nominal, +25 mV max overvolt).
@@ -68,6 +83,13 @@ pub struct DvfsGovernor {
     cores: [CoreDvfsState; MAX_DVFS_CORES],
     cppc: CppcController,
     total_governor_ticks: usize,
+    boost_active: bool,
+    cooldown_frames_remaining: u32,
+    total_frame_spikes: usize,
+    total_boost_events: usize,
+    thermal_throttled: bool,
+    current_temperature_celsius: u32,
+    total_thermal_throttle_events: usize,
 }
 
 impl DvfsGovernor {
@@ -94,6 +116,13 @@ impl DvfsGovernor {
             ],
             cppc: CppcController::new(),
             total_governor_ticks: 0,
+            boost_active: false,
+            cooldown_frames_remaining: 0,
+            total_frame_spikes: 0,
+            total_boost_events: 0,
+            thermal_throttled: false,
+            current_temperature_celsius: 45,
+            total_thermal_throttle_events: 0,
         }
     }
 
@@ -213,6 +242,105 @@ impl DvfsGovernor {
     pub fn total_governor_ticks(&self) -> usize {
         self.total_governor_ticks
     }
+
+    /// Evaluates frame presentation timing and triggers reactive boost on frame drops.
+    pub fn on_frame_presented(&mut self, frame_time_us: u32) {
+        self.total_governor_ticks += 1;
+
+        if self.thermal_throttled {
+            // Cannot boost while thermal throttle is active
+            return;
+        }
+
+        if frame_time_us > FRAME_TIME_TARGET_60FPS_US {
+            // Frame drop detected: immediate reactive boost to max clock
+            self.total_frame_spikes += 1;
+            self.boost_active = true;
+            self.cooldown_frames_remaining = BOOST_COOLDOWN_SMOOTH_FRAMES;
+            self.total_boost_events += 1;
+
+            // Boost all active cores to max boost clock (3.8 GHz)
+            for core_id in 0..MAX_DVFS_CORES {
+                let _ = self.set_target_frequency(core_id, 3800);
+            }
+        } else if self.boost_active {
+            // Smooth frame delivered during boost cooldown
+            if self.cooldown_frames_remaining > 0 {
+                self.cooldown_frames_remaining -= 1;
+            } else {
+                // Cooldown expired: decay boost frequency down to balanced nominal (2.8 GHz)
+                self.boost_active = false;
+                for core_id in 0..MAX_DVFS_CORES {
+                    let _ = self.set_target_frequency(core_id, 2800);
+                }
+            }
+        }
+    }
+
+    /// Evaluates thermal status and regulates clock limits with a 10°C hysteresis band.
+    pub fn on_temperature_update(&mut self, temp_celsius: u32) {
+        self.current_temperature_celsius = temp_celsius;
+
+        if !self.thermal_throttled {
+            if temp_celsius >= THERMAL_THROTTLE_TRIP_CELSIUS {
+                // Trip thermal throttling
+                self.thermal_throttled = true;
+                self.boost_active = false;
+                self.cooldown_frames_remaining = 0;
+                self.total_thermal_throttle_events += 1;
+
+                // Clamp all cores to throttled ceiling (2.0 GHz)
+                for core_id in 0..MAX_DVFS_CORES {
+                    let _ = self.set_target_frequency(core_id, THERMAL_THROTTLE_MAX_FREQ_MHZ);
+                }
+            }
+        } else {
+            // Throttled: require temperature to drop below CLEAR threshold (82°C)
+            if temp_celsius <= THERMAL_THROTTLE_CLEAR_CELSIUS {
+                self.thermal_throttled = false;
+                // Restore nominal balanced frequency (2.8 GHz)
+                for core_id in 0..MAX_DVFS_CORES {
+                    let _ = self.set_target_frequency(core_id, 2800);
+                }
+            }
+        }
+    }
+
+    /// True if reactive game frame boost is actively holding elevated clocks.
+    #[inline]
+    pub fn is_boost_active(&self) -> bool {
+        self.boost_active
+    }
+
+    /// True if thermal throttling is active.
+    #[inline]
+    pub fn is_thermal_throttled(&self) -> bool {
+        self.thermal_throttled
+    }
+
+    /// Total frame drops detected.
+    #[inline]
+    pub fn total_frame_spikes(&self) -> usize {
+        self.total_frame_spikes
+    }
+
+    /// Total reactive boost activations.
+    #[inline]
+    pub fn total_boost_events(&self) -> usize {
+        self.total_boost_events
+    }
+
+    /// Total thermal throttle trip events.
+    #[inline]
+    pub fn total_thermal_throttle_events(&self) -> usize {
+        self.total_thermal_throttle_events
+    }
+
+    /// Current monitored core temperature in Celsius.
+    #[inline]
+    pub fn current_temperature_celsius(&self) -> u32 {
+        self.current_temperature_celsius
+    }
 }
 
 /// Unit test verifying OPP curves, micro-voltage undervolting offsets, safety clamping, and power savings.
@@ -271,6 +399,94 @@ pub fn test_micro_voltage_stepping_and_undervolt() -> bool {
     // Must be clamped to 680 mV!
     let opp1_min = gov.set_target_frequency(1, 1200).unwrap();
     if opp1_min.effective_voltage_mv != MIN_SAFE_VOLTAGE_MV {
+        return false;
+    }
+
+    true
+}
+
+/// Unit test verifying game frame-time spike reactive boost and thermal throttle hysteresis regulator.
+pub fn test_frame_boost_and_thermal_hysteresis() -> bool {
+    let mut gov = DvfsGovernor::new();
+
+    // Set initial baseline frequency across all cores to 2.4 GHz
+    for core_id in 0..MAX_DVFS_CORES {
+        let _ = gov.set_target_frequency(core_id, 2400);
+    }
+
+    // 1. Present 5 smooth frames (14.0 ms = 14,000 us < 16.666 ms)
+    for _ in 0..5 {
+        gov.on_frame_presented(14_000);
+    }
+    if gov.is_boost_active() || gov.total_frame_spikes() != 0 {
+        return false;
+    }
+    if gov.operating_point(0).frequency_mhz != 2400 {
+        return false;
+    }
+
+    // 2. Present frame spike: 22.0 ms (22,000 us > 16.666 ms)
+    gov.on_frame_presented(22_000);
+    if !gov.is_boost_active() || gov.total_frame_spikes() != 1 || gov.total_boost_events() != 1 {
+        return false;
+    }
+    // All cores must be boosted to 3.8 GHz
+    if gov.operating_point(0).frequency_mhz != 3800 {
+        return false;
+    }
+
+    // 3. Present 10 smooth frames: boost must stay active due to hysteresis cooldown
+    for _ in 0..10 {
+        gov.on_frame_presented(14_000);
+    }
+    if !gov.is_boost_active() || gov.operating_point(0).frequency_mhz != 3800 {
+        return false;
+    }
+
+    // Present remaining 10 smooth frames (total 20 smooth frames): cooldown expires!
+    for _ in 0..10 {
+        gov.on_frame_presented(14_000);
+    }
+    if gov.is_boost_active() || gov.operating_point(0).frequency_mhz != 2800 {
+        return false;
+    }
+
+    // 4. Test Thermal Hysteresis (Trip at 92°C, Clear at 82°C)
+    // Rise to 88°C -> not throttled
+    gov.on_temperature_update(88);
+    if gov.is_thermal_throttled() {
+        return false;
+    }
+
+    // Rise to 93°C (>= 92°C) -> trips thermal throttling
+    gov.on_temperature_update(93);
+    if !gov.is_thermal_throttled() || gov.total_thermal_throttle_events() != 1 {
+        return false;
+    }
+    // Clamped to 2.0 GHz
+    if gov.operating_point(0).frequency_mhz != THERMAL_THROTTLE_MAX_FREQ_MHZ {
+        return false;
+    }
+
+    // Present frame spike while throttled: boost must be suppressed by thermal throttle!
+    gov.on_frame_presented(25_000);
+    if gov.is_boost_active() || gov.operating_point(0).frequency_mhz != THERMAL_THROTTLE_MAX_FREQ_MHZ {
+        return false;
+    }
+
+    // Temperature cools to 86°C: hysteresis band holds throttle active!
+    gov.on_temperature_update(86);
+    if !gov.is_thermal_throttled() {
+        return false;
+    }
+
+    // Temperature cools to 81°C (<= 82°C clear threshold): throttle cleared!
+    gov.on_temperature_update(81);
+    if gov.is_thermal_throttled() {
+        return false;
+    }
+    // Cores restored to 2.8 GHz
+    if gov.operating_point(0).frequency_mhz != 2800 {
         return false;
     }
 
