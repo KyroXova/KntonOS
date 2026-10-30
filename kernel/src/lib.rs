@@ -370,6 +370,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Real-time DMA audio mixer subsystem self-test failed!\r\n");
     }
 
+    // Initialize and verify Real-Time 3D Audio Spatializer & Binaural HRTF DSP Pipeline
+    if !audio::test_audio_spatializer_subsystem() {
+        serial_write_str("[KNT-PANIC] 3D audio spatializer self-test failed!\r\n");
+    }
+
     // Initialize and verify Hardware RNG & ChaCha20 Cryptographic Entropy Pool
     crypto::init_kernel_rng();
     if !crypto::test_crypto_rng_subsystem() {

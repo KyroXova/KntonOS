@@ -106,10 +106,10 @@ impl AudioListener3D {
     pub fn set_orientation(&mut self, forward: Vec3, up: Vec3) {
         self.forward = forward.normalize();
         let up_norm = up.normalize();
-        // Right vector = forward x up
-        self.right = self.forward.cross(up_norm).normalize();
-        // Ensure orthonormal up vector = right x forward
-        self.up = self.right.cross(self.forward).normalize();
+        // Right vector = up x forward (in right-handed system with +Z forward, +Y up, +X right)
+        self.right = up_norm.cross(self.forward).normalize();
+        // Ensure orthonormal up vector = forward x right
+        self.up = self.forward.cross(self.right).normalize();
     }
 
     /// Transforms a 3D world-space coordinate into the listener's local cranial frame:
