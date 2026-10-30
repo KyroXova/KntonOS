@@ -14,9 +14,13 @@ pub mod fan;
 pub mod thermal;
 pub mod hibernate;
 pub mod lz4_restore;
+pub mod battery;
+pub mod charger;
 
 pub use hibernate::*;
 pub use lz4_restore::*;
+pub use battery::*;
+pub use charger::*;
 
 pub use s3_resume::*;
 pub use fan::*;
@@ -309,6 +313,32 @@ pub fn test_power_hibernate_subsystem() -> bool {
 
     // 5. Emit deterministic boot sentinel
     crate::serial_write_str("[KNT-POWER-HIBERNATE-PASS] Direct-to-disk kernel hibernation and LZ4 fast-restore verified\r\n");
+
+    true
+}
+
+/// Comprehensive verification self-test suite for Handheld Battery Fuel Gauge,
+/// Coulomb Counter, USB-PD Negotiator, and Smart CCCV Charger Controller.
+///
+/// Emits sentinel [KNT-POWER-BATTERY-PASS] upon successful validation.
+pub fn test_battery_and_charger_subsystem() -> bool {
+    // 1. Verify Smart Battery System, Coulomb counting integration, and OCV recalibration
+    if !verify_battery_gauge_and_coulomb_counter() {
+        return false;
+    }
+
+    // 2. Verify low-battery critical thresholds (10% alert, <= 3% S4 hibernate) and thermal discharge protector
+    if !verify_low_battery_and_thermal_protection() {
+        return false;
+    }
+
+    // 3. Verify USB-PD contract negotiation, multi-stage CCCV charging, bypass charging, and thermal throttle
+    if !verify_usb_pd_and_cccv_charging() {
+        return false;
+    }
+
+    // 4. Emit deterministic boot sentinel
+    crate::serial_write_str("[KNT-POWER-BATTERY-PASS] Handheld battery fuel gauge, Coulomb counter, and smart charger verified\r\n");
 
     true
 }
