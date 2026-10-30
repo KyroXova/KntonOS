@@ -1,10 +1,4 @@
 //! Zero-Copy DirectStorage NVMe-to-GPU Direct Memory Access (DMA) Pipeline.
-//!
-//! Implements Microsoft DirectStorage / GPUDirect Storage architecture:
-//! - Direct NVMe PCIe peer-to-peer (P2P) DMA streaming into GPU VRAM (PCIe BAR1 aperture)
-//! - Completely eliminates CPU bounce buffers and host RAM copies
-//! - Hardware Scatter-Gather List (SGL) and Physical Region Page (PRP) generation targeting GPU VRAM
-//! - Priority-ordered batched request submission to NVMe Submission Queues
 
 extern crate alloc;
 
@@ -23,10 +17,7 @@ pub enum DirectStorageError {
     DeviceError,
 }
 
-/// GPU PCIe BAR1 Memory Aperture Descriptor.
-///
-/// Represents the physical memory range exposed by the GPU on the PCIe bus
-/// (VRAM aperture, e.g. 16 GiB - 256 GiB range) accessible via PCIe peer-to-peer transactions.
+/// GPU PCIe BAR1 Memory Aperture Descriptor representing physical VRAM exposed on the bus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GpuBarAperture {
     /// Physical base address on PCIe bus (e.g. 0x0000_0004_0000_0000).
@@ -144,10 +135,7 @@ impl NvmeSglDataBlock {
     }
 }
 
-/// DirectStorage NVMe-to-GPU DMA Queue.
-///
-/// Manages pending texture disk requests, validates GPU VRAM aperture targets,
-/// and transforms batched requests into native NVMe submission commands.
+/// DirectStorage NVMe-to-GPU DMA Queue managing pending texture disk requests.
 pub struct DirectStorageQueue {
     pub requests: Vec<DirectStorageRequest>,
     pub gpu_aperture: GpuBarAperture,
@@ -448,10 +436,7 @@ pub struct BatchDescriptor {
     pub completion_timestamp_ns: u64,
 }
 
-/// Batched Asynchronous I/O Completion Dispatcher.
-///
-/// Tracks in-flight NVMe-to-GPU DirectStorage batches, handles out-of-order CQE arrivals,
-/// aggregates batch completion, and signals Direct3D 12 GPU synchronization fences.
+/// Batched Asynchronous I/O Completion Dispatcher aggregating batch completion and fences.
 pub struct BatchedCompletionDispatcher {
     pub batches: Vec<BatchDescriptor>,
     pub fences: Vec<DirectStorageFence>,
@@ -508,9 +493,7 @@ impl BatchedCompletionDispatcher {
         batch_id
     }
 
-    /// Processes an individual NVMe request completion (from CQE).
-    /// If all requests in the batch are satisfied, signals the associated fence.
-    /// Returns `Some((batch_id, fence_id, signaled_value))` when a batch fully finishes.
+    /// Processes an individual NVMe request completion and returns batch details on finish.
     pub fn process_completion(
         &mut self,
         request_id: u64,

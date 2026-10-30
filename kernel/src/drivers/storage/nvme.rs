@@ -1,14 +1,10 @@
 //! NVMe (Non-Volatile Memory Express) 1.4 Specification Memory Registers & Command Descriptors.
-//!
-//! Provides memory-mapped register definitions for NVMe host controllers,
-//! 64-byte Submission Queue Entries (SQE), 16-byte Completion Queue Entries (CQE),
-//! and Controller Capabilities (CAP) / Configuration (CC) bit decoders.
 
 pub const PCI_CLASS_MASS_STORAGE: u8 = 0x01;
 pub const PCI_SUBCLASS_NVME: u8 = 0x08;
 pub const PCI_PROGIF_NVME: u8 = 0x02;
 
-// --- NVMe Controller MMIO Register Offsets ---
+// NVMe Controller MMIO Register Offsets.
 pub const NVME_REG_CAP: usize = 0x0000;    // Controller Capabilities (64-bit)
 pub const NVME_REG_VS: usize = 0x0008;     // Version (32-bit)
 pub const NVME_REG_INTMS: usize = 0x000C;  // Interrupt Mask Set (32-bit)
@@ -23,7 +19,7 @@ pub const NVME_REG_CMBLOC: usize = 0x0038; // Controller Memory Buffer Location 
 pub const NVME_REG_CMBSZ: usize = 0x003C;  // Controller Memory Buffer Size (32-bit)
 pub const NVME_DOORBELL_BASE: usize = 0x1000; // Doorbell Registers Base Offset
 
-// --- Controller Capabilities (CAP) Bitfields ---
+// Controller Capabilities (CAP) Bitfields.
 pub const CAP_MQES_MASK: u64 = 0xFFFF;     // Maximum Queue Entries Supported (0-based)
 pub const CAP_CQS: u64 = 1 << 16;          // Contiguous Queues Required
 pub const CAP_AMS_WRR: u64 = 1 << 17;      // Weighted Round Robin with Urgent Priority
@@ -40,7 +36,7 @@ pub const CAP_MPSMIN_MASK: u64 = 0x0F << 48;
 pub const CAP_MPSMAX_SHIFT: usize = 52;    // Memory Page Size Maximum (2 ^ (12 + MPSMAX))
 pub const CAP_MPSMAX_MASK: u64 = 0x0F << 52;
 
-// --- Controller Configuration (CC) Bitfields ---
+// Controller Configuration (CC) Bitfields.
 pub const CC_EN: u32 = 1 << 0;             // Enable
 pub const CC_CSS_NVM: u32 = 0 << 4;        // Command Set Selected (NVM)
 pub const CC_MPS_SHIFT: usize = 7;         // Memory Page Size (2 ^ (12 + MPS))
@@ -51,7 +47,7 @@ pub const CC_SHN_ABRUPT: u32 = 2 << 14;    // Abrupt shutdown notification
 pub const CC_IOSQES_64: u32 = 6 << 16;     // I/O SQ Entry Size: 2^6 = 64 bytes
 pub const CC_IOCQES_16: u32 = 4 << 20;     // I/O CQ Entry Size: 2^4 = 16 bytes
 
-// --- Controller Status (CSTS) Bitfields ---
+// Controller Status (CSTS) Bitfields.
 pub const CSTS_RDY: u32 = 1 << 0;          // Ready
 pub const CSTS_CFS: u32 = 1 << 1;          // Controller Fatal Status
 pub const CSTS_SHST_MASK: u32 = 3 << 2;    // Shutdown Status Mask
@@ -60,7 +56,7 @@ pub const CSTS_SHST_OCCURRING: u32 = 1 << 2;
 pub const CSTS_SHST_COMPLETE: u32 = 2 << 2;
 pub const CSTS_NSSRO: u32 = 1 << 4;        // NVM Subsystem Reset Occurred
 
-// --- Admin & NVM Command Opcodes ---
+// Admin & NVM Command Opcodes.
 pub const NVME_ADMIN_DELETE_SQ: u8 = 0x00;
 pub const NVME_ADMIN_CREATE_SQ: u8 = 0x01;
 pub const NVME_ADMIN_GET_LOG_PAGE: u8 = 0x02;
@@ -75,13 +71,13 @@ pub const NVME_NVM_FLUSH: u8 = 0x00;
 pub const NVME_NVM_WRITE: u8 = 0x01;
 pub const NVME_NVM_READ: u8 = 0x02;
 
-// --- Admin Queue Attributes (AQA) Helper ---
+// Admin Queue Attributes (AQA) Helper.
 #[inline(always)]
 pub const fn make_aqa(asqs: u16, acqs: u16) -> u32 {
     ((acqs as u32) << 16) | (asqs as u32)
 }
 
-// --- Doorbell Offset Helper ---
+// Doorbell Offset Helper.
 #[inline(always)]
 pub const fn nvme_sq_doorbell(qid: u16, dstrd: usize) -> usize {
     NVME_DOORBELL_BASE + (2 * qid as usize) * (4 << dstrd)
@@ -232,9 +228,7 @@ pub fn verify_nvme_structures() -> bool {
     assert_eq!(core::mem::size_of::<NvmeSubmissionEntry>(), 64);
     assert_eq!(core::mem::size_of::<NvmeCompletionEntry>(), 16);
 
-    // 2. Verify capability decoding with standard QEMU NVMe CAP value
-    // QEMU typical CAP: MQES=1023 (1024 entries), CQS=1, TO=120 (60s), DSTRD=0 (4 bytes),
-    // CSS=1 (NVM command set), MPSMIN=0 (4 KiB)
+    // 2. Verify capability decoding with standard QEMU NVMe CAP value.
     let raw_cap: u64 = 1023
         | CAP_CQS
         | (120 << CAP_TO_SHIFT)
@@ -485,7 +479,7 @@ pub fn verify_nvme_queue_engine() -> bool {
 }
 
 
-// --- Admin IDENTIFY Data Structures (4096 bytes each) ---
+// Admin IDENTIFY Data Structures (4096 bytes each).
 
 /// Power State Descriptor (32 bytes).
 #[repr(C)]
@@ -625,7 +619,7 @@ impl NvmeIdentifyNamespace {
     }
 }
 
-// --- Admin & NVM Command Builders ---
+// Admin & NVM Command Builders.
 
 /// Builds an Admin IDENTIFY CONTROLLER (CNS = 1) command.
 pub fn build_identify_controller(prp1: u64) -> NvmeSubmissionEntry {
@@ -666,10 +660,6 @@ pub fn build_nvm_write(nsid: u32, slba: u64, blocks: u16, prp1: u64, prp2: u64) 
 }
 
 /// Constructs PRP1 and PRP2 for DMA buffer transfers according to NVMe page boundaries.
-///
-/// If buffer spans <= 4096 bytes: PRP1 = buf, PRP2 = 0.
-/// If buffer spans <= 8192 bytes: PRP1 = buf, PRP2 = buf + 4096.
-/// If buffer spans > 8192 bytes: PRP1 = buf, PRP2 = prp_list_phys (with list filled).
 pub fn build_prp(
     buffer_phys: u64,
     byte_len: usize,
