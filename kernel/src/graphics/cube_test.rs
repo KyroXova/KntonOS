@@ -1,9 +1,5 @@
 //! 3D Rotating Shaded Cube Rendering Verification Suite for KntonOS.
-//!
 //! Generates a 12-triangle shaded 3D mesh cube, applies Model-View-Projection (MVP)
-//! transformations, near-plane frustum clipping, backface culling, sub-pixel barycentric
-//! rasterization, and 16-bit Z-buffering into a 320x240 backbuffer. Emits boot sentinel
-//! [KNT-GFX-3D-PASS].
 
 use alloc::vec::Vec;
 use super::pipeline::{Camera3D, TransformPipeline, Viewport};

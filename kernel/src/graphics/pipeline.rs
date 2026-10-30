@@ -1,10 +1,5 @@
 //! 3D Transformation Pipeline, Perspective Projection, Viewport Mapping, and Near-Plane Clipping.
-//!
 //! Implements standard 3D pipeline stages:
-//! - Model-View-Projection (MVP) matrix transformation
-//! - Sutherland-Hodgman near-plane clipping preventing W <= 0 projection singularity
-//! - Perspective divide (x/w, y/w, z/w) into Normalized Device Coordinates (NDC)
-//! - Screen-space viewport mapping and 2D backface culling
 
 use alloc::vec::Vec;
 use super::types::{Color4, Mat4, Triangle3D, Vec3, Vec4, Vertex3D};

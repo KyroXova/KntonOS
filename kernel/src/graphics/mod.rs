@@ -1,10 +1,5 @@
 //! Software 3D Graphics Pipeline & Barycentric Triangle Rasterizer for KntonOS.
-//!
 //! Provides an independent, real-time 3D rendering pipeline:
-//! - 3D vector, matrix, vertex, and triangle mathematics
-//! - Perspective projection, viewport transformation, and frustum clipping
-//! - Sub-pixel barycentric triangle rasterizer with 16-bit Z-buffer depth testing
-//! - Flat and Gouraud vertex color shading
 
 pub mod types;
 pub mod pipeline;
