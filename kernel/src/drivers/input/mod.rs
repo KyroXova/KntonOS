@@ -390,3 +390,133 @@ pub fn test_gamepad_haptic_subsystem() -> bool {
 
     true
 }
+
+
+/// Comprehensive verification self-test for Zero-Latency Kernel-Bypassed Input Polling Ring & Micro-Jitter Smoothing Filter.
+///
+/// Emits sentinel [KNT-INPUT-FAST-RING-PASS] upon successful validation.
+pub fn test_fast_input_ring_and_jitter_subsystem() -> bool {
+    serial_write_str("[KNT-INPUT-FAST-RING] Running zero-latency input ring & jitter filter verification suite...\r\n");
+
+    // 1. Verify lock-free SPSC circular buffer, power-of-two wrap-around, and direct userspace view
+    if !verify_fast_ring_buffer() {
+        serial_write_str("[KNT-PANIC] Fast input ring buffer verification failed!\r\n");
+        return false;
+    }
+
+    // 2. Verify 1-Euro adaptive low-pass filter, radial deadzone shaping, and Hall-effect baseline calibration
+    if !verify_one_euro_filter_and_deadzone() {
+        serial_write_str("[KNT-PANIC] 1-Euro filter and deadzone verification failed!\r\n");
+        return false;
+    }
+
+    // 3. Verify anti-rebound snapback suppression and 1000Hz polling dispatcher
+    if !verify_anti_rebound_and_polling_dispatcher() {
+        serial_write_str("[KNT-PANIC] Anti-rebound smoother and polling dispatcher verification failed!\r\n");
+        return false;
+    }
+
+    // 4. End-to-end integration scenario:
+    // Full competitive esports gaming input stream simulation (250 samples at 1000Hz / 1ms intervals).
+    // Tests resting jitter suppression, high-speed flick response, spring rebound suppression,
+    // and direct zero-syscall userspace consumption.
+    let mut dispatcher = FastInputPollingDispatcher::new(DEFAULT_FAST_RING_CAPACITY);
+    let start_ts = 2_000_000_000u64; // 2 seconds
+
+    // Stage A: 50 resting samples with Hall effect magnetic drift (+0.03) and electrical ADC micro-jitter (+-0.02)
+    for i in 0..50 {
+        let ts = start_ts + (i as u64) * 1_000_000;
+        let noise = if i % 2 == 0 { 650 } else { -650 }; // +-0.02 normalized
+        let report = RawFastInputReport {
+            timestamp_ns: ts,
+            buttons: 0,
+            raw_left_stick_x: 980 + noise, // ~ +0.03 drift + noise
+            raw_left_stick_y: noise,
+            raw_right_stick_x: 0,
+            raw_right_stick_y: 0,
+            raw_left_trigger: 0,
+            raw_right_trigger: 0,
+        };
+        let sample = dispatcher.dispatch_report(report);
+        // Stick must remain dead-centered at (0.0, 0.0) thanks to Hall drift calibrator + 1-Euro + deadzone
+        if sample.left_stick_x != 0.0 || sample.left_stick_y != 0.0 {
+            serial_write_str("[KNT-PANIC] Resting stick noise was not suppressed!\r\n");
+            return false;
+        }
+    }
+
+    // Stage B: 50 fast flick samples (flick rightward to 30000 = ~0.915)
+    for i in 50..100 {
+        let ts = start_ts + (i as u64) * 1_000_000;
+        let report = RawFastInputReport {
+            timestamp_ns: ts,
+            buttons: if i > 75 { GamepadButtons::RB.0 } else { 0 },
+            raw_left_stick_x: 30000,
+            raw_left_stick_y: 0,
+            raw_right_stick_x: 0,
+            raw_right_stick_y: 0,
+            raw_left_trigger: 0,
+            raw_right_trigger: 0,
+        };
+        let sample = dispatcher.dispatch_report(report);
+        // Stick reaches > 0.85 within 6ms and sustains full deflection throughout flick
+        if i >= 56 && sample.left_stick_x < 0.85 {
+            serial_write_str("[KNT-PANIC] Fast flick response lagged!\r\n");
+            return false;
+        }
+    }
+
+    // Stage C: Stick suddenly released back to center with spring snapback (-7000 = ~-0.21 opposite direction)
+    // Samples 100..105: released to center (raw = 0)
+    for i in 100..105 {
+        let ts = start_ts + (i as u64) * 1_000_000;
+        let _ = dispatcher.dispatch_report(RawFastInputReport {
+            timestamp_ns: ts,
+            buttons: 0,
+            raw_left_stick_x: 0,
+            raw_left_stick_y: 0,
+            raw_right_stick_x: 0,
+            raw_right_stick_y: 0,
+            raw_left_trigger: 0,
+            raw_right_trigger: 0,
+        });
+    }
+
+    // Samples 105..110: mechanical bounce into negative X (-7000)
+    for i in 105..110 {
+        let ts = start_ts + (i as u64) * 1_000_000;
+        let sample = dispatcher.dispatch_report(RawFastInputReport {
+            timestamp_ns: ts,
+            buttons: 0,
+            raw_left_stick_x: -7000, // Snapback overshoot
+            raw_left_stick_y: 0,
+            raw_right_stick_x: 0,
+            raw_right_stick_y: 0,
+            raw_left_trigger: 0,
+            raw_right_trigger: 0,
+        });
+        // Must be suppressed to 0.0 by anti-rebound smoother
+        if sample.left_stick_x != 0.0 {
+            serial_write_str("[KNT-PANIC] Stick snapback overshoot was not suppressed!\r\n");
+            return false;
+        }
+    }
+
+    if dispatcher.total_rebounds_suppressed == 0 {
+        serial_write_str("[KNT-PANIC] Anti-rebound did not count suppressed rebound!\r\n");
+        return false;
+    }
+
+    // Stage D: Userspace Direct Zero-Copy Drain
+    let desc = dispatcher.export_userspace_descriptor();
+    let userspace_view = unsafe { DirectUserspaceRingView::from_descriptor(&desc) };
+    let drained = userspace_view.drain_samples(200);
+    if drained.is_empty() {
+        serial_write_str("[KNT-PANIC] Userspace zero-copy view could not drain samples!\r\n");
+        return false;
+    }
+
+    // 5. Output deterministic boot sentinel
+    serial_write_str("[KNT-INPUT-FAST-RING-PASS] Zero-latency fast input ring and micro-jitter smoothing verified\r\n");
+    true
+}

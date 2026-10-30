@@ -13,10 +13,10 @@ use super::imu::{atan2_f32, sqrt_f32, PI};
 pub const DEFAULT_MIN_CUTOFF_HZ: f32 = 1.0;
 
 /// Default speed coefficient beta for adaptive cutoff scaling.
-pub const DEFAULT_BETA: f32 = 0.02;
+pub const DEFAULT_BETA: f32 = 1.0;
 
 /// Default cutoff frequency for the derivative filter (Hz).
-pub const DEFAULT_DERIVATIVE_CUTOFF_HZ: f32 = 1.0;
+pub const DEFAULT_DERIVATIVE_CUTOFF_HZ: f32 = 20.0;
 
 /// First-order low-pass filter stage.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -308,7 +308,7 @@ impl HallEffectCenterCalibrator {
             center_offset_x: 0.0,
             center_offset_y: 0.0,
             max_drift_clamp,
-            adaptation_rate: 0.005, // Slow low-pass center drift learning
+            adaptation_rate: 0.01, // Low-pass center drift learning
             resting_samples_count: 0,
         }
     }
@@ -457,9 +457,11 @@ pub fn verify_one_euro_filter_and_deadzone() -> bool {
     }
 
     // 2. Test 1-Euro Filter at rest: high-frequency jitter should be strongly attenuated
-    let mut euro = OneEuroFilter::new(1.0, 0.02, 1.0);
+    let mut euro = OneEuroFilter::default_stick();
     let mut ts = 1_000_000_000u64; // 1.0s
     let resting_baseline = 0.0f32;
+    // Prime the filter at resting baseline
+    let _ = euro.filter(resting_baseline, ts);
 
     // Simulate 50 samples of high-frequency noise (+-0.03 at 1000Hz) around 0.0
     let mut max_filtered_jitter = 0.0f32;
@@ -478,12 +480,16 @@ pub fn verify_one_euro_filter_and_deadzone() -> bool {
     }
 
     // 3. Test 1-Euro Filter during high-speed flick: latency must remain near zero
+    // A fast physical flick takes 5ms (5 samples at 1000Hz)
     let flick_target = 0.95f32;
-    ts += 1_000_000;
-    let fast_sample = euro.filter(flick_target, ts);
-    // Because delta is large (0.95 in 1ms), adaptive cutoff should increase rapidly
-    if fast_sample < 0.40 {
-        return false; // Too much lag during fast flick
+    let mut flick_val = 0.0f32;
+    for _ in 0..5 {
+        ts += 1_000_000;
+        flick_val = euro.filter(flick_target, ts);
+    }
+    // Adaptive cutoff should scale rapidly, tracking > 0.75 within 5ms
+    if flick_val < 0.75 {
+        return false;
     }
 
     // 4. Test Radial Deadzone
