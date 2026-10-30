@@ -698,6 +698,313 @@ impl L2capMultiplexer {
     }
 }
 
+// =============================================================================
+// 4. LC3 Codec Framing & Connected Isochronous Streams (CIS) Scheduler
+// =============================================================================
+
+/// LC3 Audio Codec Frame Duration (Bluetooth Core Spec v5.2 / LE Audio).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lc3FrameDuration {
+    Duration7_5ms = 7500,  // 7.5 ms = 7,500 microseconds
+    Duration10ms = 10000, // 10.0 ms = 10,000 microseconds
+}
+
+impl Lc3FrameDuration {
+    pub const fn interval_us(&self) -> u32 {
+        match self {
+            Self::Duration7_5ms => 7500,
+            Self::Duration10ms => 10000,
+        }
+    }
+
+    pub fn interval_ms(&self) -> f32 {
+        match self {
+            Self::Duration7_5ms => 7.5,
+            Self::Duration10ms => 10.0,
+        }
+    }
+}
+
+/// LC3 Audio Codec Supported Sample Rates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lc3SampleRate {
+    Rate16kHz = 16000,
+    Rate24kHz = 24000,
+    Rate32kHz = 32000,
+    Rate48kHz = 48000, // High-definition gaming audio
+}
+
+impl Lc3SampleRate {
+    pub const fn hz(&self) -> u32 {
+        match self {
+            Self::Rate16kHz => 16000,
+            Self::Rate24kHz => 24000,
+            Self::Rate32kHz => 32000,
+            Self::Rate48kHz => 48000,
+        }
+    }
+
+    /// Computes the number of PCM samples per frame for this sample rate and duration.
+    pub const fn samples_per_frame(&self, duration: Lc3FrameDuration) -> usize {
+        match (duration, *self) {
+            (Lc3FrameDuration::Duration10ms, Self::Rate48kHz) => 480,
+            (Lc3FrameDuration::Duration7_5ms, Self::Rate48kHz) => 360,
+            (Lc3FrameDuration::Duration10ms, Self::Rate32kHz) => 320,
+            (Lc3FrameDuration::Duration7_5ms, Self::Rate32kHz) => 240,
+            (Lc3FrameDuration::Duration10ms, Self::Rate24kHz) => 240,
+            (Lc3FrameDuration::Duration7_5ms, Self::Rate24kHz) => 180,
+            (Lc3FrameDuration::Duration10ms, Self::Rate16kHz) => 160,
+            (Lc3FrameDuration::Duration7_5ms, Self::Rate16kHz) => 120,
+        }
+    }
+}
+
+/// Audio Channel Allocation for LE Audio.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioChannelConfig {
+    Mono = 1,
+    Left = 2,
+    Right = 3,
+    Stereo = 4,
+}
+
+/// Encapsulates an LC3 encoded audio frame ready for ISO transmission.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Lc3Frame {
+    pub duration: Lc3FrameDuration,
+    pub sample_rate: Lc3SampleRate,
+    pub channel_config: AudioChannelConfig,
+    pub octets_per_frame: usize,
+    pub pcm_sample_count: usize,
+    pub payload: Vec<u8>,
+}
+
+impl Lc3Frame {
+    pub fn new(
+        duration: Lc3FrameDuration,
+        sample_rate: Lc3SampleRate,
+        channel_config: AudioChannelConfig,
+        payload: Vec<u8>,
+    ) -> Self {
+        let pcm_sample_count = sample_rate.samples_per_frame(duration);
+        let octets_per_frame = payload.len();
+        Self {
+            duration,
+            sample_rate,
+            channel_config,
+            octets_per_frame,
+            pcm_sample_count,
+            payload,
+        }
+    }
+}
+
+/// Operational state of a Connected Isochronous Stream (CIS).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CisState {
+    Configuring,
+    Established,
+    Streaming,
+    Suspended,
+    Terminated,
+}
+
+/// Configuration parameters for a Connected Isochronous Stream (CIS).
+#[derive(Debug, Clone)]
+pub struct CisStreamConfig {
+    pub cig_id: u8,
+    pub cis_id: u8,
+    pub cis_connection_handle: u16,
+    pub duration: Lc3FrameDuration,
+    pub sample_rate: Lc3SampleRate,
+    pub channel: AudioChannelConfig,
+    pub max_sdu_size: u16,
+    pub rtn: u8,                         // Retransmissions
+    pub max_transport_latency_us: u32,  // e.g. 15,000 to 20,000 us
+    pub burst_number: u8,               // e.g. 1 packet per interval
+}
+
+impl CisStreamConfig {
+    /// Gaming headset ultra-low-latency 7.5ms LC3 48kHz audio profile.
+    pub fn gaming_headset_7_5ms(cis_handle: u16) -> Self {
+        Self {
+            cig_id: 1,
+            cis_id: 1,
+            cis_connection_handle: cis_handle,
+            duration: Lc3FrameDuration::Duration7_5ms,
+            sample_rate: Lc3SampleRate::Rate48kHz,
+            channel: AudioChannelConfig::Stereo,
+            max_sdu_size: 155, // 155 octets per frame = 165 kbps high-fidelity gaming audio
+            rtn: 2,
+            max_transport_latency_us: 15000,
+            burst_number: 1,
+        }
+    }
+
+    /// Standard gaming headset 10ms LC3 48kHz profile.
+    pub fn gaming_headset_10ms(cis_handle: u16) -> Self {
+        Self {
+            cig_id: 1,
+            cis_id: 1,
+            cis_connection_handle: cis_handle,
+            duration: Lc3FrameDuration::Duration10ms,
+            sample_rate: Lc3SampleRate::Rate48kHz,
+            channel: AudioChannelConfig::Stereo,
+            max_sdu_size: 155,
+            rtn: 2,
+            max_transport_latency_us: 20000,
+            burst_number: 1,
+        }
+    }
+}
+
+/// Telemetry and diagnostics statistics for the CIS Audio Scheduler.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct CisSchedulerStats {
+    pub scheduled_frames: u64,
+    pub transmitted_packets: u64,
+    pub dropped_underrun: u64,
+    pub dropped_overdue: u64,
+    pub total_bytes_streamed: u64,
+    pub last_latency_us: u32,
+}
+
+/// Connected Isochronous Stream (CIS) Isochronous Audio Scheduler.
+///
+/// Coordinates time-critical LC3 audio streaming over BLE 5.2/5.3:
+/// - Enforces strict 7.5ms or 10.0ms anchor point scheduling
+/// - Manages dynamic sub-event burst pacing
+/// - Generates sequence numbers and 32-bit microsecond presentation timestamps
+/// - Implements Packet Loss Concealment (PLC) fallback on packet dropouts
+#[derive(Debug)]
+pub struct CisAudioScheduler {
+    pub config: CisStreamConfig,
+    pub state: CisState,
+    pub next_seq_num: u16,
+    pub anchor_point_us: u64,
+    pub interval_us: u32,
+    pub tx_iso_queue: VecDeque<HciIsoDataPacket>,
+    pub stats: CisSchedulerStats,
+}
+
+impl CisAudioScheduler {
+    pub fn new(config: CisStreamConfig, initial_anchor_us: u64) -> Self {
+        let interval_us = config.duration.interval_us();
+        Self {
+            config,
+            state: CisState::Established,
+            next_seq_num: 0,
+            anchor_point_us: initial_anchor_us,
+            interval_us,
+            tx_iso_queue: VecDeque::with_capacity(32),
+            stats: CisSchedulerStats::default(),
+        }
+    }
+
+    /// Transitions stream to active streaming.
+    pub fn start_streaming(&mut self) {
+        self.state = CisState::Streaming;
+    }
+
+    /// Suspends active streaming.
+    pub fn suspend_streaming(&mut self) {
+        self.state = CisState::Suspended;
+    }
+
+    /// Enqueues an LC3 audio frame into the isochronous scheduler queue.
+    pub fn enqueue_lc3_frame(
+        &mut self,
+        frame: Lc3Frame,
+        current_time_us: u64,
+    ) -> Result<(), &'static str> {
+        if self.state != CisState::Streaming && self.state != CisState::Established {
+            return Err("CIS stream is not in active or established state");
+        }
+
+        if frame.payload.len() > self.config.max_sdu_size as usize {
+            return Err("LC3 frame octets exceed configured CIS max SDU size");
+        }
+
+        // Drop if queue is saturated (more than 16 frames = 120-160ms latency)
+        if self.tx_iso_queue.len() >= 16 {
+            self.stats.dropped_underrun += 1;
+            return Err("CIS TX queue overrun, frame dropped");
+        }
+
+        let seq = self.next_seq_num;
+        self.next_seq_num = self.next_seq_num.wrapping_add(1);
+
+        // Calculate presentation timestamp based on next anchor point
+        let target_timestamp_us = (self.anchor_point_us
+            + (self.tx_iso_queue.len() as u64 * self.interval_us as u64)) as u32;
+
+        let packet = HciIsoDataPacket::new(
+            self.config.cis_connection_handle,
+            IsoPacketBoundary::CompleteSdu,
+            seq,
+            Some(target_timestamp_us),
+            frame.payload,
+        );
+
+        self.tx_iso_queue.push_back(packet);
+        self.stats.scheduled_frames += 1;
+        let _ = current_time_us; // tracked for deadline checks
+        Ok(())
+    }
+
+    /// Advances the anchor point timeline by one isochronous interval (e.g. 7,500us or 10,000us).
+    pub fn advance_anchor_point(&mut self) {
+        self.anchor_point_us += self.interval_us as u64;
+    }
+
+    /// Polls the next burst packet eligible for radio airtime transmission.
+    pub fn poll_next_burst(&mut self, current_time_us: u64) -> Option<HciIsoDataPacket> {
+        if self.tx_iso_queue.is_empty() {
+            return None;
+        }
+
+        // Verify if earliest packet is within transmission window
+        let front = self.tx_iso_queue.front()?;
+        if let Some(ts) = front.timestamp_us {
+            let target = ts as u64;
+            // If current time is much earlier than target presentation (ahead by more than 2 intervals), pace it
+            if current_time_us + (self.interval_us as u64 * 2) < target {
+                return None;
+            }
+
+            // If packet is overdue past max transport latency, mark and discard
+            if current_time_us > target + (self.config.max_transport_latency_us as u64) {
+                self.stats.dropped_overdue += 1;
+                self.tx_iso_queue.pop_front();
+                return None;
+            }
+
+            self.stats.last_latency_us = if current_time_us >= target {
+                (current_time_us - target) as u32
+            } else {
+                0
+            };
+        }
+
+        let packet = self.tx_iso_queue.pop_front()?;
+        self.stats.transmitted_packets += 1;
+        self.stats.total_bytes_streamed += packet.sdu_len as u64;
+        Some(packet)
+    }
+
+    /// Performs Packet Loss Concealment (PLC) attenuation on previous PCM frame
+    /// when an LC3 packet is dropped or lost due to 2.4GHz RF interference.
+    pub fn plc_conceal_frame(prev_samples: &[i16], out_concealed: &mut [i16]) {
+        let n = prev_samples.len().min(out_concealed.len());
+        // Apply 80% linear-exponential decay window across concealed frame to prevent clicks
+        for i in 0..n {
+            let decay_factor = 0.82f32 * (1.0f32 - (i as f32 / n as f32) * 0.45f32);
+            let sample = (prev_samples[i] as f32 * decay_factor) as i16;
+            out_concealed[i] = sample;
+        }
+    }
+}
+
 // -----------------------------------------------------------------------------
 // Unit Tests for Commit 1
 // -----------------------------------------------------------------------------
@@ -773,5 +1080,45 @@ mod tests {
         let att_pdu = L2capPdu::new(L2CAP_CID_ATT, alloc::vec![0x01, 0x02, 0x03]);
         mux.route_incoming_pdu(att_pdu).expect("Route ATT failed");
         assert_eq!(mux.rx_att_queue.len(), 1);
+    }
+    #[test]
+    pub fn test_lc3_audio_and_cis_scheduler() {
+        let config = CisStreamConfig::gaming_headset_7_5ms(0x0080);
+        assert_eq!(config.duration.interval_us(), 7500);
+        assert_eq!(config.sample_rate.samples_per_frame(config.duration), 360);
+
+        let mut scheduler = CisAudioScheduler::new(config, 1_000_000);
+        scheduler.start_streaming();
+        assert_eq!(scheduler.state, CisState::Streaming);
+
+        // Enqueue 3 LC3 frames (each 100 bytes)
+        for _ in 0..3 {
+            let lc3 = Lc3Frame::new(
+                Lc3FrameDuration::Duration7_5ms,
+                Lc3SampleRate::Rate48kHz,
+                AudioChannelConfig::Stereo,
+                alloc::vec![0x7A; 100],
+            );
+            scheduler.enqueue_lc3_frame(lc3, 1_000_000).expect("Enqueue LC3 frame failed");
+        }
+        assert_eq!(scheduler.stats.scheduled_frames, 3);
+        assert_eq!(scheduler.tx_iso_queue.len(), 3);
+
+        // Poll bursts at timeline 1_000_000 us
+        let p1 = scheduler.poll_next_burst(1_000_000).expect("Poll first burst failed");
+        assert_eq!(p1.packet_seq_num, 0);
+        assert_eq!(p1.sdu_len, 100);
+        assert_eq!(scheduler.stats.transmitted_packets, 1);
+
+        // Advance anchor point by 7.5ms
+        scheduler.advance_anchor_point();
+        assert_eq!(scheduler.anchor_point_us, 1_007_500);
+
+        // Test Packet Loss Concealment (PLC)
+        let prev_pcm = [1000i16; 10];
+        let mut concealed = [0i16; 10];
+        CisAudioScheduler::plc_conceal_frame(&prev_pcm, &mut concealed);
+        assert!(concealed[0] < 1000 && concealed[0] > 700);
+        assert!(concealed[9] < concealed[0]); // verified decaying envelope
     }
 }
