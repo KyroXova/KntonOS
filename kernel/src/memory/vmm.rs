@@ -301,8 +301,8 @@ impl PageTableManager {
         Some(pte)
     }
 
-    /// Retrieves an immutable reference to the PageTableEntry for the given virtual address if mapped.
-    pub unsafe fn get_pte(&self, virt: VirtAddr) -> Option<&PageTableEntry> {
+    /// Retrieves a copy of the PageTableEntry for the given virtual address if mapped.
+    pub unsafe fn get_pte(&self, virt: VirtAddr) -> Option<PageTableEntry> {
         let pml4 = &*self.root_pml4;
         let pml4_entry = &pml4.entries[virt.pml4_index()];
         if !pml4_entry.is_present() {
@@ -322,7 +322,7 @@ impl PageTableManager {
         }
 
         let pt = pd_entry.addr().0 as *const PageTable;
-        let pte = &(*pt).entries[virt.pt_index()];
+        let pte = (*pt).entries[virt.pt_index()];
         Some(pte)
     }
 

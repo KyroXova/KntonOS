@@ -20,7 +20,10 @@ pub use demand_paging::{
     handle_page_fault, test_demand_paging_engine, test_vma_and_error_codes, AddressSpace,
     PageFaultErrorCode, PageFaultResolution, VmArea, VmFlags,
 };
-pub use cow::{test_cow_bitfields, MAX_TRACKED_PHYS_FRAMES, PTE_AVL_MASK, PTE_COW_BIT};
+pub use cow::{
+    fork_address_space, handle_cow_fault, test_cow_bitfields, test_cow_fork_and_reference_counter,
+    FrameRefCounter, FRAME_REF_COUNTER, MAX_TRACKED_PHYS_FRAMES, PTE_AVL_MASK, PTE_COW_BIT,
+};
 
 /// Global Physical Memory Manager singleton.
 pub static PMM: Spinlock<BitmapFrameAllocator> = Spinlock::new(BitmapFrameAllocator::new());

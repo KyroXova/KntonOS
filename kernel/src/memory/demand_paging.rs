@@ -217,7 +217,7 @@ impl AddressSpace {
     }
 
     /// Returns a PageTableManager bound to this address space's root PML4 table.
-    pub unsafe fn page_table_manager(&mut self) -> PageTableManager {
+    pub unsafe fn page_table_manager(&self) -> PageTableManager {
         PageTableManager::new(self.root_pml4)
     }
 }
