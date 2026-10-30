@@ -1,11 +1,5 @@
 //! Kernel-Direct Hardware Video Decode Submission Queue & Picture Parameter Parser.
-//!
 //! Implements hardware video decode acceleration primitives for KntonOS:
-//! - Multi-standard codec support: H.264 / AVC, HEVC / H.265, and AV1.
-//! - Annex-B NAL unit and AV1 OBU bitstream parsing.
-//! - Exp-Golomb bitstream reader for SPS, PPS, VPS, and slice header decoding.
-//! - Hardware decode command packet submission queue.
-//! - 64-bit timeline completion fence tracking.
 
 #![allow(dead_code)]
 
@@ -13,9 +7,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-// -----------------------------------------------------------------------------
 // Video Codec and Profile Types
-// -----------------------------------------------------------------------------
 
 /// Supported hardware video decode codec standards.
 #[repr(u8)]
@@ -81,9 +73,7 @@ impl SliceType {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Bitstream Reader (Exp-Golomb & Bit-level Extraction)
-// -----------------------------------------------------------------------------
 
 /// Reader for variable-length bitstreams and Exp-Golomb codes.
 #[derive(Debug)]
@@ -188,9 +178,7 @@ impl<'a> BitstreamReader<'a> {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Picture Parameter Structures
-// -----------------------------------------------------------------------------
 
 /// H.264 Sequence Parameter Set (SPS).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -317,9 +305,7 @@ pub struct SliceHeader {
     pub cabac_init_idc: u32,
 }
 
-// -----------------------------------------------------------------------------
 // Timeline Decode Fence
-// -----------------------------------------------------------------------------
 
 /// 64-bit monotonic timeline fence for tracking hardware video decode completion.
 #[derive(Debug)]
@@ -368,9 +354,7 @@ impl DecodeFence {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Hardware Decode Command Packet & Queue
-// -----------------------------------------------------------------------------
 
 /// Hardware decode command packet submitted to the GPU video decode engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -477,9 +461,7 @@ impl VideoDecodeQueue {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Hardware Video Decoder Engine
-// -----------------------------------------------------------------------------
 
 /// Hardware-accelerated video decode engine managing codec state, parameter parsing,
 /// and GPU decode command buffer submissions.
@@ -547,9 +529,7 @@ impl HardwareVideoDecoder {
         &self.fence
     }
 
-    // -------------------------------------------------------------------------
     // H.264 Parameter Parsing
-    // -------------------------------------------------------------------------
 
     /// Parse an H.264 Sequence Parameter Set (SPS) NAL payload.
     pub fn parse_h264_sps(&mut self, payload: &[u8]) -> Result<H264Sps, &'static str> {
@@ -761,9 +741,7 @@ impl HardwareVideoDecoder {
         })
     }
 
-    // -------------------------------------------------------------------------
     // HEVC Parameter Parsing
-    // -------------------------------------------------------------------------
 
     /// Parse an HEVC / H.265 Sequence Parameter Set (SPS).
     pub fn parse_hevc_sps(&mut self, payload: &[u8]) -> Result<HevcSps, &'static str> {
@@ -850,9 +828,7 @@ impl HardwareVideoDecoder {
         Ok(pps)
     }
 
-    // -------------------------------------------------------------------------
     // AV1 Parameter Parsing
-    // -------------------------------------------------------------------------
 
     /// Parse an AV1 Sequence Header OBU payload.
     pub fn parse_av1_sequence_header(&mut self, payload: &[u8]) -> Result<Av1SequenceHeader, &'static str> {
@@ -924,9 +900,7 @@ impl HardwareVideoDecoder {
         Ok(seq)
     }
 
-    // -------------------------------------------------------------------------
     // Hardware Queue Command Submission & Fence Tracking
-    // -------------------------------------------------------------------------
 
     /// Submit a slice decode command packet to the hardware decode queue.
     pub fn submit_slice_decode(
@@ -1005,9 +979,7 @@ impl HardwareVideoDecoder {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Unit Self-Tests for Decode Engine & Parsers
-// -----------------------------------------------------------------------------
 
 /// Verify bitstream reader and Exp-Golomb coded integer decoding.
 pub fn test_bitstream_reader_and_exp_golomb() -> bool {
@@ -1026,12 +998,6 @@ pub fn test_bitstream_reader_and_exp_golomb() -> bool {
 
     // Test 2: Exp-Golomb ue(v) and se(v)
     // 0 -> 1 (code 0)
-    // 1 -> 010 (code 1)
-    // 2 -> 011 (code 2)
-    // 3 -> 00100 (code 3)
-    // 4 -> 00101 (code 4)
-    // Pack 0, 1, 2, 3 into bitstream:
-    // 1 (0) | 010 (1) | 011 (2) | 00100 (3) -> 1010 0110 0100 0000 -> 0xA6, 0x40
     let eg_data = [0xA6, 0x40];
     let mut eg_reader = BitstreamReader::new(&eg_data);
 
@@ -1042,9 +1008,6 @@ pub fn test_bitstream_reader_and_exp_golomb() -> bool {
 
     // Test 3: Signed Exp-Golomb se(v)
     // ue 0 -> se 0
-    // ue 1 -> se +1
-    // ue 2 -> se -1
-    // ue 3 -> se +2
     let mut se_reader = BitstreamReader::new(&eg_data);
     if se_reader.read_se() != Some(0) { return false; }
     if se_reader.read_se() != Some(1) { return false; }
@@ -1060,27 +1023,9 @@ pub fn test_h264_sps_pps_parsing() -> bool {
 
     // Synthetic H.264 High Profile (profile_idc=100, level_idc=41) SPS bitstream:
     // profile=100(0x64), constraints=0x00, level=41(0x29)
-    // sps_id=0(1), chroma_format_idc=1(010), bit_depth_luma_minus8=0(1), bit_depth_chroma_minus8=0(1),
-    // qpprime=0(0), scaling_matrix_present=0(0),
-    // log2_max_frame_num_minus4=0(1), pic_order_cnt_type=0(1), log2_max_poc_lsb_minus4=0(1),
-    // max_num_ref_frames=4(00101), gaps_allowed=0(0),
-    // pic_width_in_mbs_minus1=119(1920px -> 120 mbs -> ue=119: 0000001111000)
-    // pic_height_in_map_units_minus1=67(1080px -> 68 mbs -> ue=67: 0000001000100)
-    // frame_mbs_only_flag=1(1), direct_8x8=1(1), frame_cropping=0(0)
 
     // Alternatively, construct a simplified 1280x720 baseline SPS payload:
     // profile=66, constraints=0, level=31
-    // sps_id=0 (1)
-    // log2_max_frame_num_minus4=0 (1)
-    // pic_order_cnt_type=0 (1)
-    // log2_max_poc_lsb_minus4=0 (1)
-    // max_num_ref_frames=2 (011)
-    // gaps_allowed=0 (0)
-    // pic_width_in_mbs_minus1=79 (1280px -> 80 mbs -> ue(79) = 0000001 010000)
-    // pic_height_in_map_units_minus1=44 (720px -> 45 map units -> ue(44) = 000001 01101)
-    // frame_mbs_only_flag=1 (1)
-    // direct_8x8=1 (1)
-    // frame_cropping=0 (0)
 
     // Let's create an SPS byte buffer using a bit writer helper in memory:
     let mut sps_bytes = Vec::new();
