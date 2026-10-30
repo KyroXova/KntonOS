@@ -410,3 +410,291 @@ pub fn verify_bridge_renumbering_and_bar_allocations() -> bool {
 
     true
 }
+
+
+/// Physical interconnect medium for external eGPU chassis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EgpuInterconnectType {
+    Thunderbolt3,
+    Thunderbolt4,
+    Usb4,
+    Oculink,
+    DirectPcie,
+}
+
+/// eGPU operational lifecycle state machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EgpuDeviceState {
+    Disconnected,
+    LinkNegotiating,
+    BridgeConfigured,
+    DriverAttached,
+    ScanoutActive,
+    EjectPending,
+    SurpriseDetached,
+}
+
+/// Active display scanout engine source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GpuScanoutSource {
+    InternalIntegratedGpu,
+    ExternalDiscreteGpu,
+}
+
+/// Active display scanout plane framebuffer descriptor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScanoutPlaneDescriptor {
+    pub source: GpuScanoutSource,
+    pub fb_phys: u64,
+    pub width: u32,
+    pub height: u32,
+    pub pitch: u32,
+    pub bpp: u32,
+    pub active_surface_id: u32,
+}
+
+impl ScanoutPlaneDescriptor {
+    pub const fn default_igpu(fb_phys: u64, width: u32, height: u32) -> Self {
+        Self {
+            source: GpuScanoutSource::InternalIntegratedGpu,
+            fb_phys,
+            width,
+            height,
+            pitch: width * 4,
+            bpp: 32,
+            active_surface_id: 0,
+        }
+    }
+}
+
+/// External eGPU Hot-Connect & Scanout Migration Manager.
+///
+/// Orchestrates the hot-attachment of external graphics enclosures:
+/// 1. Dynamic bus & MMIO resource assignment.
+/// 2. Graphics driver binding and command ring activation.
+/// 3. Seamless display scanout migration from internal iGPU to eGPU.
+/// 4. Graceful and surprise ejection handling with automated fallback.
+pub struct EgpuHotConnectManager {
+    pub interconnect: EgpuInterconnectType,
+    pub state: EgpuDeviceState,
+    pub bridge_mgr: DynamicBridgeManager,
+    pub slot_number: u32,
+    pub vendor_id: u16,
+    pub device_id: u16,
+    pub vram_size_bytes: u64,
+    pub current_scanout: ScanoutPlaneDescriptor,
+    pub migration_count: u32,
+    pub fallback_fb_phys: u64,
+}
+
+impl EgpuHotConnectManager {
+    pub fn new(
+        interconnect: EgpuInterconnectType,
+        slot_number: u32,
+        bridge_bdf: (u8, u8, u8),
+        default_igpu_fb: u64,
+    ) -> Self {
+        Self {
+            interconnect,
+            state: EgpuDeviceState::Disconnected,
+            bridge_mgr: DynamicBridgeManager::new(bridge_bdf.0, bridge_bdf.1, bridge_bdf.2),
+            slot_number,
+            vendor_id: 0,
+            device_id: 0,
+            vram_size_bytes: 0,
+            current_scanout: ScanoutPlaneDescriptor::default_igpu(default_igpu_fb, 1920, 1080),
+            migration_count: 0,
+            fallback_fb_phys: default_igpu_fb,
+        }
+    }
+
+    /// Attaches an external eGPU device, configuring buses, bridge apertures, and BARs.
+    pub fn attach_egpu(
+        &mut self,
+        vendor_id: u16,
+        device_id: u16,
+        vram_bytes: u64,
+        pool: &mut PciResourceWindowPool,
+        bus_alloc: &mut PciBusAllocator,
+    ) -> Result<(), &'static str> {
+        self.state = EgpuDeviceState::LinkNegotiating;
+        self.vendor_id = vendor_id;
+        self.device_id = device_id;
+        self.vram_size_bytes = vram_bytes;
+
+        // Allocate downstream bus numbers (1 bus for switch, 1 bus for GPU endpoint)
+        let _ = self.bridge_mgr.renumber_buses(bus_alloc, 2)?;
+
+        // Allocate apertures: 32 MiB non-prefetchable (MMIO) and aligned VRAM prefetchable
+        let mmio32_size = 32 * 1024 * 1024;
+        let pref_size = vram_bytes.max(256 * 1024 * 1024);
+        self.bridge_mgr.configure_mmio_apertures(pool, mmio32_size, pref_size)?;
+
+        // Assign BAR0 (control regs, 16 MiB) and BAR1 (VRAM aperture)
+        let _bar0 = self.bridge_mgr.assign_device_bar(0, BarType::Mmio32, 16 * 1024 * 1024)?;
+        let _bar1 = self.bridge_mgr.assign_device_bar(1, BarType::Mmio64Prefetchable, vram_bytes)?;
+
+        self.state = EgpuDeviceState::DriverAttached;
+        Ok(())
+    }
+
+    /// Migrates primary display scanout from internal iGPU to external eGPU.
+    pub fn migrate_scanout_to_egpu(&mut self, vram_fb_offset: u64) -> Result<(), &'static str> {
+        if self.state != EgpuDeviceState::DriverAttached && self.state != EgpuDeviceState::ScanoutActive {
+            return Err("Cannot migrate scanout: eGPU driver is not attached");
+        }
+
+        // Find BAR1 (VRAM aperture)
+        let vram_bar = self
+            .bridge_mgr
+            .assigned_bars
+            .iter()
+            .find(|b| b.bar_type == BarType::Mmio64Prefetchable)
+            .ok_or("No prefetchable VRAM BAR found for scanout")?;
+
+        let target_fb_phys = vram_bar.base_address + vram_fb_offset;
+
+        // Update active scanout plane
+        self.current_scanout.source = GpuScanoutSource::ExternalDiscreteGpu;
+        self.current_scanout.fb_phys = target_fb_phys;
+        self.current_scanout.active_surface_id += 1;
+        self.migration_count += 1;
+        self.state = EgpuDeviceState::ScanoutActive;
+
+        Ok(())
+    }
+
+    /// Migrates display scanout back to internal iGPU (e.g. during disconnect).
+    pub fn migrate_scanout_to_igpu(&mut self) -> Result<(), &'static str> {
+        self.current_scanout.source = GpuScanoutSource::InternalIntegratedGpu;
+        self.current_scanout.fb_phys = self.fallback_fb_phys;
+        self.current_scanout.active_surface_id += 1;
+        self.migration_count += 1;
+        Ok(())
+    }
+
+    /// Initiates graceful software ejection of eGPU.
+    pub fn request_graceful_eject(&mut self) -> Result<(), &'static str> {
+        if self.state != EgpuDeviceState::ScanoutActive && self.state != EgpuDeviceState::DriverAttached {
+            return Err("Cannot eject: device is not active");
+        }
+
+        self.state = EgpuDeviceState::EjectPending;
+        // Step 1: Fallback scanout to iGPU
+        self.migrate_scanout_to_igpu()?;
+        // Step 2: Detach driver and clear assignments
+        self.bridge_mgr.assigned_bars.clear();
+        self.state = EgpuDeviceState::Disconnected;
+        Ok(())
+    }
+
+    /// Handles sudden / surprise physical removal of eGPU cable.
+    pub fn handle_surprise_removal(&mut self) -> Result<(), &'static str> {
+        self.state = EgpuDeviceState::SurpriseDetached;
+        // Emergency fallback: restore internal iGPU scanout immediately
+        self.migrate_scanout_to_igpu()?;
+        self.bridge_mgr.assigned_bars.clear();
+        self.state = EgpuDeviceState::Disconnected;
+        Ok(())
+    }
+}
+
+/// Unit test verifying external eGPU hot-connect, scanout migration, and graceful/surprise fallback.
+pub fn verify_egpu_hot_connect_and_scanout_migration() -> bool {
+    let mut pool = PciResourceWindowPool::new_default();
+    let mut bus_alloc = PciBusAllocator::new(10, 32);
+
+    let igpu_fb_phys = 0x0000_0000_8000_0000u64;
+    let mut egpu_mgr = EgpuHotConnectManager::new(
+        EgpuInterconnectType::Thunderbolt4,
+        1,
+        (0, 28, 0),
+        igpu_fb_phys,
+    );
+
+    // Initial state: scanout on internal iGPU
+    if egpu_mgr.state != EgpuDeviceState::Disconnected {
+        return false;
+    }
+    if egpu_mgr.current_scanout.source != GpuScanoutSource::InternalIntegratedGpu {
+        return false;
+    }
+    if egpu_mgr.current_scanout.fb_phys != igpu_fb_phys {
+        return false;
+    }
+
+    // 1. Hot-connect AMD Radeon RX 7900 XTX eGPU (Vendor 0x1002, Device 0x744C, 24 GiB VRAM)
+    let vram_24gb = 24 * 1024 * 1024 * 1024u64;
+    let attach_res = egpu_mgr.attach_egpu(0x1002, 0x744C, vram_24gb, &mut pool, &mut bus_alloc);
+    if attach_res.is_err() || egpu_mgr.state != EgpuDeviceState::DriverAttached {
+        return false;
+    }
+
+    // Verify bridge was configured with secondary bus 10 and subordinate bus 11
+    if egpu_mgr.bridge_mgr.bridge_config.secondary_bus != 10
+        || egpu_mgr.bridge_mgr.bridge_config.subordinate_bus != 11
+    {
+        return false;
+    }
+
+    // 2. Migrate primary display scanout to external eGPU VRAM
+    let vram_fb_offset = 0x0000_0000;
+    if egpu_mgr.migrate_scanout_to_egpu(vram_fb_offset).is_err() {
+        return false;
+    }
+    if egpu_mgr.state != EgpuDeviceState::ScanoutActive {
+        return false;
+    }
+    if egpu_mgr.current_scanout.source != GpuScanoutSource::ExternalDiscreteGpu {
+        return false;
+    }
+    if egpu_mgr.migration_count != 1 {
+        return false;
+    }
+
+    // 3. Test Graceful Ejection
+    if egpu_mgr.request_graceful_eject().is_err() {
+        return false;
+    }
+    if egpu_mgr.state != EgpuDeviceState::Disconnected {
+        return false;
+    }
+    if egpu_mgr.current_scanout.source != GpuScanoutSource::InternalIntegratedGpu {
+        return false;
+    }
+    if egpu_mgr.current_scanout.fb_phys != igpu_fb_phys {
+        return false;
+    }
+    if egpu_mgr.migration_count != 2 {
+        return false;
+    }
+
+    // 4. Test Surprise Removal after re-attachment (OCuLink link)
+    egpu_mgr.interconnect = EgpuInterconnectType::Oculink;
+    let vram_16gb = 16 * 1024 * 1024 * 1024u64;
+    if egpu_mgr.attach_egpu(0x10DE, 0x2684, vram_16gb, &mut pool, &mut bus_alloc).is_err() {
+        return false;
+    }
+    if egpu_mgr.migrate_scanout_to_egpu(0).is_err() {
+        return false;
+    }
+    if egpu_mgr.current_scanout.source != GpuScanoutSource::ExternalDiscreteGpu {
+        return false;
+    }
+
+    // Cable pulled! Emergency fallback
+    if egpu_mgr.handle_surprise_removal().is_err() {
+        return false;
+    }
+    if egpu_mgr.state != EgpuDeviceState::Disconnected {
+        return false;
+    }
+    if egpu_mgr.current_scanout.source != GpuScanoutSource::InternalIntegratedGpu {
+        return false;
+    }
+    if egpu_mgr.current_scanout.fb_phys != igpu_fb_phys {
+        return false;
+    }
+
+    true
+}
