@@ -76,7 +76,13 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-049 | Dynamic Power Governor & Thermal Energy Meter (AMD SMU / Intel RAPL MSRs & Closed-Loop PID Frequency Governor) | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-049-power-governor.md) |
 | TASK-KNT-050 | Direct-to-Display Hardware Scanout Engine & Atomic DRM/KMS Modesetting Presentation Layer | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-050-drm-modeset.md) |
 | TASK-KNT-051 | 6-Axis IMU Sensor Fusion & 1000Hz High-Performance Gamepad Input Pipeline | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-051-imu-gamepad.md) |
+| TASK-KNT-052 | Transparent Huge Pages (THP 2MB) & AMD 3D V-Cache NUMA Topology Awareness | Claimed | TASK-KNT-042 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-052-thp-numa.md) |
+| TASK-KNT-053 | Hardware Variable Refresh Rate (VRR / FreeSync) & Dynamic VBLANK Presentation Timing | Claimed | TASK-KNT-050 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-053-vrr-timing.md) |
+| TASK-KNT-054 | Native Hardware Display Scanout Rotation & Panel Orientation Subsystem (Portrait Panel Zero-Overhead Scanout) | Claimed | TASK-KNT-050 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-054-display-rotation.md) |
 
 ## Active reservations
 
 - `kernel/src/pkg/`: reserved by ArdenKestrel for TASK-KNT-045.
+- `kernel/src/mm/thp.rs`, `kernel/src/mm/numa.rs`: reserved by Ada Chen for TASK-KNT-052.
+- `kernel/src/drivers/gpu/vrr.rs`, `kernel/src/drivers/gpu/timing.rs`: reserved by Jules Martin for TASK-KNT-053.
+- `kernel/src/drivers/gpu/rotation.rs`, `kernel/src/drivers/gpu/panel.rs`: reserved by Priya Nair for TASK-KNT-054.
