@@ -145,6 +145,70 @@ pub fn test_ipc_subsystem() -> bool {
         crate::serial_write_str("[KNT-IPC-THREAD-PASS] Cross-thread futex sleep and wake synchronization verified\r\n");
     }
 
+    // 5. Dual-Ring Bidirectional Channel Verification
+    if !test_dual_ring_channel() {
+        crate::serial_write_str("[KNT-PANIC] Dual-ring channel verification failed!\r\n");
+        return false;
+    }
+
+    // 6. Zero-Copy Descriptor Ring & Batch API Verification
+    if !test_descriptor_ring_batch() {
+        crate::serial_write_str("[KNT-PANIC] Descriptor ring batch verification failed!\r\n");
+        return false;
+    }
+
+    // 7. UMWAIT, UMONITOR, TPAUSE, and Adaptive Synchronization Verification
+    if !test_umwait_primitives() {
+        crate::serial_write_str("[KNT-PANIC] UMWAIT synchronization primitives test failed!\r\n");
+        return false;
+    }
+
+    // 8. End-to-end Dual-Ring Throughput & Adaptive Barrier Synchronization
+    {
+        static mut E2E_CHANNEL: DualRingChannel<4096> = DualRingChannel::new(99);
+        let channel = unsafe { &mut *core::ptr::addr_of_mut!(E2E_CHANNEL) };
+        let p0 = channel.endpoint_peer0();
+        let p1 = channel.endpoint_peer1();
+
+        let barrier = AdaptiveWaitBarrier::default_ipc();
+
+        // Peer 0 sends high-frequency bursts
+        for i in 0..16u32 {
+            let mut payload = [0u8; 64];
+            payload[0] = (i & 0xFF) as u8;
+            payload[63] = 0xAA;
+            if p0.send(0x01, &payload).is_err() {
+                crate::serial_write_str("[KNT-PANIC] E2E dual-ring burst send failed!\r\n");
+                return false;
+            }
+        }
+
+        // Wait until Peer 1 sees packets ready
+        let wait_res = barrier.wait_until(|| p1.available_rx() >= PACKET_HEADER_SIZE);
+        if wait_res != WaitResult::Success {
+            crate::serial_write_str("[KNT-PANIC] E2E adaptive barrier failed waiting for RX!\r\n");
+            return false;
+        }
+
+        // Peer 1 drains all 16 packets
+        let mut rx_buf = [0u8; 128];
+        for i in 0..16u32 {
+            match p1.recv(&mut rx_buf) {
+                Ok((len, flags)) => {
+                    if len != 64 || flags != 0x01 || rx_buf[0] != (i & 0xFF) as u8 || rx_buf[63] != 0xAA {
+                        crate::serial_write_str("[KNT-PANIC] E2E packet content mismatch!\r\n");
+                        return false;
+                    }
+                }
+                Err(_) => {
+                    crate::serial_write_str("[KNT-PANIC] E2E recv failed!\r\n");
+                    return false;
+                }
+            }
+        }
+    }
+
+    crate::serial_write_str("[KNT-IPC-RING-PASS] High-throughput zero-copy IPC ring and UMWAIT synchronization operational\r\n");
     crate::serial_write_str("[KNT-IPC-FUTEX-PASS] All IPC shared memory rings & futex benchmarks passed\r\n");
     true
 }
