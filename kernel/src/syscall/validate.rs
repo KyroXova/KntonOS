@@ -1,8 +1,5 @@
 //! Userland memory slice and pointer validation for syscall safety.
-//!
 //! Guarantees that any pointer passed across the user/kernel boundary resides
-//! within the canonical lower userland address space, preventing kernel memory
-//! disclosure, privilege escalation, and kernel page fault panics.
 
 pub const USER_SPACE_START: usize = 0x0000_0000_0001_0000; // 64 KiB guard page
 pub const USER_SPACE_END: usize = 0x0000_7FFF_FFFF_FFFF;   // 128 TiB canonical userland boundary

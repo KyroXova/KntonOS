@@ -1,12 +1,5 @@
 //! NT Syscall Table and Calling Convention Dispatch Router.
-//!
 //! Maps standard 64-bit Windows NT subsystem system call numbers to kernel handlers.
-//! Syscall convention:
-//! - RAX: System call ID / Service number
-//! - R10: First parameter (RCX is used by CPU syscall instruction for return RIP)
-//! - RDX: Second parameter
-//! - R8:  Third parameter
-//! - R9:  Fourth parameter
 
 use super::handlers;
 use super::validate::{STATUS_NOT_IMPLEMENTED, STATUS_SUCCESS};
