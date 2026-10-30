@@ -17,9 +17,9 @@ These branches are managed by their respective developers with granular commit l
 
 | Contributor identity | Branch | Local workspace | Status |
 | --- | --- | --- | --- |
-| Ada Chen | `workspace/ada-chen` | `E:\Git Lab's\kntonOS-ada-chen` | Active (TASK-KNT-124) |
-| Jules Martin | `workspace/jules-martin` | `E:\Git Lab's\kntonOS-jules-martin` | Active (TASK-KNT-122) |
-| Priya Nair | `workspace/priya-nair` | `E:\Git Lab's\kntonOS-priya-nair` | Active (TASK-KNT-123) |
+| Ada Chen | `workspace/ada-chen` | `E:\Git Lab's\kntonOS-ada-chen` | Active (TASK-KNT-127) |
+| Jules Martin | `workspace/jules-martin` | `E:\Git Lab's\kntonOS-jules-martin` | Active (TASK-KNT-125) |
+| Priya Nair | `workspace/priya-nair` | `E:\Git Lab's\kntonOS-priya-nair` | Active (TASK-KNT-126) |
 
 ## Task index
 
@@ -146,13 +146,16 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-119 | Unified Handheld PC Multi-Zone Thermocouple & Peltier Active Cooler Module Driver | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-119-peltier-cooler.md) |
 | TASK-KNT-120 | Direct3D 12 Dynamic Primitive Culling & Mesh-Cluster LOD Streamer Engine | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-120-cluster-cull.md) |
 | TASK-KNT-121 | Kernel-Direct Micro-Checkpoint Fast State Snapshot & Instant Resumption Engine | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-121-micro-checkpoint.md) |
-| TASK-KNT-122 | Unified Handheld PC USB4/Thunderbolt 4 Dynamic PCIe Tunneling & Hot-Plug eGPU Governor | Claimed | TASK-KNT-076 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-122-usb4-egpu.md) |
-| TASK-KNT-123 | Direct3D 12 Hardware Optical Flow Vector Accelerator & Frame Interpolation Motion Engine | Claimed | TASK-KNT-071 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-123-optical-flow.md) |
-| TASK-KNT-124 | Kernel-Direct Real-Time In-Game Audio Dynamic Range Compressor & Hearing Safety Limiter | Claimed | TASK-KNT-082 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-124-audio-drc.md) |
+| TASK-KNT-122 | Unified Handheld PC USB4/Thunderbolt 4 Dynamic PCIe Tunneling & Hot-Plug eGPU Governor | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-122-usb4-egpu.md) |
+| TASK-KNT-123 | Direct3D 12 Hardware Optical Flow Vector Accelerator & Frame Interpolation Motion Engine | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-123-optical-flow.md) |
+| TASK-KNT-124 | Kernel-Direct Real-Time In-Game Audio Dynamic Range Compressor & Hearing Safety Limiter | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-124-audio-drc.md) |
+| TASK-KNT-125 | Unified Handheld PC Multi-Zone Haptic Force-Feedback Trigger & Active Resistance Motor Governor | Claimed | TASK-KNT-104 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-125-trigger-motor.md) |
+| TASK-KNT-126 | Direct3D 12 Dynamic Tile Pool Memory Compactor & Sparse Virtual Texture Eviction Engine | Claimed | TASK-KNT-078 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-126-tile-compact.md) |
+| TASK-KNT-127 | Kernel-Direct Real-Time In-Game Frame Capture HDR Tonemapper & Ultra-Low-Latency Display Mirroring Streamer | Claimed | TASK-KNT-109 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-127-video-hdr-stream.md) |
 
 ## Active reservations
 
 - `kernel/src/pkg/`: reserved by ArdenKestrel for TASK-KNT-045.
-- `kernel/src/drivers/bus/usb4.rs`: reserved by Jules Martin for TASK-KNT-122.
-- `kernel/src/gfx/optical_flow.rs`: reserved by Priya Nair for TASK-KNT-123.
-- `kernel/src/audio/drc.rs`: reserved by Ada Chen for TASK-KNT-124.
+- `kernel/src/drivers/input/trigger_motor.rs`: reserved by Jules Martin for TASK-KNT-125.
+- `kernel/src/gfx/tile_compact.rs`: reserved by Priya Nair for TASK-KNT-126.
+- `kernel/src/video/hdr_stream.rs`: reserved by Ada Chen for TASK-KNT-127.
