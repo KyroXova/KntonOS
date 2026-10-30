@@ -1,23 +1,12 @@
 //! Low-Latency Bluetooth Low Energy (BLE 5.2/5.3) Subsystem for KntonOS.
-//!
 //! Provides ultra-low-latency kernel-space BLE protocol handling for handheld gaming PC
-//! peripherals: wireless controllers (HID over GATT / HoGP) and LE Audio headsets
-//! (Connected Isochronous Streams / CIS with LC3 codec framing).
-//!
-//! Architecture:
-//! - HCI Transport Packet Layer (Command, Event, ACL Data, ISO Data)
-//! - L2CAP Protocol Multiplexer with dynamic MTU negotiation
-//! - Connected Isochronous Streams (CIS) Scheduler with 7.5ms/10ms LC3 audio burst pacing
-//! - HID over GATT (HoG) Gamepad Report Processor with adaptive anti-jitter buffer
 
 extern crate alloc;
 
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
-// =============================================================================
 // 1. HCI Transport Packet Formats (Core Spec v5.3 Vol 4, Part E)
-// =============================================================================
 
 /// HCI Transport Packet Indicator byte sent across UART/USB/PCIe Bluetooth transports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,9 +32,7 @@ impl HciPacketIndicator {
     }
 }
 
-// -----------------------------------------------------------------------------
 // HCI Opcodes & Groups (OGF / OCF)
-// -----------------------------------------------------------------------------
 
 pub const HCI_OGF_LINK_CONTROL: u16 = 0x01;
 pub const HCI_OGF_LINK_POLICY: u16 = 0x02;
@@ -74,9 +61,7 @@ pub const HCI_OPCODE_LE_CREATE_CIS: u16 = make_hci_opcode(HCI_OGF_LE_CONTROLLER,
 pub const HCI_OPCODE_LE_SETUP_ISO_DATA_PATH: u16 = make_hci_opcode(HCI_OGF_LE_CONTROLLER, HCI_OCF_LE_SETUP_ISO_DATA_PATH);
 pub const HCI_OPCODE_LE_CONNECTION_UPDATE: u16 = make_hci_opcode(HCI_OGF_LE_CONTROLLER, HCI_OCF_LE_CONNECTION_UPDATE);
 
-// -----------------------------------------------------------------------------
 // HCI Command Packet
-// -----------------------------------------------------------------------------
 
 /// HCI Command Packet (Indicator 0x01)
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -133,9 +118,7 @@ impl HciCommandPacket {
     }
 }
 
-// -----------------------------------------------------------------------------
 // HCI Event Packet & Subevent Codes
-// -----------------------------------------------------------------------------
 
 pub const HCI_EVT_DISCONNECTION_COMPLETE: u8 = 0x05;
 pub const HCI_EVT_COMMAND_COMPLETE: u8 = 0x0E;
@@ -205,9 +188,7 @@ impl HciEventPacket {
     }
 }
 
-// -----------------------------------------------------------------------------
 // HCI ACL Data Packet
-// -----------------------------------------------------------------------------
 
 /// Packet Boundary Flag in ACL Data Header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -300,9 +281,7 @@ impl HciAclDataPacket {
     }
 }
 
-// -----------------------------------------------------------------------------
 // HCI ISO Data Packet (Core Spec v5.2/v5.3 for LE Audio CIS/BIS)
-// -----------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -490,14 +469,10 @@ impl HciIsoDataPacket {
     }
 }
 
-// =============================================================================
 // 2. BLE Connection Parameters & Handheld Low-Latency Profile
-// =============================================================================
 
 /// BLE Connection Parameters (Core Spec v5.3 Vol 4, Part E, Section 7.8.18).
-///
 /// Connection intervals are specified in units of 1.25 ms (7.5 ms = 6 units).
-/// Supervision timeout is specified in units of 10 ms (200 ms = 20 units).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BleConnectionParams {
     /// Connection interval minimum in 1.25 ms units (Range: 6 to 3200, 7.5ms to 4.0s).
@@ -547,9 +522,7 @@ impl BleConnectionParams {
     }
 }
 
-// =============================================================================
 // 3. L2CAP Protocol Channel Multiplexing (Core Spec Vol 3, Part A)
-// =============================================================================
 
 pub const L2CAP_CID_NULL: u16 = 0x0000;
 pub const L2CAP_CID_ATT: u16 = 0x0004;         // Attribute Protocol (GATT / HoGP Gamepad)
@@ -698,9 +671,7 @@ impl L2capMultiplexer {
     }
 }
 
-// =============================================================================
 // 4. LC3 Codec Framing & Connected Isochronous Streams (CIS) Scheduler
-// =============================================================================
 
 /// LC3 Audio Codec Frame Duration (Bluetooth Core Spec v5.2 / LE Audio).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -870,12 +841,7 @@ pub struct CisSchedulerStats {
 }
 
 /// Connected Isochronous Stream (CIS) Isochronous Audio Scheduler.
-///
 /// Coordinates time-critical LC3 audio streaming over BLE 5.2/5.3:
-/// - Enforces strict 7.5ms or 10.0ms anchor point scheduling
-/// - Manages dynamic sub-event burst pacing
-/// - Generates sequence numbers and 32-bit microsecond presentation timestamps
-/// - Implements Packet Loss Concealment (PLC) fallback on packet dropouts
 #[derive(Debug)]
 pub struct CisAudioScheduler {
     pub config: CisStreamConfig,
@@ -1005,9 +971,7 @@ impl CisAudioScheduler {
     }
 }
 
-// =============================================================================
 // 5. HID over GATT (HoG) Gamepad Processor & Adaptive Jitter Buffer
-// =============================================================================
 
 pub const BLE_UUID_HID_SERVICE: u16 = 0x1812;
 pub const BLE_UUID_REPORT_CHAR: u16 = 0x2A4D;
@@ -1054,9 +1018,7 @@ impl BleGamepadState {
 }
 
 /// Dynamic Adaptive Anti-Jitter Buffer for wireless gamepad inputs.
-///
 /// Mitigates 2.4 GHz RF multi-path interference and packet inter-arrival jitter
-/// without adding unnecessary input lag.
 #[derive(Debug)]
 pub struct BleGamepadJitterBuffer {
     pub target_interval_us: u32,      // Expected interval, e.g. 7,500us (7.5ms)
@@ -1167,15 +1129,7 @@ impl BleHogGamepadProcessor {
     }
 
     /// Parses standard 12-byte HID over GATT gamepad input report.
-    ///
     /// Byte format:
-    /// [0..1]: Left Stick X (signed 16-bit)
-    /// [2..3]: Left Stick Y (signed 16-bit)
-    /// [4..5]: Right Stick X (signed 16-bit)
-    /// [6..7]: Right Stick Y (signed 16-bit)
-    /// [8]: Left Trigger (0..255)
-    /// [9]: Right Trigger (0..255)
-    /// [10..11]: Buttons bitmask (16-bit)
     pub fn parse_input_report(&mut self, report_data: &[u8], timestamp_us: u64) -> Result<BleGamepadState, &'static str> {
         if report_data.len() < 12 {
             return Err("HID gamepad report too short (minimum 12 bytes required)");
@@ -1217,10 +1171,7 @@ impl BleHogGamepadProcessor {
     }
 }
 
-
-// =============================================================================
 // 6. Subsystem Verification Suite & Boot Sentinel
-// =============================================================================
 
 /// Verification self-test suite for Low-Latency BLE Gamepad & Wireless Headset Audio Streamer (TASK-KNT-106).
 pub fn test_wireless_ble_subsystem() -> bool {
@@ -1409,9 +1360,7 @@ pub fn test_wireless_ble_subsystem() -> bool {
     true
 }
 
-// -----------------------------------------------------------------------------
 // Unit Tests for Commit 1
-// -----------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -1542,8 +1491,6 @@ mod tests {
 
         // Construct 12-byte HID report
         // Stick LX = 16384 (~0.5), LY = 0, RX = -16384 (~-0.5), RY = 0
-        // Triggers LT = 255 (1.0), RT = 128 (~0.5)
-        // Buttons = BLE_BTN_A | BLE_BTN_RB
         let mut report = [0u8; 12];
         let lx_bytes = 16384i16.to_le_bytes();
         report[0] = lx_bytes[0];

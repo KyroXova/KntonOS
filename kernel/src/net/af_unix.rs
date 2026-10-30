@@ -1,11 +1,5 @@
 //! Unix Domain Sockets (AF_UNIX / AF_LOCAL) & Local IPC Engine.
-//!
 //! Implements POSIX.1-2008 / Linux compatible Unix domain socket abstractions:
-//! - POSIX `sockaddr_un` structure (sun_family = AF_UNIX / 1, sun_path with null-termination)
-//! - Filesystem pathname addressing, abstract socket namespace (\0name), and unnamed sockets
-//! - Circular FIFO stream buffer (`UnixStreamRingBuffer`) for zero-loss bidirectional streams
-//! - Packetized message-boundary preserving datagram queue (`UnixDatagramQueue`)
-//! - Peer credentials (`ucred` struct: pid, uid, gid) for SO_PEERCRED IPC authentication
 
 use alloc::collections::BTreeMap;
 use crate::fs::{FilePerms, FsError, VFS};
@@ -422,7 +416,6 @@ impl UnixDatagramQueue {
         self.current_bytes = 0;
     }
 }
-
 
 /// Individual Unix domain socket state descriptor.
 #[derive(Debug)]
