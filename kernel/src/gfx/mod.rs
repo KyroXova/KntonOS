@@ -372,3 +372,172 @@ pub fn test_vrs_foveated_subsystem() -> bool {
 
     true
 }
+
+/// Comprehensive verification self-test suite for Direct3D 12 Mesh Shader and
+/// Amplification Shader Primitive Pipeline Engine.
+///
+/// Emits sentinel [KNT-GPU-MESH-PASS] upon successful validation.
+pub fn test_mesh_shader_subsystem() -> bool {
+    crate::serial_write_str("[KNT-GFX] Testing Direct3D 12 Mesh Shader & Amplification Shader Primitive Pipeline...\r\n");
+
+    // 1. Verify Meshlet descriptor validation and hardware limits (<= 64 vertices, <= 126 primitives)
+    let valid_meshlet = MeshletDescriptor {
+        vertex_offset: 0,
+        vertex_count: 64,
+        primitive_offset: 0,
+        primitive_count: 126,
+        bounds_sphere: MeshletBoundingSphere::new(Vec3::new(0.0, 0.0, 20.0), 5.0),
+        bounds_cone: MeshletBoundingCone::new(Vec3::new(0.0, 0.0, 20.0), Vec3::new(0.0, 0.0, -1.0), 0.0),
+    };
+    if valid_meshlet.validate().is_err() {
+        return false;
+    }
+
+    let invalid_verts = MeshletDescriptor {
+        vertex_count: 65,
+        ..valid_meshlet
+    };
+    if invalid_verts.validate() != Err(MeshShaderError::ExceededMaxVertices(65)) {
+        return false;
+    }
+
+    let invalid_prims = MeshletDescriptor {
+        primitive_count: 127,
+        ..valid_meshlet
+    };
+    if invalid_prims.validate() != Err(MeshShaderError::ExceededMaxPrimitives(127)) {
+        return false;
+    }
+
+    // 2. Verify Pipeline State Object (PSO) descriptor validation
+    let as_bytecode = MeshShaderBytecode::new(0x0000_1000_0000, 2048, 32, 1, 1);
+    let ms_bytecode = MeshShaderBytecode::new(0x0000_2000_0000, 4096, 64, 1, 1);
+    let pso = MeshShaderPipelineState {
+        amplification_shader: Some(as_bytecode),
+        mesh_shader: ms_bytecode,
+        pixel_shader: None,
+        primitive_topology: MeshShaderPrimitiveTopology::Triangles,
+        max_output_vertices: 64,
+        max_output_primitives: 126,
+        payload_size_bytes: 1024,
+    };
+    if pso.validate().is_err() {
+        return false;
+    }
+
+    // 3. Verify Amplification Shader frustum culling, backface culling, and payload dispatch
+    let frustum = Frustum::new([
+        FrustumPlane::new(Vec3::new(0.0, 0.0, 1.0), -1.0),    // Near (z >= 1)
+        FrustumPlane::new(Vec3::new(0.0, 0.0, -1.0), 100.0),  // Far (z <= 100)
+        FrustumPlane::new(Vec3::new(1.0, 0.0, 0.0), 50.0),    // Left (x >= -50)
+        FrustumPlane::new(Vec3::new(-1.0, 0.0, 0.0), 50.0),   // Right (x <= 50)
+        FrustumPlane::new(Vec3::new(0.0, -1.0, 0.0), 50.0),   // Top (y <= 50)
+        FrustumPlane::new(Vec3::new(0.0, 1.0, 0.0), 50.0),    // Bottom (y >= -50)
+    ]);
+    let camera_pos = Vec3::new(0.0, 0.0, 0.0);
+    let mut as_dispatcher = AmplificationShaderDispatcher::new(frustum, camera_pos);
+
+    let meshlet0 = MeshletDescriptor {
+        vertex_offset: 0,
+        vertex_count: 32,
+        primitive_offset: 0,
+        primitive_count: 48,
+        bounds_sphere: MeshletBoundingSphere::new(Vec3::new(0.0, 0.0, 20.0), 2.0),
+        bounds_cone: MeshletBoundingCone::new(Vec3::new(0.0, 0.0, 20.0), Vec3::new(0.0, 0.0, -1.0), 0.0),
+    };
+    let meshlet1 = MeshletDescriptor {
+        vertex_offset: 32,
+        vertex_count: 32,
+        primitive_offset: 48,
+        primitive_count: 48,
+        bounds_sphere: MeshletBoundingSphere::new(Vec3::new(0.0, 0.0, 20.0), 2.0),
+        bounds_cone: MeshletBoundingCone::new(Vec3::new(0.0, 0.0, 20.0), Vec3::new(0.0, 0.0, 1.0), 0.0),
+    };
+    let meshlet2 = MeshletDescriptor {
+        vertex_offset: 64,
+        vertex_count: 32,
+        primitive_offset: 96,
+        primitive_count: 48,
+        bounds_sphere: MeshletBoundingSphere::new(Vec3::new(0.0, 0.0, 150.0), 2.0),
+        bounds_cone: MeshletBoundingCone::new(Vec3::new(0.0, 0.0, 150.0), Vec3::new(0.0, 0.0, -1.0), 0.0),
+    };
+    let meshlet3 = MeshletDescriptor {
+        vertex_offset: 96,
+        vertex_count: 32,
+        primitive_offset: 144,
+        primitive_count: 48,
+        bounds_sphere: MeshletBoundingSphere::new(Vec3::new(10.0, 0.0, 80.0), 2.0),
+        bounds_cone: MeshletBoundingCone::new(Vec3::new(10.0, 0.0, 80.0), Vec3::new(0.0, 0.0, -1.0), 0.0),
+    };
+
+    let meshlet_db = [meshlet0, meshlet1, meshlet2, meshlet3];
+    let dispatches = match as_dispatcher.dispatch_meshlets(&meshlet_db, 1) {
+        Ok(d) => d,
+        Err(_) => return false,
+    };
+
+    if dispatches.len() != 1 {
+        return false;
+    }
+    let dispatch = &dispatches[0];
+    if dispatch.threadgroup_count_x != 2 || dispatch.payload.meshlet_count != 2 {
+        return false;
+    }
+    if dispatch.payload.meshlet_indices[0] != 0 || dispatch.payload.meshlet_indices[1] != 3 {
+        return false;
+    }
+
+    let stats = as_dispatcher.stats();
+    if stats.total_meshlets_input != 4
+        || stats.meshlets_frustum_culled != 1
+        || stats.meshlets_backface_culled != 1
+        || stats.meshlets_surviving_dispatched != 2
+        || stats.cull_rate_percentage() != 50
+    {
+        return false;
+    }
+
+    // 4. Verify Mesh Shader primitive expansion and output topology streamer
+    let mut ms_engine = match MeshShaderEngine::new(pso) {
+        Ok(eng) => eng,
+        Err(_) => return false,
+    };
+    let stream_outputs = match ms_engine.execute_dispatches(&dispatches, &meshlet_db) {
+        Ok(out) => out,
+        Err(_) => return false,
+    };
+
+    if stream_outputs.len() != 2 {
+        return false;
+    }
+    for out in &stream_outputs {
+        if out.vertex_count != 32 || out.primitive_count != 48 {
+            return false;
+        }
+        let v0 = &out.vertices[0];
+        if v0.position[3] != 1.0 || v0.color[0] != 1.0 {
+            return false;
+        }
+        for p in 0..out.primitive_count as usize {
+            let tri = &out.primitives[p];
+            if tri.i0 >= 32 || tri.i1 >= 32 || tri.i2 >= 32 {
+                return false;
+            }
+        }
+    }
+
+    let ms_stats = ms_engine.stats();
+    if ms_stats.meshlets_expanded != 2
+        || ms_stats.vertices_streamed != 64
+        || ms_stats.primitives_streamed != 96
+        || ms_stats.peak_vertices_per_meshlet != 32
+        || ms_stats.peak_primitives_per_meshlet != 48
+    {
+        return false;
+    }
+
+    // 5. Emit deterministic boot sentinel
+    crate::serial_write_str("[KNT-GPU-MESH-PASS] Direct3D 12 mesh shader and amplification shader pipeline engine verified\r\n");
+
+    true
+}
