@@ -596,6 +596,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Spatial audio virtualizer and ear-canal compensator self-test failed!\r\n");
     }
 
+    // Initialize and verify Real-Time In-Game Audio Dynamic Range Compressor & Limiter (TASK-KNT-124)
+    if !audio::test_audio_compressor_subsystem() {
+        serial_write_str("[KNT-PANIC] Audio dynamic range compressor and limiter self-test failed!\r\n");
+    }
+
     // Initialize and verify Hardware RNG & ChaCha20 Cryptographic Entropy Pool
     crypto::init_kernel_rng();
     if !crypto::test_crypto_rng_subsystem() {

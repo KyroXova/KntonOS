@@ -670,6 +670,112 @@ impl GameAudioDrcEngine {
     }
 }
 
+// =============================================================================
+// 5. Subsystem Verification Suite & Boot Sentinel
+// =============================================================================
+
+/// Verification self-test suite for Kernel-Direct Real-Time In-Game Audio Dynamic Range Compressor & Hearing Safety Limiter (TASK-KNT-124).
+pub fn test_audio_compressor_subsystem() -> bool {
+    crate::serial_write_str("[KNT-AUDIO-COMPRESSOR-TEST] Running Audio Dynamic Range Compressor & Hearing Safety Limiter verification suite...\r\n");
+
+    // 1. Decibel conversions, soft-knee gain computer, and static curve
+    let lin_half = 0.5f32;
+    let db_half = linear_to_db(lin_half);
+    let lin_restored = db_to_linear(db_half);
+    if (lin_restored - 0.5).abs() > 0.01 {
+        return false;
+    }
+
+    let params = CompressorParameters::default_gaming();
+    let gr_low = params.calculate_gain_reduction_db(-35.0);
+    if gr_low.abs() > 0.01 {
+        return false;
+    }
+    let gr_high = params.calculate_gain_reduction_db(-6.0);
+    if gr_high > -7.0 || gr_high < -11.0 {
+        return false;
+    }
+    crate::serial_write_str("  * Decibel conversions, soft-knee gain computer, and static curve verified\r\n");
+
+    // 2. Sub-millisecond lookahead buffer and decoupled attack/release envelope detector
+    let mut lookahead = LookaheadBuffer::new(8);
+    for i in 0..8 {
+        lookahead.push_and_pop(i as f32, i as f32);
+    }
+    let (l_del, r_del) = lookahead.push_and_pop(8.0, 8.0);
+    if l_del != 0.0 || r_del != 0.0 {
+        return false;
+    }
+
+    let mut env = EnvelopeDetector::new(AUDIO_SAMPLE_RATE, 2.0, 50.0);
+    for _ in 0..600 {
+        env.step(0.0);
+    }
+    if env.envelope_db < -1.5 {
+        return false;
+    }
+    crate::serial_write_str("  * Sub-millisecond lookahead buffer and decoupled attack/release envelope detector verified\r\n");
+
+    // 3. True-peak inter-sample estimator and -1.0 dBFS hearing safety brickwall limiter
+    let mut true_peak = TruePeakEstimator::new();
+    let tp_est = true_peak.estimate_sample_pair(0.9, 0.9);
+    if tp_est <= 0.0 {
+        return false;
+    }
+
+    let mut limiter = HearingSafetyLimiter::new(-1.0, 16);
+    let max_allowed = db_to_linear(-1.0);
+    for _ in 0..100 {
+        let (out_l, out_r) = limiter.process_sample(2.5, 2.5);
+        if out_l > max_allowed + 0.001 || out_r > max_allowed + 0.001 {
+            return false;
+        }
+    }
+    crate::serial_write_str("  * True-peak inter-sample estimator and -1.0 dBFS hearing safety brickwall limiter verified\r\n");
+
+    // 4. Tactical footstep booster and subtle audio presence expansion
+    let booster = FootstepDetailBooster::new();
+    let boost_quiet = booster.calculate_boost_db(-40.0);
+    if boost_quiet < 4.0 || boost_quiet > 8.0 {
+        return false;
+    }
+    let boost_loud = booster.calculate_boost_db(-15.0);
+    if boost_loud.abs() > 0.01 {
+        return false;
+    }
+    crate::serial_write_str("  * Tactical footstep booster and subtle audio presence expansion verified\r\n");
+
+    // 5. End-to-end real-time in-game audio DRC and hearing safety pipeline
+    let mut engine = GameAudioDrcEngine::new(DrcProfile::EsportsTactical);
+    let mut in_l = [0.0f32; 64];
+    let mut in_r = [0.0f32; 64];
+    for (i, (l, r)) in in_l.iter_mut().zip(in_r.iter_mut()).enumerate() {
+        let val = if i < 32 { 0.02 } else { 1.8 }; // Quiet footstep followed by loud explosion
+        *l = val;
+        *r = val;
+    }
+    let mut out_l = [0.0f32; 64];
+    let mut out_r = [0.0f32; 64];
+    engine.process_frame(&in_l, &in_r, &mut out_l, &mut out_r);
+
+    let mut max_output_peak = 0.0f32;
+    for i in 0..64 {
+        if out_l[i].abs() > max_output_peak {
+            max_output_peak = out_l[i].abs();
+        }
+        if out_r[i].abs() > max_output_peak {
+            max_output_peak = out_r[i].abs();
+        }
+    }
+    if max_output_peak <= 0.0 || max_output_peak > max_allowed + 0.005 {
+        return false;
+    }
+    crate::serial_write_str("  * End-to-end real-time in-game audio DRC and hearing safety pipeline verified\r\n");
+
+    crate::serial_write_str("[KNT-AUDIO-COMPRESSOR-PASS] Real-time audio dynamic range compressor and hearing safety limiter operational\r\n");
+    true
+}
+
 // -----------------------------------------------------------------------------
 // Unit Tests
 // -----------------------------------------------------------------------------
