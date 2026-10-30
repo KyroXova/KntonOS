@@ -1,9 +1,5 @@
 //! Real-Time In-Game 3D Audio Positional Occlusion & Acoustic Ray-Bouncing Reflection Engine.
-//!
 //! Provides spatial acoustic ray tracing between 3D audio emitters and listeners,
-//! material sound transmission loss and low-pass filter (LPF) occlusion calculation,
-//! first-order and second-order early reflection ray bouncers with fractional delay lines,
-//! late reverb decay synthesis, and click-free audio parameter smoothing.
 
 #![allow(dead_code)]
 
@@ -25,9 +21,7 @@ pub const MAX_DELAY_LINE_SAMPLES: usize = 9600;
 /// Maximum number of active early reflection paths tracked per emitter.
 pub const MAX_REFLECTION_PATHS: usize = 8;
 
-// -----------------------------------------------------------------------------
 // Pure no_std 3D Vector & Math Helpers
-// -----------------------------------------------------------------------------
 
 /// 3D Cartesian vector for acoustic spatial positioning and ray vectors.
 #[repr(C)]
@@ -138,9 +132,7 @@ impl core::ops::Mul<f32> for AcousticVec3 {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Acoustic Materials & Transmission Coefficients
-// -----------------------------------------------------------------------------
 
 /// Physical material types defining acoustic wave interaction.
 #[repr(u8)]
@@ -245,9 +237,7 @@ impl MaterialAcousticProperties {
     }
 }
 
-// -----------------------------------------------------------------------------
 // 3D Spatial Acoustic Ray Casting & Geometry Structures
-// -----------------------------------------------------------------------------
 
 /// Ray representation for acoustic sound paths and reflection bouncing.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -402,9 +392,7 @@ impl AcousticAabb {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Acoustic Reflection Delay Lines
-// -----------------------------------------------------------------------------
 
 /// Individual reflection path synthesized from ray bouncing.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -527,10 +515,7 @@ impl ReflectionDelayLine {
     }
 }
 
-
-// -----------------------------------------------------------------------------
 // 3D Positional Acoustic Occlusion Tracer & Diffraction Path Finder
-// -----------------------------------------------------------------------------
 
 /// Detailed result of acoustic line-of-sight ray tracing between emitter and listener.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -774,10 +759,7 @@ impl AcousticWorld {
     }
 }
 
-
-// -----------------------------------------------------------------------------
 // Early Reflection Ray Bouncer & Reverb Decay Synthesizer
-// -----------------------------------------------------------------------------
 
 /// Casts first-order and second-order acoustic reflection rays off scene obstacles.
 pub struct EarlyReflectionBouncer {
@@ -1078,9 +1060,7 @@ impl LateReverbSynthesizer {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Click-Free Audio Parameter Smoothing & Occlusion Engine
-// -----------------------------------------------------------------------------
 
 /// Parameter interpolator preventing audio popping and clicks during rapid source movement.
 pub struct AcousticParameterSmoother {
@@ -1235,10 +1215,7 @@ impl AcousticOcclusionEngine {
     }
 }
 
-
-// -----------------------------------------------------------------------------
 // In-Kernel Verification Self-Test Suite
-// -----------------------------------------------------------------------------
 
 /// Verify 3D ray-AABB geometric intersection and surface normal calculation.
 pub fn test_ray_casting_and_aabb_intersection() -> bool {
@@ -1548,8 +1525,6 @@ pub fn test_end_to_end_occlusion_and_reverb_pipeline() -> bool {
 
 /// Comprehensive verification self-test suite for Real-Time In-Game 3D Audio
 /// Positional Occlusion & Acoustic Ray-Bouncing Reflection Engine.
-///
-/// Emits sentinel [KNT-AUDIO-OCCLUSION-PASS] upon successful validation.
 pub fn test_audio_occlusion_subsystem() -> bool {
     crate::serial_write_str("[KNT-AUDIO-OCCLUSION-TEST] Running Real-Time 3D Audio Positional Occlusion & Acoustic Reflection verification suite...\r\n");
 

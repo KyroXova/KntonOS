@@ -1,23 +1,11 @@
 //! Kernel-Direct Ultra-Low-Latency In-Game Voice Activity Detector (VAD) & Spatial Echo Canceller.
-//!
 //! Provides bare-metal low-latency voice communications DSP for gaming handhelds:
-//! - Sub-5ms low-latency frame analysis (240 samples at 48 kHz).
-//! - Multi-feature Voice Activity Detection (VAD) combining energy, zero-crossing rate (ZCR),
-//!   spectral flatness, and sub-band vocal formant concentration.
-//! - Dynamic background noise estimator tracking chassis cooling fan rumble and button click rejection.
-//! - Speech hangover hysteresis timer preventing chopped word endings.
-//! - Normalized Least Mean Squares (NLMS) Adaptive Acoustic Echo Canceller (AEC) subtracting
-//!   speaker audio from microphone capture.
-//! - Geigel-style cross-correlation Dual-Talk Detector (DTD) preventing filter divergence during simultaneous speech.
-//! - Zero-allocation 16.16 fixed-point arithmetic execution.
 
 #![allow(dead_code)]
 
 extern crate alloc;
 
-// -----------------------------------------------------------------------------
 // Voice Activity Detection & Echo Cancellation Constants
-// -----------------------------------------------------------------------------
 
 /// Voice chat sampling frequency in Hertz (48 kHz standard).
 pub const VAD_SAMPLE_RATE_HZ: u32 = 48000;
@@ -34,9 +22,7 @@ pub const FP_Q16_ONE: i32 = 65536;
 /// Default speech hangover timer duration in frames (10 frames = 50 ms at 5 ms/frame).
 pub const DEFAULT_HANGOVER_FRAMES: u16 = 10;
 
-// -----------------------------------------------------------------------------
 // 16.16 Fixed-Point Math Helpers
-// -----------------------------------------------------------------------------
 
 /// Fixed-point 16.16 multiplication with rounding.
 #[inline(always)]
@@ -69,9 +55,7 @@ pub fn fp_sqrt_q16(val: i32) -> i32 {
     x
 }
 
-// -----------------------------------------------------------------------------
 // Spectral Features & VAD State Structures
-// -----------------------------------------------------------------------------
 
 /// Primary acoustic feature set extracted from each 5ms voice frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -172,9 +156,7 @@ impl NoiseFloorEstimator {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Normalized Least Mean Squares (NLMS) Acoustic Echo Canceller Structures
-// -----------------------------------------------------------------------------
 
 /// State structures for the Normalized Least Mean Squares (NLMS) acoustic echo canceler.
 pub struct AcousticEchoCancellerState {
@@ -218,10 +200,7 @@ impl AcousticEchoCancellerState {
     }
 }
 
-
-// -----------------------------------------------------------------------------
 // VAD Feature Extraction & Spectral Analysis
-// -----------------------------------------------------------------------------
 
 /// Extract spectral features, energy metrics, and zero-crossing counts from a 5ms PCM frame.
 pub fn extract_spectral_features(samples: &[i16; VAD_FRAME_SAMPLES]) -> VadSpectralFeatures {
@@ -287,9 +266,7 @@ pub fn extract_spectral_features(samples: &[i16; VAD_FRAME_SAMPLES]) -> VadSpect
     }
 }
 
-// -----------------------------------------------------------------------------
 // Dynamic Background Noise Floor Estimator & Chassis Rejection
-// -----------------------------------------------------------------------------
 
 impl NoiseFloorEstimator {
     /// Update background noise floor estimate based on current frame features and speech state.
@@ -337,9 +314,7 @@ impl NoiseFloorEstimator {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Voice Activity Detector Engine with Hangover Timer
-// -----------------------------------------------------------------------------
 
 /// Real-time low-latency Voice Activity Detector (VAD) engine.
 pub struct VoiceActivityDetector {
@@ -376,10 +351,6 @@ impl VoiceActivityDetector {
 
         // 2. Evaluate Voice Activity score:
         // Speech criteria:
-        // - SNR > threshold (frame energy significantly exceeds fan noise floor)
-        // - Formant concentration: low band energy >= 40% of total
-        // - Moderate zero-crossing rate: typical speech is 5..65 crossings per 240 samples
-        // - Spectral flatness < 0.70
         let mut score_q16 = 0i32;
 
         let effective_noise = fp_mul_q16(
@@ -450,10 +421,7 @@ impl VoiceActivityDetector {
     }
 }
 
-
-// -----------------------------------------------------------------------------
 // Normalized Least Mean Squares (NLMS) Acoustic Echo Canceller Implementation
-// -----------------------------------------------------------------------------
 
 /// Real-time Normalized Least Mean Squares (NLMS) Acoustic Echo Canceller (AEC).
 pub struct AcousticEchoCanceller {
@@ -477,7 +445,6 @@ impl AcousticEchoCanceller {
 
     /// Process a single audio sample: subtract estimated echo and adapt filter weights.
     /// Both `mic_sample_q16` and `speaker_sample_q16` are in 16.16 fixed-point format.
-    /// Returns the echo-cancelled output error sample `e[n]`.
     #[inline]
     pub fn process_sample(&mut self, mic_sample_q16: i32, speaker_sample_q16: i32) -> i32 {
         // 1. Insert current speaker sample into ring buffer history
@@ -578,9 +545,7 @@ impl AcousticEchoCanceller {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Unified Voice Chat Audio Processor Pipeline
-// -----------------------------------------------------------------------------
 
 /// Unified real-time voice communications processing pipeline.
 /// Integrates NLMS Acoustic Echo Cancellation with Multi-Feature Voice Activity Detection.
@@ -605,8 +570,6 @@ impl VoiceChatProcessor {
 
     /// Process 5ms microphone capture frame and speaker playback reference:
     /// 1. Subtract acoustic speaker echo using NLMS adaptive filter.
-    /// 2. Perform VAD analysis on the echo-cancelled clean microphone signal.
-    /// 3. Return `(VadDecision, clean_samples)`.
     pub fn process_voice_frame(
         &mut self,
         mic_in: &[i16; VAD_FRAME_SAMPLES],
@@ -626,10 +589,7 @@ impl VoiceChatProcessor {
     }
 }
 
-
-// -----------------------------------------------------------------------------
 // In-Kernel Verification Self-Test Suite
-// -----------------------------------------------------------------------------
 
 /// Verify 16.16 fixed-point math primitives and spectral feature extraction.
 pub fn test_fixed_point_math_and_features() -> bool {
@@ -879,8 +839,6 @@ pub fn test_end_to_end_voice_chat_pipeline() -> bool {
 
 /// Comprehensive verification self-test suite for Kernel-Direct Ultra-Low-Latency
 /// In-Game Voice Activity Detector (VAD) & Spatial Echo Canceller.
-///
-/// Emits sentinel [KNT-AUDIO-VAD-ECHO-PASS] upon successful validation.
 pub fn test_audio_vad_subsystem() -> bool {
     crate::serial_write_str("[KNT-AUDIO-VAD-ECHO-TEST] Running Voice Activity Detector & Spatial Echo Canceller verification suite...\r\n");
 
