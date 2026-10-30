@@ -79,13 +79,17 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-052 | Transparent Huge Pages (THP 2MB) & AMD 3D V-Cache NUMA Topology Awareness | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-052-thp-numa.md) |
 | TASK-KNT-053 | Hardware Variable Refresh Rate (VRR / FreeSync) & Dynamic VBLANK Presentation Timing | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-053-vrr-timing.md) |
 | TASK-KNT-054 | Native Hardware Display Scanout Rotation & Panel Orientation Subsystem (Portrait Panel Zero-Overhead Scanout) | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-054-display-rotation.md) |
-| TASK-KNT-055 | High-Throughput Zero-Copy Shared-Memory IPC Ring (knton-ipc-ring) & Fast UMWAIT/TPAUSE Synchronization | Claimed | TASK-KNT-022 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-055-ipc-ring.md) |
-| TASK-KNT-056 | PCIe Function-Level Reset (FLR) & GPU Timeout Detection and Recovery (TDR) Subsystem | Claimed | TASK-KNT-050 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-056-pci-tdr.md) |
-| TASK-KNT-057 | State-Externalized Dual-Ring Resilient Service Partitions & Sub-15ms Crash Recovery Engine | Claimed | TASK-KNT-010 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-057-service-resilience.md) |
+| TASK-KNT-055 | High-Throughput Zero-Copy Shared-Memory IPC Ring (knton-ipc-ring) & Fast UMWAIT/TPAUSE Synchronization | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-055-ipc-ring.md) |
+| TASK-KNT-056 | PCIe Function-Level Reset (FLR) & GPU Timeout Detection and Recovery (TDR) Subsystem | In Progress | Active on workspace/jules-martin | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-056-pci-tdr.md) |
+| TASK-KNT-057 | State-Externalized Dual-Ring Resilient Service Partitions & Sub-15ms Crash Recovery Engine | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-057-service-resilience.md) |
+| TASK-KNT-058 | Wayland Client Protocol Compositor Backend (wl_surface, wl_buffer, wl_shm) & Sub-Surface Synchronization | Claimed | TASK-KNT-055 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-058-wayland-compositor.md) |
+| TASK-KNT-059 | Dynamic Core Parking, C-State Governor, & Energy-Performance Bias (EPB / EPP) Manager | Claimed | TASK-KNT-056 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-059-core-parking.md) |
+| TASK-KNT-060 | Zero-Latency DMA Audio Ring Buffer & Multi-Stream Real-Time Mixer Engine | Claimed | TASK-KNT-057 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-060-dma-audio-mixer.md) |
 
 ## Active reservations
 
 - `kernel/src/pkg/`: reserved by ArdenKestrel for TASK-KNT-045.
-- `kernel/src/ipc/ring.rs`, `kernel/src/ipc/umwait.rs`: reserved by Ada Chen for TASK-KNT-055.
 - `kernel/src/drivers/pci/flr.rs`, `kernel/src/drivers/gpu/tdr.rs`: reserved by Jules Martin for TASK-KNT-056.
-- `kernel/src/process/resilience.rs`, `kernel/src/process/checkpoint.rs`: reserved by Priya Nair for TASK-KNT-057.
+- `kernel/src/compositor/wayland/`: reserved by Ada Chen for TASK-KNT-058.
+- `kernel/src/power/parking.rs`, `kernel/src/power/cstate.rs`: reserved by Jules Martin for TASK-KNT-059.
+- `kernel/src/drivers/audio/streamer.rs`, `kernel/src/drivers/audio/mixer.rs`: reserved by Priya Nair for TASK-KNT-060.
