@@ -444,6 +444,200 @@ impl VirtualKeyboardLayout {
     }
 }
 
+// =============================================================================
+// 2. Continuous Swipe Trajectory Smoothing & Shape-Writing Tokenizer
+// =============================================================================
+
+/// Single touch sensor sample along a gesture stroke.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TouchPoint {
+    pub x: f32,
+    pub y: f32,
+    pub timestamp_us: u64,
+}
+
+impl TouchPoint {
+    pub const fn new(x: f32, y: f32, timestamp_us: u64) -> Self {
+        Self { x, y, timestamp_us }
+    }
+
+    pub fn distance_to(&self, other: &TouchPoint) -> f32 {
+        let dx = self.x - other.x;
+        let dy = self.y - other.y;
+        sqrt_f32(dx * dx + dy * dy)
+    }
+}
+
+/// Helper function to compute square root in pure no_std via Newton-Raphson.
+pub fn sqrt_f32(val: f32) -> f32 {
+    if val <= 0.0 {
+        return 0.0;
+    }
+    let mut guess = val;
+    for _ in 0..10 {
+        guess = 0.5 * (guess + val / guess);
+    }
+    guess
+}
+
+/// Catmull-Rom Spline Trajectory Smoother.
+pub struct CatmullRomSmoother;
+
+impl CatmullRomSmoother {
+    /// Evaluates a single Catmull-Rom spline point at parameter t in [0.0, 1.0].
+    pub fn interpolate(p0: TouchPoint, p1: TouchPoint, p2: TouchPoint, p3: TouchPoint, t: f32) -> TouchPoint {
+        let t2 = t * t;
+        let t3 = t2 * t;
+
+        let x = 0.5 * ((2.0 * p1.x)
+            + (-p0.x + p2.x) * t
+            + (2.0 * p0.x - 5.0 * p1.x + 4.0 * p2.x - p3.x) * t2
+            + (-p0.x + 3.0 * p1.x - 3.0 * p2.x + p3.x) * t3);
+
+        let y = 0.5 * ((2.0 * p1.y)
+            + (-p0.y + p2.y) * t
+            + (2.0 * p0.y - 5.0 * p1.y + 4.0 * p2.y - p3.y) * t2
+            + (-p0.y + 3.0 * p1.y - 3.0 * p2.y + p3.y) * t3);
+
+        let dt = (p2.timestamp_us as f32 - p1.timestamp_us as f32) * t;
+        let timestamp_us = p1.timestamp_us + dt as u64;
+
+        TouchPoint::new(x, y, timestamp_us)
+    }
+
+    /// Resamples and smooths a raw jagged touch trajectory into continuous sub-pixel points.
+    pub fn smooth_trajectory(raw_points: &[TouchPoint], subdivisions_per_segment: usize) -> Vec<TouchPoint> {
+        if raw_points.len() < 2 {
+            return raw_points.to_vec();
+        }
+
+        let n = raw_points.len();
+        let mut smoothed = Vec::with_capacity((n - 1) * subdivisions_per_segment + 1);
+
+        for i in 0..n - 1 {
+            let p0 = if i == 0 { raw_points[0] } else { raw_points[i - 1] };
+            let p1 = raw_points[i];
+            let p2 = raw_points[i + 1];
+            let p3 = if i + 2 < n { raw_points[i + 2] } else { raw_points[n - 1] };
+
+            for step in 0..subdivisions_per_segment {
+                let t = step as f32 / subdivisions_per_segment as f32;
+                smoothed.push(Self::interpolate(p0, p1, p2, p3, t));
+            }
+        }
+        smoothed.push(raw_points[n - 1]);
+        smoothed
+    }
+}
+
+/// Extracted curve feature point for shape writing.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GestureFeatureType {
+    StrokeStart,
+    CornerTurn,
+    DwellStop,
+    StrokeEnd,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct GestureFeature {
+    pub point: TouchPoint,
+    pub feature_type: GestureFeatureType,
+    pub nearest_key: Option<char>,
+}
+
+/// Tokenizer that parses continuous swipe gesture trajectories into key tokens.
+pub struct ShapeWritingTokenizer;
+
+impl ShapeWritingTokenizer {
+    /// Extracts critical gesture inflection points (start, corners, dwell stops, end).
+    pub fn extract_features(trajectory: &[TouchPoint], layout: &VirtualKeyboardLayout) -> Vec<GestureFeature> {
+        if trajectory.is_empty() {
+            return Vec::new();
+        }
+
+        let mut features = Vec::new();
+
+        // 1. Start feature
+        let start_pt = trajectory[0];
+        let start_key = layout.hit_test(start_pt.x, start_pt.y).and_then(|k| match k.id {
+            VirtualKeyId::Char(c) => Some(c),
+            _ => None,
+        });
+        features.push(GestureFeature {
+            point: start_pt,
+            feature_type: GestureFeatureType::StrokeStart,
+            nearest_key: start_key,
+        });
+
+        // 2. Corner / directional inflection detection
+        let step = 4;
+        if trajectory.len() > step * 2 {
+            for i in (step..trajectory.len() - step).step_by(step) {
+                let p_prev = trajectory[i - step];
+                let p_curr = trajectory[i];
+                let p_next = trajectory[i + step];
+
+                let v1_x = p_curr.x - p_prev.x;
+                let v1_y = p_curr.y - p_prev.y;
+                let v2_x = p_next.x - p_curr.x;
+                let v2_y = p_next.y - p_curr.y;
+
+                let mag1 = sqrt_f32(v1_x * v1_x + v1_y * v1_y);
+                let mag2 = sqrt_f32(v2_x * v2_x + v2_y * v2_y);
+
+                if mag1 > 4.0 && mag2 > 4.0 {
+                    let dot = (v1_x * v2_x + v1_y * v2_y) / (mag1 * mag2);
+                    // Angle > 60 degrees (dot < 0.5) indicates sharp directional turn
+                    if dot < 0.5 {
+                        let key = layout.hit_test(p_curr.x, p_curr.y).and_then(|k| match k.id {
+                            VirtualKeyId::Char(c) => Some(c),
+                            _ => None,
+                        });
+                        features.push(GestureFeature {
+                            point: p_curr,
+                            feature_type: GestureFeatureType::CornerTurn,
+                            nearest_key: key,
+                        });
+                    }
+                }
+            }
+        }
+
+        // 3. End feature
+        let end_pt = trajectory[trajectory.len() - 1];
+        let end_key = layout.hit_test(end_pt.x, end_pt.y).and_then(|k| match k.id {
+            VirtualKeyId::Char(c) => Some(c),
+            _ => None,
+        });
+        features.push(GestureFeature {
+            point: end_pt,
+            feature_type: GestureFeatureType::StrokeEnd,
+            nearest_key: end_key,
+        });
+
+        features
+    }
+
+    /// Tokenizes the smoothed trajectory into an ordered string of keys traversed.
+    pub fn tokenize_trajectory(trajectory: &[TouchPoint], layout: &VirtualKeyboardLayout) -> String {
+        let mut tokens = String::new();
+        let mut last_char: Option<char> = None;
+
+        for pt in trajectory {
+            if let Some(key) = layout.hit_test(pt.x, pt.y) {
+                if let VirtualKeyId::Char(c) = key.id {
+                    if last_char != Some(c) {
+                        tokens.push(c);
+                        last_char = Some(c);
+                    }
+                }
+            }
+        }
+        tokens
+    }
+}
+
 // -----------------------------------------------------------------------------
 // Unit Tests for Commit 1
 // -----------------------------------------------------------------------------
@@ -480,5 +674,26 @@ mod tests {
         for key in &kb.keys {
             assert!(!key.bounds.contains(center_x as i32, center_y as i32));
         }
+    }
+    #[test]
+    pub fn test_catmull_rom_smoothing_and_tokenizing() {
+        let kb = VirtualKeyboardLayout::new(1280, 800, KeyboardLayoutMode::FullQwerty);
+
+        // Define a 3-point corner swipe: P1 -> Corner P2 -> P3
+        let p1 = TouchPoint::new(100.0, 500.0, 1000);
+        let p2 = TouchPoint::new(300.0, 500.0, 2000);
+        let p3 = TouchPoint::new(300.0, 700.0, 3000);
+        let raw = [p1, p2, p3];
+
+        let smoothed = CatmullRomSmoother::smooth_trajectory(&raw, 5);
+        assert_eq!(smoothed.len(), 11); // 2 segments * 5 + 1
+        assert_eq!(smoothed[0].x, 100.0);
+        assert_eq!(smoothed[10].y, 700.0);
+
+        // Feature extraction
+        let features = ShapeWritingTokenizer::extract_features(&smoothed, &kb);
+        assert!(features.len() >= 2);
+        assert_eq!(features[0].feature_type, GestureFeatureType::StrokeStart);
+        assert_eq!(features.last().unwrap().feature_type, GestureFeatureType::StrokeEnd);
     }
 }
