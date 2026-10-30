@@ -4,10 +4,12 @@
 //! multi-queue hardware submission (Graphics, Compute, Copy), monotonic GPU fences, and watchdog timers.
 
 pub mod cmdbuf;
+pub mod compute;
 pub mod gpu_queue;
 pub mod texture_stream;
 
 pub use cmdbuf::*;
+pub use compute::*;
 pub use gpu_queue::*;
 pub use texture_stream::*;
 
