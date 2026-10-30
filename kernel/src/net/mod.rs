@@ -7,6 +7,7 @@
 //! - UDP (RFC 768): Connectionless datagram framing and port endpoint demultiplexing
 //! - TCP (RFC 793): Connection-oriented stream sockets, state machine, and 3-way handshake
 
+pub mod af_unix;
 pub mod arp;
 pub mod dhcp;
 pub mod dns;
@@ -20,6 +21,11 @@ pub mod tcp;
 pub mod tls;
 pub mod udp;
 
+pub use af_unix::{
+    sockaddr_un, ucred, UnixDatagramPacket, UnixDatagramQueue, UnixSocketAddress, UnixSocketError,
+    UnixStreamRingBuffer, AF_UNIX, DEFAULT_DATAGRAM_MAX_BYTES, DEFAULT_DATAGRAM_MAX_PACKETS,
+    DEFAULT_STREAM_BUFFER_CAPACITY, UNIX_PATH_MAX,
+};
 pub use arp::{ArpCache, ArpPacket, ARP_OP_REPLY, ARP_OP_REQUEST};
 pub use dhcp::{
     verify_dhcp_state_machine, verify_dhcp_wire_protocol, DhcpClient, DhcpError, DhcpLease,

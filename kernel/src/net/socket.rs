@@ -30,6 +30,7 @@ pub enum SocketType {
     SockStream = 1, // Sequential, reliable, two-way connection (TCP)
     SockDgram = 2,  // Connectionless, unreliable datagrams (UDP)
     SockRaw = 3,    // Raw network protocol access
+    SockSeqPacket = 5, // Sequential, reliable datagrams
 }
 
 /// Socket Protocols.
@@ -65,6 +66,7 @@ pub enum SocketError {
     UnsupportedType,
     AddressInUse,
     InvalidAddress,
+    BrokenPipe,
 }
 
 /// Socket descriptor holding state, addresses, and transmission buffers.
