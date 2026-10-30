@@ -80,9 +80,7 @@ pub fn init() {
         let efer = rdmsr(IA32_EFER);
         wrmsr(IA32_EFER, efer | EFER_SCE);
 
-        // 2. Configure IA32_STAR
-        // Bits 32..47: Kernel CS (0x08) and Kernel SS (0x10)
-        // Bits 48..63: Base for 64-bit sysret (0x10 -> SS=0x18, CS=0x20)
+        // 2. Configure IA32_STAR: kernel CS/SS (bits 32..47), user sysret CS/SS (bits 48..63)
         let star: u64 = ((0x10_u64) << 48) | ((0x08_u64) << 32);
         wrmsr(IA32_STAR, star);
 

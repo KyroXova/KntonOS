@@ -1,8 +1,4 @@
-//! Page-Fault / EPT-Backed MMIO Memory Range Watchpoint Interceptor.
-//!
-//! Provides range-based MMIO access trapping without exhausting hardware debug registers
-//! (DR0..DR3), utilizing non-present page table markings or hypervisor EPT violations to
-//! intercept, log, emulate, and step across hardware register read/write operations.
+//! Page-fault and EPT-backed MMIO memory range watchpoint interceptor.
 
 
 /// MMIO access type intercepted by the watchpoint engine.
@@ -132,13 +128,7 @@ impl MmioRangeInterceptor {
         false
     }
 
-    /// Evaluates a Page Fault (#PF) or EPT violation to check if it matches an active MMIO watchpoint.
-    ///
-    /// `fault_addr`: CR2 or EPT Guest-Physical address.
-    /// `rip`: Instruction pointer triggering the fault.
-    /// `is_write`: Page fault error code bit 1 (W/R flag).
-    /// `access_size`: Size of instruction memory operand (1, 2, 4, 8 bytes).
-    /// `value`: Data being written (if write access).
+    /// Evaluates a #PF or EPT violation against active MMIO watchpoints, returning an intercept event.
     pub fn handle_fault(
         &mut self,
         fault_addr: usize,

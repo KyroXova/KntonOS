@@ -1,7 +1,4 @@
-//! x86-64 Hardware Debug Registers (DR0-DR7) Watchpoint Control & Status Engine.
-//!
-//! Provides configuration for CPU execution breakpoints and data read/write watchpoints
-//! across DR0..DR3 registers, with DR7 enable/length/condition controls and DR6 status parsing.
+//! x86-64 hardware debug registers (DR0-DR7) watchpoint control and status engine.
 
 /// Condition triggering a hardware breakpoint/watchpoint in DR7 (bits 16-31).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -311,9 +308,7 @@ pub fn test_hardware_watchpoint_registers() -> bool {
     true
 }
 
-// -------------------------------------------------------------------------------------------------
-// Single-Step Trap Execution & Register State Snapshotting
-// -------------------------------------------------------------------------------------------------
+// Single-step trap execution and register state snapshotting.
 
 /// CPU EFLAGS Trap Flag (TF, bit 8).
 pub const EFLAGS_TF: u64 = 1 << 8;
