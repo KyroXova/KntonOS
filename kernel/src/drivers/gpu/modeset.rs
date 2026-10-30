@@ -3,14 +3,20 @@
 //! Provides display modesetting configuration, linking CRTCs, encoders,
 //! connectors, and framebuffers into an active scanout pipeline.
 //! Implements atomic commit property table transactions (FB_ID, CRTC_ID,
-//! coordinates, rotation, scaling filter, alpha, zpos).
+//! coordinates, rotation, scaling filter, alpha, zpos) and direct-to-display
+//! multi-plane overlay scanout presentation (primary, overlay, cursor).
+
+extern crate alloc;
+use alloc::vec;
+use alloc::vec::Vec;
 
 use super::drm::{
     DrmDevice, DrmModeInfo, DRM_MODE_ATOMIC_TEST_ONLY, DRM_MODE_CONNECTED, DRM_MODE_REFLECT_MASK,
-    DRM_MODE_ROTATE_MASK, DRM_PROP_ACTIVE, DRM_PROP_ALPHA, DRM_PROP_CRTC_H, DRM_PROP_CRTC_ID,
-    DRM_PROP_CRTC_W, DRM_PROP_CRTC_X, DRM_PROP_CRTC_Y, DRM_PROP_FB_ID, DRM_PROP_ROTATION,
-    DRM_PROP_SCALING_FILTER, DRM_PROP_SRC_H, DRM_PROP_SRC_W, DRM_PROP_SRC_X, DRM_PROP_SRC_Y,
-    DRM_PROP_ZPOS, DRM_SCALING_FILTER_LINEAR,
+    DRM_MODE_REFLECT_X, DRM_MODE_REFLECT_Y, DRM_MODE_ROTATE_MASK, DRM_PLANE_TYPE_CURSOR,
+    DRM_PLANE_TYPE_OVERLAY, DRM_PLANE_TYPE_PRIMARY, DRM_PROP_ACTIVE, DRM_PROP_ALPHA,
+    DRM_PROP_CRTC_H, DRM_PROP_CRTC_ID, DRM_PROP_CRTC_W, DRM_PROP_CRTC_X, DRM_PROP_CRTC_Y,
+    DRM_PROP_FB_ID, DRM_PROP_ROTATION, DRM_PROP_SCALING_FILTER, DRM_PROP_SRC_H, DRM_PROP_SRC_W,
+    DRM_PROP_SRC_X, DRM_PROP_SRC_Y, DRM_PROP_ZPOS, DRM_SCALING_FILTER_LINEAR,
 };
 
 /// Modesetting status and error codes.
@@ -368,6 +374,389 @@ impl DrmAtomicReq {
 
         Ok(())
     }
+}
+
+// -----------------------------------------------------------------------------
+// Direct-to-Display Multi-Plane Overlay Scanout Engine
+// -----------------------------------------------------------------------------
+
+/// Output hardware scanout surface (CRTC target scanout memory).
+pub struct DrmScanoutSurface {
+    pub width: usize,
+    pub height: usize,
+    pub pitch: usize,
+    pub buffer: Vec<u32>,
+}
+
+impl DrmScanoutSurface {
+    pub fn new(width: usize, height: usize) -> Self {
+        let size = width * height;
+        Self {
+            width,
+            height,
+            pitch: width * 4,
+            buffer: vec![0u32; size],
+        }
+    }
+
+    #[inline(always)]
+    pub fn clear(&mut self, color: u32) {
+        self.buffer.fill(color);
+    }
+
+    #[inline(always)]
+    pub fn get_pixel(&self, x: usize, y: usize) -> u32 {
+        if x < self.width && y < self.height {
+            self.buffer[y * self.width + x]
+        } else {
+            0
+        }
+    }
+
+    #[inline(always)]
+    pub fn set_pixel(&mut self, x: usize, y: usize, color: u32) {
+        if x < self.width && y < self.height {
+            self.buffer[y * self.width + x] = color;
+        }
+    }
+}
+
+/// Dirty rectangle bounding box tracker for scanout flushes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DrmDirtyTracker {
+    pub min_x: usize,
+    pub min_y: usize,
+    pub max_x: usize,
+    pub max_y: usize,
+    pub is_dirty: bool,
+}
+
+impl DrmDirtyTracker {
+    pub const fn new() -> Self {
+        Self {
+            min_x: usize::MAX,
+            min_y: usize::MAX,
+            max_x: 0,
+            max_y: 0,
+            is_dirty: false,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.min_x = usize::MAX;
+        self.min_y = usize::MAX;
+        self.max_x = 0;
+        self.max_y = 0;
+        self.is_dirty = false;
+    }
+
+    pub fn mark_rect(&mut self, x0: usize, y0: usize, x1: usize, y1: usize) {
+        if x0 < self.min_x { self.min_x = x0; }
+        if y0 < self.min_y { self.min_y = y0; }
+        if x1 > self.max_x { self.max_x = x1; }
+        if y1 > self.max_y { self.max_y = y1; }
+        self.is_dirty = true;
+    }
+
+    pub fn dirty_rect(&self) -> Option<(usize, usize, usize, usize)> {
+        if self.is_dirty && self.min_x <= self.max_x && self.min_y <= self.max_y {
+            Some((self.min_x, self.min_y, self.max_x, self.max_y))
+        } else {
+            None
+        }
+    }
+}
+
+/// In-memory descriptor of a single plane submitted for hardware presentation.
+pub struct DrmPlanePresentation {
+    pub plane_id: u32,
+    pub plane_type: u32,
+    pub zpos: u32,
+    pub alpha: u16, // 0xFFFF = 100% opaque, 0 = 0%
+    pub rotation: u32,
+    pub scaling_filter: u32,
+    pub crtc_x: i32,
+    pub crtc_y: i32,
+    pub crtc_w: u32,
+    pub crtc_h: u32,
+    pub src_x: u32, // 16.16 fixed-point
+    pub src_y: u32,
+    pub src_w: u32,
+    pub src_h: u32,
+    pub fb_width: u32,
+    pub fb_height: u32,
+    pub pixels: Vec<u32>,
+}
+
+impl DrmPlanePresentation {
+    pub fn new(
+        plane_id: u32,
+        plane_type: u32,
+        zpos: u32,
+        alpha: u16,
+        rotation: u32,
+        scaling_filter: u32,
+        crtc_x: i32,
+        crtc_y: i32,
+        crtc_w: u32,
+        crtc_h: u32,
+        src_w: u32,
+        src_h: u32,
+        fb_width: u32,
+        fb_height: u32,
+        pixels: Vec<u32>,
+    ) -> Self {
+        Self {
+            plane_id,
+            plane_type,
+            zpos,
+            alpha,
+            rotation,
+            scaling_filter,
+            crtc_x,
+            crtc_y,
+            crtc_w,
+            crtc_h,
+            src_x: 0,
+            src_y: 0,
+            src_w: src_w << 16,
+            src_h: src_h << 16,
+            fb_width,
+            fb_height,
+            pixels,
+        }
+    }
+}
+
+/// Direct-to-Display Multi-Plane Scanout Compositor.
+pub struct DrmScanoutCompositor;
+
+impl DrmScanoutCompositor {
+    /// Composes multiple hardware planes into a target scanout surface in z-order.
+    ///
+    /// Evaluates plane coordinates, clipping against the scanout display boundaries,
+    /// applies scaling and rotation/reflection, performs alpha compositing,
+    /// and tracks the dirty bounding rectangle for low-latency hardware flush.
+    pub fn compose_planes(
+        scanout: &mut DrmScanoutSurface,
+        planes: &mut [DrmPlanePresentation],
+        tracker: &mut DrmDirtyTracker,
+    ) -> usize {
+        // 1. Sort active planes by z-order ascending (Primary z=0 -> Overlay z=1 -> Cursor z=2)
+        let plane_len = planes.len();
+        for i in 0..plane_len {
+            for j in (i + 1)..plane_len {
+                if planes[j].zpos < planes[i].zpos {
+                    planes.swap(i, j);
+                }
+            }
+        }
+
+        let mut rendered_planes = 0;
+
+        // 2. Render planes onto scanout surface
+        for plane in planes.iter() {
+            if plane.crtc_w == 0 || plane.crtc_h == 0 || plane.pixels.is_empty() {
+                continue;
+            }
+
+            let crtc_x = plane.crtc_x;
+            let crtc_y = plane.crtc_y;
+            let crtc_w = plane.crtc_w as i32;
+            let crtc_h = plane.crtc_h as i32;
+
+            // Clip destination rectangle against scanout boundaries
+            let clip_x0 = crtc_x.max(0) as usize;
+            let clip_y0 = crtc_y.max(0) as usize;
+            let clip_x1 = (crtc_x + crtc_w).max(0).min(scanout.width as i32) as usize;
+            let clip_y1 = (crtc_y + crtc_h).max(0).min(scanout.height as i32) as usize;
+
+            if clip_x0 >= clip_x1 || clip_y0 >= clip_y1 {
+                continue;
+            }
+
+            tracker.mark_rect(clip_x0, clip_y0, clip_x1, clip_y1);
+
+            let src_x_px = (plane.src_x >> 16) as usize;
+            let src_y_px = (plane.src_y >> 16) as usize;
+            let src_w_px = ((plane.src_w >> 16) as usize).max(1);
+            let src_h_px = ((plane.src_h >> 16) as usize).max(1);
+
+            let global_alpha = (plane.alpha >> 8) as u32; // 0..255
+
+            for dy in clip_y0..clip_y1 {
+                let rel_y = (dy as i32 - crtc_y) as usize;
+                let mut sy = (rel_y * src_h_px) / (plane.crtc_h as usize) + src_y_px;
+                if (plane.rotation & DRM_MODE_REFLECT_Y) != 0 && sy < src_h_px {
+                    sy = (src_h_px - 1).saturating_sub(sy);
+                }
+                sy = sy.min(plane.fb_height as usize - 1);
+
+                for dx in clip_x0..clip_x1 {
+                    let rel_x = (dx as i32 - crtc_x) as usize;
+                    let mut sx = (rel_x * src_w_px) / (plane.crtc_w as usize) + src_x_px;
+                    if (plane.rotation & DRM_MODE_REFLECT_X) != 0 && sx < src_w_px {
+                        sx = (src_w_px - 1).saturating_sub(sx);
+                    }
+                    sx = sx.min(plane.fb_width as usize - 1);
+
+                    let src_idx = sy * (plane.fb_width as usize) + sx;
+                    if src_idx >= plane.pixels.len() {
+                        continue;
+                    }
+                    let src_pixel = plane.pixels[src_idx];
+
+                    // Primary plane: opaque write
+                    if plane.plane_type == DRM_PLANE_TYPE_PRIMARY && plane.alpha == 0xFFFF {
+                        scanout.set_pixel(dx, dy, src_pixel);
+                    } else {
+                        // Per-pixel alpha compositing for Overlay & Cursor planes
+                        let sa = (src_pixel >> 24) & 0xFF;
+                        let eff_alpha = (sa * global_alpha) / 255;
+
+                        if eff_alpha == 0 {
+                            // Transparent, keep background
+                        } else if eff_alpha == 255 {
+                            // Fully opaque
+                            scanout.set_pixel(dx, dy, (0xFF << 24) | (src_pixel & 0x00FF_FFFF));
+                        } else {
+                            // Blend with existing scanout pixel
+                            let dst_pixel = scanout.get_pixel(dx, dy);
+                            let sr = (src_pixel >> 16) & 0xFF;
+                            let sg = (src_pixel >> 8) & 0xFF;
+                            let sb = src_pixel & 0xFF;
+
+                            let dr = (dst_pixel >> 16) & 0xFF;
+                            let dg = (dst_pixel >> 8) & 0xFF;
+                            let db = dst_pixel & 0xFF;
+
+                            let inv_a = 255 - eff_alpha;
+                            let out_r = (sr * eff_alpha + dr * inv_a) / 255;
+                            let out_g = (sg * eff_alpha + dg * inv_a) / 255;
+                            let out_b = (sb * eff_alpha + db * inv_a) / 255;
+
+                            scanout.set_pixel(dx, dy, (0xFF << 24) | (out_r << 16) | (out_g << 8) | out_b);
+                        }
+                    }
+                }
+            }
+
+            rendered_planes += 1;
+        }
+
+        rendered_planes
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Unit Verification for Multi-Plane Presentation
+// -----------------------------------------------------------------------------
+
+/// Unit test verifying multi-plane overlay presentation (primary surface, overlay plane, cursor plane).
+pub fn verify_multi_plane_overlay() -> bool {
+    let mut scanout = DrmScanoutSurface::new(128, 128);
+    let mut tracker = DrmDirtyTracker::new();
+
+    // 1. Primary Plane: 128x128 solid dark blue (0xFF000088)
+    let primary_pixels = vec![0xFF00_0088u32; 128 * 128];
+    let primary = DrmPlanePresentation::new(
+        1,
+        DRM_PLANE_TYPE_PRIMARY,
+        0, // zpos 0
+        0xFFFF,
+        0,
+        0,
+        0,
+        0,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        primary_pixels,
+    );
+
+    // 2. Hardware Overlay Plane: 32x32 video surface (green 0xFF00FF00 with 50% alpha 0x8000),
+    // positioned at (20, 20) with 2x hardware upscaling to 64x64
+    let overlay_pixels = vec![0xFF00_FF00u32; 32 * 32];
+    let overlay = DrmPlanePresentation::new(
+        2,
+        DRM_PLANE_TYPE_OVERLAY,
+        1, // zpos 1
+        0x8000, // 50% alpha
+        0,
+        DRM_SCALING_FILTER_LINEAR,
+        20,
+        20,
+        64,
+        64,
+        32,
+        32,
+        32,
+        32,
+        overlay_pixels,
+    );
+
+    // 3. Hardware Cursor Plane: 16x16 cursor with crosshair (white 0xFFFFFFFF),
+    // positioned at (30, 30) on top (zpos 2)
+    let mut cursor_pixels = vec![0x0000_0000u32; 16 * 16]; // Default transparent
+    for i in 0..16 {
+        cursor_pixels[8 * 16 + i] = 0xFFFF_FFFF; // Horizontal bar
+        cursor_pixels[i * 16 + 8] = 0xFFFF_FFFF; // Vertical bar
+    }
+    let cursor = DrmPlanePresentation::new(
+        3,
+        DRM_PLANE_TYPE_CURSOR,
+        2, // zpos 2
+        0xFFFF,
+        0,
+        0,
+        30,
+        30,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        cursor_pixels,
+    );
+
+    let mut planes = [primary, overlay, cursor];
+
+    // 4. Compose multi-plane overlay presentation
+    let count = DrmScanoutCompositor::compose_planes(&mut scanout, &mut planes, &mut tracker);
+    assert_eq!(count, 3);
+
+    // 5. Verify pixel output and z-ordering
+    // A) Background area (5, 5) -> pure primary dark blue (0xFF000088)
+    let bg_pixel = scanout.get_pixel(5, 5);
+    assert_eq!(bg_pixel, 0xFF00_0088);
+
+    // B) Overlay area outside cursor (25, 25) -> blend of green and dark blue:
+    // Green (0, 255, 0) * 0.5 + Dark Blue (0, 0, 136) * 0.5 = (0, 127, 68)
+    let overlay_pixel = scanout.get_pixel(25, 25);
+    let r = (overlay_pixel >> 16) & 0xFF;
+    let g = (overlay_pixel >> 8) & 0xFF;
+    let b = overlay_pixel & 0xFF;
+    assert_eq!(r, 0);
+    assert!(g >= 120 && g <= 135);
+    assert!(b >= 60 && b <= 75);
+
+    // C) Cursor center crosshair at (30 + 8 = 38, 30 + 8 = 38) -> opaque white (0xFFFFFFFF)
+    let cursor_pixel = scanout.get_pixel(38, 38);
+    assert_eq!(cursor_pixel, 0xFFFF_FFFF);
+
+    // D) Dirty tracker covers the full composited area
+    assert!(tracker.is_dirty);
+    let dirty = tracker.dirty_rect().expect("Dirty rect not recorded");
+    assert_eq!(dirty.0, 0);
+    assert_eq!(dirty.1, 0);
+    assert_eq!(dirty.2, 128);
+    assert_eq!(dirty.3, 128);
+
+    true
 }
 
 // -----------------------------------------------------------------------------
