@@ -539,3 +539,134 @@ impl SerEngine {
         Ok(dispatch_waves)
     }
 }
+
+
+// -----------------------------------------------------------------------------
+// Verification Self-Test Suite
+// -----------------------------------------------------------------------------
+
+/// Comprehensive verification self-test for D3D12 Shader Execution Reordering (SER).
+///
+/// Emits sentinel [KNT-GPU-SER-PASS] upon successful verification.
+pub fn test_ser_subsystem() -> bool {
+    let bbox_min = [-10.0, -10.0, -10.0];
+    let bbox_max = [10.0, 10.0, 10.0];
+
+    // 1. Verify Morton 3D code spatial bit-key hashing
+    let p_min = morton_code_3d(bbox_min, bbox_min, bbox_max);
+    let p_max = morton_code_3d(bbox_max, bbox_min, bbox_max);
+    if p_min != 0 || p_max != 0x3FFF_FFFF {
+        return false;
+    }
+
+    let p_mid1 = morton_code_3d([0.0, 0.0, 0.0], bbox_min, bbox_max);
+    let p_mid2 = morton_code_3d([0.0, 0.0, 0.0], bbox_min, bbox_max);
+    if p_mid1 != p_mid2 || p_mid1 == 0 {
+        return false;
+    }
+
+    // 2. Verify ReorderKey packing and unpacking
+    let key = ReorderKey::new(42, 0x12345);
+    if key.shader_index() != 42 || key.morton_code() != 0x12345 {
+        return false;
+    }
+
+    // Primary sort on shader_index must take precedence
+    let key_a = ReorderKey::new(1, 0xFFFFFF);
+    let key_b = ReorderKey::new(2, 0x000001);
+    if key_a >= key_b {
+        return false;
+    }
+
+    // 3. Verify HitRecord validation
+    let mut invalid_hit = HitRecord::default();
+    invalid_hit.origin[0] = f32::NAN;
+    if invalid_hit.validate().is_ok() {
+        return false;
+    }
+
+    // 4. Verify Radix Hit-Sort Accelerator and SIMD Coherence Gains
+    // Allocate SER Engine for 128 rays with wave size = 32
+    let mut engine = SerEngine::new(256, 32, bbox_min, bbox_max);
+
+    // Interleave 128 rays across 4 materials: (0, 1, 2, 3, 0, 1, 2, 3...)
+    // This creates worst-case SIMD divergence where every 32-lane wave executes 4 different shaders (25% lane utilization)
+    for i in 0..128 {
+        let shader_id = (i % 4) as u32;
+        let pos = [
+            -8.0 + (i as f32 * 0.12),
+            -8.0 + ((i % 8) as f32 * 2.0),
+            0.0,
+        ];
+        let hit = HitRecord {
+            ray_id: i as u32,
+            origin: pos,
+            direction: [0.0, 0.0, 1.0],
+            t_hit: 1.0,
+            instance_id: 1,
+            geometry_index: 0,
+            primitive_id: i as u32,
+            barycentrics: [0.33, 0.33],
+            shader_table_index: shader_id,
+            hit_kind: HitKind::TriangleFrontFace,
+        };
+        if engine.reorder_thread(hit).is_err() {
+            return false;
+        }
+    }
+
+    if engine.reorder_table.len() != 128 {
+        return false;
+    }
+
+    // Dispatch reordered rays through the hardware radix binning engine
+    let waves = match engine.dispatch_reordered_rays() {
+        Ok(w) => w,
+        Err(_) => return false,
+    };
+
+    // 128 rays / 32 rays per wave = 4 waves
+    if waves.len() != 4 {
+        return false;
+    }
+
+    // After reordering, each wave should have 100% shader coherence (32 rays of a single material)
+    for (i, wave) in waves.iter().enumerate() {
+        if wave.ray_count != 32 {
+            return false;
+        }
+        if wave.shader_table_index != i as u32 {
+            return false;
+        }
+        for ray in &wave.rays {
+            if ray.hit_record.shader_table_index != i as u32 {
+                return false;
+            }
+        }
+    }
+
+    // Verify profiler measured the jump from 25% to 100% lane utilization (4x gain)
+    let profiler = engine.profiler;
+    if profiler.total_batches_reordered != 1 || profiler.total_rays_reordered != 128 {
+        return false;
+    }
+    if (profiler.pre_reorder_lane_utilization - 0.25).abs() > 0.01 {
+        return false;
+    }
+    if (profiler.post_reorder_lane_utilization - 1.0).abs() > 0.01 {
+        return false;
+    }
+    if profiler.lane_utilization_gain_factor < 3.9 {
+        return false;
+    }
+
+    // 5. Verify error on empty reorder table dispatch
+    if engine.dispatch_reordered_rays().is_ok() {
+        return false;
+    }
+
+    // 6. Emit deterministic boot sentinel
+    crate::serial_write_str("[KNT-GPU-SER-PASS] Direct3D 12 shader execution reordering and raytracing hit-sort engine verified\r\n");
+
+    true
+}
