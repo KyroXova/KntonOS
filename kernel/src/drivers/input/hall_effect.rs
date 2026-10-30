@@ -737,3 +737,522 @@ pub fn verify_circularity_and_anti_deadzone() -> bool {
 
     true
 }
+
+// -----------------------------------------------------------------------------
+// Commit 3: Trigger Response Curves, Dynamic Centering & Subsystem Engine
+// -----------------------------------------------------------------------------
+
+/// Pure no_std fast power approximation x^y for base in [0.0, 1.0].
+#[inline]
+pub fn fast_powf(x: f32, y: f32) -> f32 {
+    if x <= 0.0 {
+        return 0.0;
+    }
+    if x >= 1.0 {
+        return 1.0;
+    }
+    if (y - 1.0).abs() < 1e-4 {
+        return x;
+    }
+    if (y - 2.0).abs() < 1e-4 {
+        return x * x;
+    }
+    if (y - 3.0).abs() < 1e-4 {
+        return x * x * x;
+    }
+    if (y - 0.5).abs() < 1e-4 {
+        return sqrt_f32(x);
+    }
+
+    let bits = x.to_bits();
+    let exp = ((bits >> 23) & 0xFF) as i32 - 127;
+    let mantissa = f32::from_bits((bits & 0x007F_FFFF) | 0x3F80_0000);
+    let m = mantissa - 1.0;
+    let log2_m = m * (1.442695 - 0.721348 * m + 0.480898 * m * m - 0.360674 * m * m * m);
+    let log2_x = (exp as f32) + log2_m;
+    let z = y * log2_x;
+    if z < -16.0 {
+        return 0.0;
+    }
+    let z_floor = if z < 0.0 { (z as i32) - 1 } else { z as i32 };
+    let f = z - (z_floor as f32);
+    let exp2_f = 1.0 + f * (0.693147 + f * (0.240226 + f * 0.055504));
+    let scale_exp = (z_floor + 127).clamp(1, 254) as u32;
+    let exp2_z = exp2_f * f32::from_bits(scale_exp << 23);
+    exp2_z.clamp(0.0, 1.0)
+}
+
+/// Customizable analog trigger response curve profile.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TriggerResponseCurve {
+    /// Linear 1:1 travel response.
+    Linear,
+    /// Exponential curve with gamma exponent (e.g. 1.8 - 2.2).
+    /// Provides soft feathering at the start of travel followed by rapid ramp.
+    Exponential { exponent: f32 },
+    /// Instant actuation mode for competitive FPS: snaps immediately to 100% (1.0)
+    /// when travel passes threshold (nominally 5% / 0.05), with hysteresis.
+    HairTrigger { threshold: f32, release_threshold: f32 },
+    /// Two-stage trigger with analog travel up to click_threshold, followed by
+    /// digital bottom-out click actuation and saturation to 1.0.
+    DualStage {
+        analog_limit: f32,
+        click_threshold: f32,
+        release_threshold: f32,
+    },
+}
+
+impl TriggerResponseCurve {
+    /// Default hair trigger profile for competitive shooters (5% actuation, 3% release).
+    pub const fn default_hair_trigger() -> Self {
+        Self::HairTrigger {
+            threshold: 0.05,
+            release_threshold: 0.03,
+        }
+    }
+
+    /// Default dual-stage trigger (85% click threshold, 80% release hysteresis).
+    pub const fn default_dual_stage() -> Self {
+        Self::DualStage {
+            analog_limit: 0.85,
+            click_threshold: 0.85,
+            release_threshold: 0.80,
+        }
+    }
+}
+
+/// Calibrated and filtered output for an analog Hall effect trigger.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CalibratedTriggerOutput {
+    /// Sensor channel (LeftTrigger or RightTrigger).
+    pub channel: HallSensorChannel,
+    /// Raw uncompensated ADC reading.
+    pub raw_adc: u16,
+    /// Final shaped analog actuation value [0.0, 1.0].
+    pub analog_value: f32,
+    /// Digital click state (actuated in HairTrigger or DualStage bottom-out).
+    pub is_clicked: bool,
+    /// Travel percentage [0.0, 100.0]%.
+    pub travel_pct: f32,
+}
+
+impl CalibratedTriggerOutput {
+    /// Returns zeroed resting trigger output.
+    pub const fn zero(channel: HallSensorChannel) -> Self {
+        Self {
+            channel,
+            raw_adc: 0,
+            analog_value: 0.0,
+            is_clicked: false,
+            travel_pct: 0.0,
+        }
+    }
+}
+
+/// Evaluates trigger response curves with stateful hysteresis tracking.
+pub fn process_trigger_curve(
+    raw_travel: f32,
+    curve: &TriggerResponseCurve,
+    currently_clicked: &mut bool,
+) -> (f32, bool) {
+    let travel = raw_travel.clamp(0.0, 1.0);
+
+    match *curve {
+        TriggerResponseCurve::Linear => {
+            *currently_clicked = travel >= 0.98;
+            (travel, *currently_clicked)
+        }
+        TriggerResponseCurve::Exponential { exponent } => {
+            let shaped = fast_powf(travel, exponent);
+            *currently_clicked = travel >= 0.98;
+            (shaped, *currently_clicked)
+        }
+        TriggerResponseCurve::HairTrigger { threshold, release_threshold } => {
+            if *currently_clicked {
+                if travel < release_threshold {
+                    *currently_clicked = false;
+                    (0.0, false)
+                } else {
+                    (1.0, true)
+                }
+            } else {
+                if travel >= threshold {
+                    *currently_clicked = true;
+                    (1.0, true)
+                } else {
+                    (0.0, false)
+                }
+            }
+        }
+        TriggerResponseCurve::DualStage { analog_limit, click_threshold, release_threshold } => {
+            if *currently_clicked {
+                if travel < release_threshold {
+                    *currently_clicked = false;
+                    let norm = travel / click_threshold.max(0.1);
+                    (norm.clamp(0.0, 1.0) * analog_limit, false)
+                } else {
+                    (1.0, true)
+                }
+            } else {
+                if travel >= click_threshold {
+                    *currently_clicked = true;
+                    (1.0, true)
+                } else {
+                    let norm = travel / click_threshold.max(0.1);
+                    (norm.clamp(0.0, 1.0) * analog_limit, false)
+                }
+            }
+        }
+    }
+}
+
+/// Dynamic self-centering bias tracking engine.
+///
+/// Slowly observes the resting position of a Hall effect joystick when no user input
+/// is detected, adjusting the center offset with an exponential moving average (EMA)
+/// to eliminate thermal remanence and spring relaxation drift.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DynamicCenteringTracker {
+    /// Estimated horizontal center bias offset.
+    pub center_bias_x: f32,
+    /// Estimated vertical center bias offset.
+    pub center_bias_y: f32,
+    /// Previous raw X sample for velocity estimation.
+    pub last_raw_x: f32,
+    /// Previous raw Y sample for velocity estimation.
+    pub last_raw_y: f32,
+    /// Number of consecutive stationary resting frames.
+    pub still_frames: u32,
+    /// Exponential moving average learning rate.
+    pub learning_rate: f32,
+    /// Maximum allowed adaptation window (+/- fraction of full scale).
+    pub max_bias_window: f32,
+}
+
+impl DynamicCenteringTracker {
+    /// Creates a new self-centering tracker with default parameters.
+    pub const fn new() -> Self {
+        Self {
+            center_bias_x: 0.0,
+            center_bias_y: 0.0,
+            last_raw_x: 0.0,
+            last_raw_y: 0.0,
+            still_frames: 0,
+            learning_rate: 0.02,
+            max_bias_window: 0.05, // Up to +/- 5% resting correction
+        }
+    }
+
+    /// Ingests a raw normalized stick coordinate and returns bias-compensated coordinates.
+    pub fn update(&mut self, raw_x: f32, raw_y: f32) -> (f32, f32) {
+        let delta_x = (raw_x - self.last_raw_x).abs();
+        let delta_y = (raw_y - self.last_raw_y).abs();
+        self.last_raw_x = raw_x;
+        self.last_raw_y = raw_y;
+
+        // Stick is resting if near origin and stationary
+        let mag_sq = raw_x * raw_x + raw_y * raw_y;
+        let is_near_origin = mag_sq < 0.0064; // radius < 0.08
+        let is_still = (delta_x + delta_y) < 0.002;
+
+        if is_near_origin && is_still {
+            self.still_frames = self.still_frames.saturating_add(1);
+            if self.still_frames >= 10 {
+                // Adapt center bias slowly
+                self.center_bias_x += (raw_x - self.center_bias_x) * self.learning_rate;
+                self.center_bias_y += (raw_y - self.center_bias_y) * self.learning_rate;
+
+                // Clamp to maximum allowed window to avoid adapting active input
+                self.center_bias_x = self.center_bias_x.clamp(-self.max_bias_window, self.max_bias_window);
+                self.center_bias_y = self.center_bias_y.clamp(-self.max_bias_window, self.max_bias_window);
+            }
+        } else {
+            self.still_frames = 0;
+        }
+
+        let comp_x = raw_x - self.center_bias_x;
+        let comp_y = raw_y - self.center_bias_y;
+        (comp_x, comp_y)
+    }
+
+    /// Resets learned center bias offsets to zero.
+    pub fn reset(&mut self) {
+        self.center_bias_x = 0.0;
+        self.center_bias_y = 0.0;
+        self.still_frames = 0;
+    }
+}
+
+/// Master subsystem engine coordinating dual Hall effect joysticks and dual triggers.
+pub struct HallEffectEngine {
+    /// Left stick calibration.
+    pub left_stick_cal: JoystickCalibration,
+    /// Right stick calibration.
+    pub right_stick_cal: JoystickCalibration,
+    /// Left trigger calibration.
+    pub left_trigger_cal: AxisCalibration,
+    /// Right trigger calibration.
+    pub right_trigger_cal: AxisCalibration,
+    /// Left trigger response curve.
+    pub left_trigger_curve: TriggerResponseCurve,
+    /// Right trigger response curve.
+    pub right_trigger_curve: TriggerResponseCurve,
+    /// Left trigger clicked latch state.
+    pub left_trigger_clicked: bool,
+    /// Right trigger clicked latch state.
+    pub right_trigger_clicked: bool,
+    /// Left stick dynamic self-centering tracker.
+    pub left_stick_tracker: DynamicCenteringTracker,
+    /// Right stick dynamic self-centering tracker.
+    pub right_stick_tracker: DynamicCenteringTracker,
+    /// Most recent left stick output.
+    pub left_stick_output: CalibratedStickOutput,
+    /// Most recent right stick output.
+    pub right_stick_output: CalibratedStickOutput,
+    /// Most recent left trigger output.
+    pub left_trigger_output: CalibratedTriggerOutput,
+    /// Most recent right trigger output.
+    pub right_trigger_output: CalibratedTriggerOutput,
+}
+
+impl HallEffectEngine {
+    /// Creates a new engine initialized for the specified ADC resolution.
+    pub const fn new(resolution: AdcResolution) -> Self {
+        let (stick_cal, trig_cal) = match resolution {
+            AdcResolution::Bits12 => (
+                JoystickCalibration::default_12bit(),
+                AxisCalibration::default_12bit(false),
+            ),
+            AdcResolution::Bits16 => (
+                JoystickCalibration::default_16bit(),
+                AxisCalibration::default_16bit(false),
+            ),
+        };
+
+        Self {
+            left_stick_cal: stick_cal,
+            right_stick_cal: stick_cal,
+            left_trigger_cal: trig_cal,
+            right_trigger_cal: trig_cal,
+            left_trigger_curve: TriggerResponseCurve::Linear,
+            right_trigger_curve: TriggerResponseCurve::Linear,
+            left_trigger_clicked: false,
+            right_trigger_clicked: false,
+            left_stick_tracker: DynamicCenteringTracker::new(),
+            right_stick_tracker: DynamicCenteringTracker::new(),
+            left_stick_output: CalibratedStickOutput::zero(),
+            right_stick_output: CalibratedStickOutput::zero(),
+            left_trigger_output: CalibratedTriggerOutput::zero(HallSensorChannel::LeftTrigger),
+            right_trigger_output: CalibratedTriggerOutput::zero(HallSensorChannel::RightTrigger),
+        }
+    }
+
+    /// Ingests raw ADC readings for a joystick and updates calibrated output.
+    pub fn update_stick(
+        &mut self,
+        is_left: bool,
+        raw_x: u16,
+        raw_y: u16,
+        temp_c: f32,
+        mode: CircularityMode,
+    ) -> CalibratedStickOutput {
+        let (cal, tracker) = if is_left {
+            (&self.left_stick_cal, &mut self.left_stick_tracker)
+        } else {
+            (&self.right_stick_cal, &mut self.right_stick_tracker)
+        };
+
+        // 1. Normalize axes with temperature compensation
+        let norm_x = cal.axis_x.normalize_stick_axis(raw_x, temp_c);
+        let norm_y = cal.axis_y.normalize_stick_axis(raw_y, temp_c);
+
+        // 2. Dynamic self-centering bias tracking
+        let (comp_x, comp_y) = tracker.update(norm_x, norm_y);
+
+        // 3. Deadzone filtering, anti-deadzone boost, and circularity mapping
+        let output = process_joystick_vector(comp_x, comp_y, &cal.deadzone, mode);
+
+        if is_left {
+            self.left_stick_output = output;
+        } else {
+            self.right_stick_output = output;
+        }
+
+        output
+    }
+
+    /// Ingests raw ADC reading for a trigger and updates calibrated output.
+    pub fn update_trigger(
+        &mut self,
+        is_left: bool,
+        raw_adc: u16,
+        temp_c: f32,
+    ) -> CalibratedTriggerOutput {
+        let (cal, curve, clicked_state, channel) = if is_left {
+            (
+                &self.left_trigger_cal,
+                &self.left_trigger_curve,
+                &mut self.left_trigger_clicked,
+                HallSensorChannel::LeftTrigger,
+            )
+        } else {
+            (
+                &self.right_trigger_cal,
+                &self.right_trigger_curve,
+                &mut self.right_trigger_clicked,
+                HallSensorChannel::RightTrigger,
+            )
+        };
+
+        // 1. Normalize travel [0.0, 1.0] with temperature compensation
+        let raw_travel = cal.normalize_trigger_axis(raw_adc, temp_c);
+
+        // 2. Apply customizable response curve and click state machine
+        let (analog_val, is_clicked) = process_trigger_curve(raw_travel, curve, clicked_state);
+
+        let output = CalibratedTriggerOutput {
+            channel,
+            raw_adc,
+            analog_value: analog_val,
+            is_clicked,
+            travel_pct: raw_travel * 100.0,
+        };
+
+        if is_left {
+            self.left_trigger_output = output;
+        } else {
+            self.right_trigger_output = output;
+        }
+
+        output
+    }
+
+    /// Updates trigger response curve profile.
+    pub fn set_trigger_curve(&mut self, is_left: bool, curve: TriggerResponseCurve) {
+        if is_left {
+            self.left_trigger_curve = curve;
+            self.left_trigger_clicked = false;
+        } else {
+            self.right_trigger_curve = curve;
+            self.right_trigger_clicked = false;
+        }
+    }
+
+    /// Updates joystick deadzone profile.
+    pub fn set_deadzone_profile(&mut self, is_left: bool, profile: DeadzoneProfile) {
+        if is_left {
+            self.left_stick_cal.deadzone = profile;
+        } else {
+            self.right_stick_cal.deadzone = profile;
+        }
+    }
+}
+
+/// Verification helper for Commit 3 trigger response curves and dynamic self-centering.
+pub fn verify_trigger_curves_and_dynamic_centering() -> bool {
+    let mut clicked = false;
+
+    // 1. Verify Linear Curve
+    let lin_curve = TriggerResponseCurve::Linear;
+    let (lin_half, _) = process_trigger_curve(0.50, &lin_curve, &mut clicked);
+    if (lin_half - 0.50).abs() > 1e-4 {
+        return false;
+    }
+
+    // 2. Verify Exponential Curve (gamma = 2.0 -> 0.5^2 = 0.25)
+    let exp_curve = TriggerResponseCurve::Exponential { exponent: 2.0 };
+    let (exp_half, _) = process_trigger_curve(0.50, &exp_curve, &mut clicked);
+    if (exp_half - 0.25).abs() > 1e-3 {
+        return false;
+    }
+
+    // 3. Verify Hair-Trigger Actuation & Hysteresis
+    let hair_curve = TriggerResponseCurve::HairTrigger {
+        threshold: 0.05,
+        release_threshold: 0.03,
+    };
+    clicked = false;
+
+    // 3% travel -> below threshold, zero output, unclicked
+    let (hair_low, clk_low) = process_trigger_curve(0.03, &hair_curve, &mut clicked);
+    if hair_low != 0.0 || clk_low {
+        return false;
+    }
+
+    // 6% travel -> crosses threshold, snaps instantly to 1.0 (100%), clicked
+    let (hair_high, clk_high) = process_trigger_curve(0.06, &hair_curve, &mut clicked);
+    if (hair_high - 1.0).abs() > 1e-4 || !clk_high {
+        return false;
+    }
+
+    // 4% travel -> drops below threshold but above release_threshold (0.03), remains 1.0 clicked
+    let (hair_hyst, clk_hyst) = process_trigger_curve(0.04, &hair_curve, &mut clicked);
+    if (hair_hyst - 1.0).abs() > 1e-4 || !clk_hyst {
+        return false;
+    }
+
+    // 2% travel -> drops below release threshold (0.03), releases to 0.0
+    let (hair_rel, clk_rel) = process_trigger_curve(0.02, &hair_curve, &mut clicked);
+    if hair_rel != 0.0 || clk_rel {
+        return false;
+    }
+
+    // 4. Verify Dual-Stage Trigger Breakpoint & Click
+    let dual_curve = TriggerResponseCurve::default_dual_stage(); // 85% click, 80% release
+    clicked = false;
+
+    // 50% travel -> soft analog pull (0.50)
+    let (dual_soft, clk_soft) = process_trigger_curve(0.50, &dual_curve, &mut clicked);
+    if (dual_soft - 0.50).abs() > 0.02 || clk_soft {
+        return false;
+    }
+
+    // 88% travel -> crosses 85% breakpoint, snaps to 1.0 and clicked = true
+    let (dual_hard, clk_hard) = process_trigger_curve(0.88, &dual_curve, &mut clicked);
+    if (dual_hard - 1.0).abs() > 1e-4 || !clk_hard {
+        return false;
+    }
+
+    // 82% travel -> above release threshold (80%), stays clicked
+    let (dual_mid, clk_mid) = process_trigger_curve(0.82, &dual_curve, &mut clicked);
+    if (dual_mid - 1.0).abs() > 1e-4 || !clk_mid {
+        return false;
+    }
+
+    // 75% travel -> drops below release threshold (80%), releases back to analog
+    let (dual_rel, clk_rel2) = process_trigger_curve(0.75, &dual_curve, &mut clicked);
+    if clk_rel2 || dual_rel >= 0.85 {
+        return false;
+    }
+
+    // 5. Verify Dynamic Self-Centering Bias Adaptation
+    let mut tracker = DynamicCenteringTracker::new();
+    tracker.learning_rate = 0.05;
+
+    // Simulate stick resting with a small persistent +0.025 bias
+    for _ in 0..50 {
+        tracker.update(0.025, 0.000);
+    }
+    // Tracker should have learned the positive bias
+    if tracker.center_bias_x < 0.020 {
+        return false;
+    }
+    // Now when stick sits at 0.025, compensated output is ~0.000
+    let (comp_x, _) = tracker.update(0.025, 0.000);
+    if comp_x.abs() > 0.005 {
+        return false;
+    }
+
+    // 6. Verify Full HallEffectEngine Integration
+    let mut engine = HallEffectEngine::new(AdcResolution::Bits12);
+    engine.set_trigger_curve(true, TriggerResponseCurve::default_hair_trigger());
+
+    // Update left trigger at raw ADC corresponding to 10% pull:
+    // raw = 410 (out of 4095)
+    let trig_out = engine.update_trigger(true, 410, 25.0);
+    if (trig_out.analog_value - 1.0).abs() > 1e-4 || !trig_out.is_clicked {
+        return false;
+    }
+
+    true
+}
