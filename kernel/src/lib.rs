@@ -644,6 +644,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Audio positional occlusion and reflection engine self-test failed!\r\n");
     }
 
+    // Initialize and verify Ultra-Low-Latency Voice Activity Detector (VAD) & Spatial Echo Canceller (TASK-KNT-133)
+    if !audio::test_audio_vad_subsystem() {
+        serial_write_str("[KNT-PANIC] Audio VAD and acoustic echo canceler self-test failed!\r\n");
+    }
+
     // Initialize and verify Hardware RNG & ChaCha20 Cryptographic Entropy Pool
     crypto::init_kernel_rng();
     if !crypto::test_crypto_rng_subsystem() {
