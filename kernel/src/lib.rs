@@ -226,6 +226,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Hardware video decode and presentation streamer self-test failed!\r\n");
     }
 
+    // Initialize and verify Real-Time In-Game Frame Capture HDR Tonemapper & Ultra-Low-Latency Display Mirroring Streamer (TASK-KNT-127)
+    if !video::test_video_hdr_stream_subsystem() {
+        serial_write_str("[KNT-PANIC] Video frame capture HDR tonemapper and display mirroring streamer self-test failed!\r\n");
+    }
+
     // Initialize Virtual File System & mount demo initramfs
     fs::init();
     if !fs::test_vfs_subsystem() {

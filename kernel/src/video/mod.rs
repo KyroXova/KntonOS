@@ -7,7 +7,10 @@
 #![allow(dead_code)]
 
 pub mod decode;
+pub mod hdr_stream;
 pub mod nv12;
+
+pub use hdr_stream::test_video_hdr_stream_subsystem;
 
 /// Comprehensive verification self-test suite for Kernel-Direct Hardware Video Decode
 /// & Zero-Copy Presentation Streamer subsystem.
