@@ -10,6 +10,7 @@ pub mod gpu;
 pub mod storage;
 pub mod input;
 pub mod sensor;
+pub mod display;
 
 pub use sensor::*;
 
