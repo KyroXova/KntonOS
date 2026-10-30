@@ -336,6 +336,113 @@ impl HallEffectCenterCalibrator {
     }
 }
 
+
+/// Physical stick rebound / snapback suppression filter.
+///
+/// When an analog stick is released from full deflection, centering springs cause
+/// mechanical overshoot past the center resting point, which can cause spurious opposite-direction
+/// inputs in esports titles. This filter detects rapid return towards center and suppresses
+/// reverse overshoot within a brief settling window (typically 15-25ms).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AntiReboundSmoother {
+    /// Activation threshold: stick must have reached at least this magnitude to arm snapback protection.
+    pub arm_threshold: f32,
+    /// Maximum snapback overshoot magnitude allowed to be suppressed.
+    pub max_rebound_magnitude: f32,
+    /// Settling duration in samples (e.g. 25 samples at 1000Hz = 25ms).
+    pub rebound_window_samples: u32,
+
+    // Internal state
+    last_deflection_x: f32,
+    last_deflection_y: f32,
+    rebound_timer: u32,
+    is_armed: bool,
+    total_rebounds_suppressed: u32,
+}
+
+impl Default for AntiReboundSmoother {
+    fn default() -> Self {
+        Self {
+            arm_threshold: 0.50,
+            max_rebound_magnitude: 0.35,
+            rebound_window_samples: 25,
+            last_deflection_x: 0.0,
+            last_deflection_y: 0.0,
+            rebound_timer: 0,
+            is_armed: false,
+            total_rebounds_suppressed: 0,
+        }
+    }
+}
+
+impl AntiReboundSmoother {
+    pub const fn new(arm_threshold: f32, max_rebound_magnitude: f32, rebound_window_samples: u32) -> Self {
+        Self {
+            arm_threshold,
+            max_rebound_magnitude,
+            rebound_window_samples,
+            last_deflection_x: 0.0,
+            last_deflection_y: 0.0,
+            rebound_timer: 0,
+            is_armed: false,
+            total_rebounds_suppressed: 0,
+        }
+    }
+
+    /// Evaluates current stick position and suppresses mechanical snapback overshoot.
+    /// Returns (smoothed_x, smoothed_y, was_rebound_suppressed).
+    pub fn process(&mut self, x: f32, y: f32) -> (f32, f32, bool) {
+        let mag = sqrt_f32(x * x + y * y);
+
+        // 1. Arm if stick is deflected beyond threshold
+        if mag >= self.arm_threshold {
+            self.last_deflection_x = x;
+            self.last_deflection_y = y;
+            self.is_armed = true;
+            self.rebound_timer = 0;
+            return (x, y, false);
+        }
+
+        // 2. If armed and stick enters center deadzone / crosses origin, start rebound protection window
+        if self.is_armed && mag <= 0.15 {
+            self.rebound_timer = self.rebound_window_samples;
+            self.is_armed = false;
+        }
+
+        // 3. During rebound window, check for opposite-direction overshoot
+        if self.rebound_timer > 0 {
+            self.rebound_timer -= 1;
+
+            // Directional dot product against original deflection vector
+            let dot = x * self.last_deflection_x + y * self.last_deflection_y;
+
+            // If dot product is negative (opposite half-plane) and within rebound magnitude:
+            if dot < 0.0 && mag <= self.max_rebound_magnitude {
+                self.total_rebounds_suppressed += 1;
+                // Suppress snapback: zero out the overshoot
+                return (0.0, 0.0, true);
+            } else if dot < 0.0 && mag > self.max_rebound_magnitude {
+                // Deliberate user flick in opposite direction: cancel protection immediately
+                self.rebound_timer = 0;
+            }
+        }
+
+        (x, y, false)
+    }
+
+    pub fn total_suppressed(&self) -> u32 {
+        self.total_rebounds_suppressed
+    }
+
+    pub fn reset(&mut self) {
+        self.last_deflection_x = 0.0;
+        self.last_deflection_y = 0.0;
+        self.rebound_timer = 0;
+        self.is_armed = false;
+        self.total_rebounds_suppressed = 0;
+    }
+}
+
 /// Self-test verifying 1-Euro adaptive low-pass filter and radial deadzone calibration.
 pub fn verify_one_euro_filter_and_deadzone() -> bool {
     // 1. Verify LowPassFilter basic operation
