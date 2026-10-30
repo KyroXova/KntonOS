@@ -434,3 +434,239 @@ pub fn verify_active_resistance_governor_and_stall_protection() -> bool {
 
     true
 }
+/// Calibration parameters for normalizing raw Hall/ADC trigger inputs into unified 0..255 range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TriggerCalibration {
+    /// Minimum raw ADC value at physical resting stop.
+    pub min_raw: u16,
+    /// Maximum raw ADC value at physical bottom-out.
+    pub max_raw: u16,
+    /// Deadzone threshold at resting position (0..255).
+    pub rest_deadzone: u8,
+    /// Deadzone threshold at full pull (0..255).
+    pub full_deadzone: u8,
+}
+
+impl TriggerCalibration {
+    /// Creates a typical calibration for handheld Hall-effect trigger sensors.
+    pub const fn new(min_raw: u16, max_raw: u16) -> Self {
+        Self {
+            min_raw,
+            max_raw,
+            rest_deadzone: 8,
+            full_deadzone: 248,
+        }
+    }
+
+    /// Normalizes a raw ADC sensor reading into a calibrated 0..255 position with deadzone filtering.
+    pub fn normalize_reading(&self, raw: u16) -> u8 {
+        if raw <= self.min_raw {
+            return 0;
+        }
+        if raw >= self.max_raw {
+            return 255;
+        }
+
+        let span = (self.max_raw - self.min_raw) as u32;
+        let offset = (raw - self.min_raw) as u32;
+        let scaled = ((offset * 255) / span) as u8;
+
+        if scaled <= self.rest_deadzone {
+            0
+        } else if scaled >= self.full_deadzone {
+            255
+        } else {
+            let active_span = (self.full_deadzone - self.rest_deadzone) as u32;
+            let active_offset = (scaled - self.rest_deadzone) as u32;
+            ((active_offset * 255) / active_span) as u8
+        }
+    }
+}
+
+/// High-level game force-feedback trigger effect presets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GameTriggerEffect {
+    /// Unforced standard trigger travel.
+    DefaultOff,
+    /// Semi-automatic handgun: Crisp sear wall at 65% pull, followed by snap-through.
+    HandgunSingleAction,
+    /// Heavy shotgun: Stiff mechanical wall at 50% pull requiring high break force.
+    ShotgunHeavyWall,
+    /// Fully automatic rifle: 12 Hz recoil pulse train once pull passes 35%.
+    AutomaticRifle,
+    /// Archery bow draw: Progressive exponential tension resisting deeper pull.
+    BowAndArrow,
+    /// Racing ABS braking: 80 Hz haptic buzz when trigger pull exceeds 80%.
+    AbsBrakingVibration,
+}
+
+/// Game Force-Feedback Synthesizer coordinating dual-trigger profiles and safety neutralization.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TriggerEffectSynthesizer {
+    /// Active motor governor.
+    pub governor: TriggerMotorGovernor,
+    /// Calibration profiles for left and right triggers.
+    pub calibration: [TriggerCalibration; 2],
+    /// Active high-level game effect preset per trigger.
+    pub active_effects: [GameTriggerEffect; 2],
+    /// True if all motors have been neutralized to failsafe neutral state.
+    pub neutralized: bool,
+}
+
+impl TriggerEffectSynthesizer {
+    /// Creates a new synthesizer instance with calibrated defaults.
+    pub const fn new() -> Self {
+        Self {
+            governor: TriggerMotorGovernor::new(),
+            calibration: [
+                TriggerCalibration::new(500, 3500),
+                TriggerCalibration::new(500, 3500),
+            ],
+            active_effects: [GameTriggerEffect::DefaultOff, GameTriggerEffect::DefaultOff],
+            neutralized: false,
+        }
+    }
+
+    /// Configures an active game-defined force-feedback effect onto the target trigger.
+    pub fn apply_game_effect(&mut self, trigger: TriggerId, effect: GameTriggerEffect) {
+        let idx = trigger as usize;
+        self.active_effects[idx] = effect;
+        self.neutralized = false;
+
+        let desc = &mut self.governor.descriptors[idx];
+
+        match effect {
+            GameTriggerEffect::DefaultOff => {
+                desc.profile = ResistanceProfile::Off;
+                desc.force = 0;
+            }
+            GameTriggerEffect::HandgunSingleAction => {
+                desc.profile = ResistanceProfile::SteppedClick;
+                desc.start_pos = 160; // 63% travel
+                desc.end_pos = 255;
+                desc.force = 220;
+                desc.frequency_hz = 0;
+            }
+            GameTriggerEffect::ShotgunHeavyWall => {
+                desc.profile = ResistanceProfile::VariableStop;
+                desc.start_pos = 128; // 50% travel
+                desc.end_pos = 255;
+                desc.force = 255; // Maximum resistance barrier
+                desc.frequency_hz = 0;
+            }
+            GameTriggerEffect::AutomaticRifle => {
+                desc.profile = ResistanceProfile::MachineGunRecoil;
+                desc.start_pos = 90; // 35% travel
+                desc.end_pos = 255;
+                desc.force = 240;
+                desc.frequency_hz = 12; // 12 shots per second
+            }
+            GameTriggerEffect::BowAndArrow => {
+                desc.profile = ResistanceProfile::Linear;
+                desc.start_pos = 20;
+                desc.end_pos = 240;
+                desc.force = 230;
+                desc.frequency_hz = 0;
+            }
+            GameTriggerEffect::AbsBrakingVibration => {
+                desc.profile = ResistanceProfile::FrequencyBuzz;
+                desc.start_pos = 200; // 80% travel
+                desc.end_pos = 255;
+                desc.force = 200;
+                desc.frequency_hz = 80; // 80 Hz ABS vibration
+            }
+        }
+    }
+
+    /// Failsafe neutral state: immediately de-energizes all micromotors to 0% PWM.
+    ///
+    /// Must be invoked on process exit, task switch, or kernel panic to prevent motor burnout.
+    pub fn neutralize_all(&mut self) {
+        for i in 0..2 {
+            self.governor.descriptors[i].profile = ResistanceProfile::Off;
+            self.governor.descriptors[i].current_pwm = 0;
+            self.governor.descriptors[i].force = 0;
+            self.governor.descriptors[i].active = false;
+            self.active_effects[i] = GameTriggerEffect::DefaultOff;
+        }
+        self.neutralized = true;
+    }
+
+    /// Updates motor output from raw ADC sensor inputs.
+    pub fn update_from_raw_adc(
+        &mut self,
+        trigger: TriggerId,
+        raw_adc: u16,
+        measured_current_ma: u16,
+        time_ms: u32,
+    ) -> u8 {
+        if self.neutralized {
+            return 0;
+        }
+        let idx = trigger as usize;
+        let normalized_pos = self.calibration[idx].normalize_reading(raw_adc);
+        self.governor.update_motor(trigger, normalized_pos, measured_current_ma, time_ms)
+    }
+}
+
+/// Verification helper for Commit 3 calibration and game effect synthesizer.
+pub fn verify_calibration_and_effect_synthesizer() -> bool {
+    // 1. Verify Trigger Calibration and Deadzone Normalization
+    let calib = TriggerCalibration::new(500, 3500);
+
+    // Below min_raw -> 0
+    if calib.normalize_reading(450) != 0 {
+        return false;
+    }
+    // Rest deadzone area -> 0
+    if calib.normalize_reading(550) != 0 {
+        return false;
+    }
+    // Midpoint reading ~2000 -> approximately 128
+    let mid_pos = calib.normalize_reading(2000);
+    if mid_pos < 120 || mid_pos > 136 {
+        return false;
+    }
+    // Full deadzone reading ~3450 -> 255
+    if calib.normalize_reading(3450) != 255 {
+        return false;
+    }
+
+    // 2. Verify Game Effect Synthesis
+    let mut synth = TriggerEffectSynthesizer::new();
+
+    // Configure Shotgun effect on Right trigger (hard stop at 50% = pos 128)
+    synth.apply_game_effect(TriggerId::Right, GameTriggerEffect::ShotgunHeavyWall);
+    if synth.governor.descriptors[1].profile != ResistanceProfile::VariableStop {
+        return false;
+    }
+    if synth.governor.descriptors[1].start_pos != 128 || synth.governor.descriptors[1].force != 255 {
+        return false;
+    }
+
+    // Test raw ADC update: raw 1000 (pre-wall) -> 0 PWM
+    let pwm_pre_wall = synth.update_from_raw_adc(TriggerId::Right, 1000, 100, 0);
+    if pwm_pre_wall != 0 {
+        return false;
+    }
+    // Raw 2800 (past 50% wall) -> 255 PWM
+    let pwm_post_wall = synth.update_from_raw_adc(TriggerId::Right, 2800, 100, 0);
+    if pwm_post_wall != 255 {
+        return false;
+    }
+
+    // 3. Verify Failsafe Neutral State
+    synth.neutralize_all();
+    if !synth.neutralized {
+        return false;
+    }
+    if synth.governor.descriptors[1].profile != ResistanceProfile::Off || synth.governor.descriptors[1].current_pwm != 0 {
+        return false;
+    }
+    let pwm_neutral = synth.update_from_raw_adc(TriggerId::Right, 2800, 100, 0);
+    if pwm_neutral != 0 {
+        return false;
+    }
+
+    true
+}
