@@ -1,17 +1,8 @@
-//! Dual Capacitive Thumb Touchpad Controller & Ballistic Acceleration Governor.
-//!
-//! Provides ergonomic touchpad control for handheld gaming PCs:
-//! - Dual touchpad management (Left & Right thumb touchpads)
-//! - Non-linear ballistic velocity curves (1:1 precision at micro-speeds, scaling up to 3.5x for flick turns)
-//! - Capacitive touch contact and normalized displacement tracking
-//! - Dual-stage click emulation (distinguishing capacitive hover from physical pressure click actuation)
-//! - Tactile haptic tick generation for rolling surface emulation
+//! Dual capacitive thumb touchpad controller and ballistic acceleration governor.
 
 use crate::graphics::sqrt_f32;
 
-// -----------------------------------------------------------------------------
-// Constants and Types
-// -----------------------------------------------------------------------------
+// Constants and types.
 
 /// Identifies which physical thumb touchpad is being addressed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,9 +132,7 @@ impl TouchpadMotion {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Ballistic Acceleration Configuration
-// -----------------------------------------------------------------------------
+// Ballistic acceleration configuration.
 
 /// Configuration parameters for non-linear touchpad ballistic acceleration curves.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -182,9 +171,7 @@ impl BallisticConfig {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Single Touchpad State Machine
-// -----------------------------------------------------------------------------
+// Single touchpad state machine.
 
 /// State tracking for a single capacitive touchpad.
 #[derive(Debug, Clone)]
@@ -234,10 +221,6 @@ impl SingleTouchpad {
     }
 
     /// Evaluates ballistic velocity multiplier for a given thumb speed.
-    ///
-    /// - For speed <= low_speed_threshold: multiplier = 1.0 (pure 1:1 precision aiming)
-    /// - For speed between low and high threshold: smooth progressive acceleration curve
-    /// - For speed >= high_speed_threshold: saturated at max_multiplier (3.5x for flick turns)
     pub fn compute_ballistic_multiplier(&self, speed: f32) -> f32 {
         if speed <= self.config.low_speed_threshold {
             1.0
@@ -429,9 +412,7 @@ impl SingleTouchpad {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Dual Touchpad Controller
-// -----------------------------------------------------------------------------
+// Dual touchpad controller.
 
 /// Controller managing both Left and Right handheld capacitive touchpads.
 pub struct DualTouchpadController {
@@ -471,9 +452,7 @@ impl DualTouchpadController {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Unit Tests & Verification
-// -----------------------------------------------------------------------------
+// Unit tests and verification.
 
 /// Unit test verifying dual capacitive thumb touchpad driver and ballistic velocity curve.
 pub fn verify_dual_touchpad_and_ballistic_curve() -> bool {
@@ -525,9 +504,7 @@ pub fn verify_dual_touchpad_and_ballistic_curve() -> bool {
         return false;
     }
 
-    // 4. High-Speed 180° Flick Turn Acceleration Test (v >= 120.0 units/sec)
-    // Move 1500 raw units in 10ms -> 4.577 units / 0.01s = 457.7 units/s > 120.0
-    // Multiplier must saturate at max_multiplier (3.5x)
+    // High-speed 180-degree flick turn acceleration test (v >= 120.0 units/sec, saturates at 3.5x).
     let mut t = 30_000u64;
     let mut raw_x = 1010i16;
     let mut m_flick = TouchpadMotion::zero(TouchpadId::Right);
@@ -589,9 +566,7 @@ pub fn verify_dual_stage_click_and_haptic_ticks() -> bool {
         return false;
     }
 
-    // 3. Movement generating haptic click ticks:
-    // Move 10.0 normalized units (raw_x = 3277 = 10.0 units) over 10ms with interval = 2.0 units
-    // Should trigger exactly 5 ticks (10.0 / 2.0)
+    // Movement generating haptic click ticks (10.0 normalized units over 10ms triggers 5 ticks).
     let s_move = RawTouchpadSample {
         pad_id: TouchpadId::Right,
         raw_x: 3277,
@@ -683,9 +658,7 @@ pub fn verify_dual_stage_click_and_haptic_ticks() -> bool {
     true
 }
 
-// -----------------------------------------------------------------------------
-// High-Precision Multi-Finger Capacitive Gesture Engine (TASK-KNT-128)
-// -----------------------------------------------------------------------------
+// Multi-finger capacitive gesture engine.
 
 /// Maximum concurrent contact points tracked across the capacitive matrix.
 pub const MAX_TOUCHPAD_CONTACTS: usize = 5;
@@ -874,10 +847,7 @@ pub fn verify_touchpad_contact_structures_and_decoders() -> bool {
         return false;
     }
 
-    // 2. Verify Multi-Touch Raw Packet Decoding
-    // Report ID 0x3F, 2 contacts, Button Down (0x01)
-    // Contact 0: ID 0, state down (0x10), X = 800 (0x320: lo=0x20, hi=0x03), Y = 600 (0x258: lo=0x05, hi=0x25)
-    // Contact 1: ID 1, state down (0x11), X = 1200 (0x4B0: lo=0xB0, hi=0x04), Y = 900 (0x384: lo=0x08, hi=0x38)
+    // Verify multi-touch raw packet decoding (Report ID 0x3F, 2 contacts, button down).
     let raw_packet: [u8; 11] = [
         0x3F, 0x02, 0x01,
         0x10, 0x20, 0x83, 0x25,

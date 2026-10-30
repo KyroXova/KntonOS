@@ -1,15 +1,8 @@
-//! Motion Assist Dynamic Angle Governor & Steady-Aim Tremor Dampener.
-//!
-//! Provides advanced motion control processing for handheld gaming PCs:
-//! - Steady-aim physiological tremor dampening (quadratic attenuation for <0.5 deg/sec micro-aiming)
-//! - High-speed flick acceleration curve (scaling sensitivity at >15 deg/sec for instant 180° turns)
-//! - Handheld lean angle detection and tilt-to-steer assistance (with deadzone & steering ramp)
+//! Motion assist dynamic angle governor and steady-aim tremor dampener.
 
 use crate::drivers::input::imu::DEG_TO_RAD;
 
-// -----------------------------------------------------------------------------
-// Steady-Aim Tremor Dampening & Flick Acceleration Curves
-// -----------------------------------------------------------------------------
+// Steady-aim tremor dampening and flick acceleration curves.
 
 /// Configuration for motion assist filtering and acceleration.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -48,9 +41,7 @@ pub enum LeanDirection {
     LeanRight,
 }
 
-// -----------------------------------------------------------------------------
-// Motion Assist Dynamic Governor
-// -----------------------------------------------------------------------------
+// Motion assist dynamic governor.
 
 /// Dynamic angle governor applying tremor dampening, flick curves, and tilt steering.
 #[derive(Debug, Clone)]
@@ -64,10 +55,6 @@ impl MotionAssistGovernor {
     }
 
     /// Evaluates dynamic sensitivity multiplier for a given angular velocity magnitude.
-    ///
-    /// - For |v| < tremor_threshold: Smooth quadratic dampening (v / threshold)^2 to eliminate hand jitter.
-    /// - For tremor_threshold <= |v| <= flick_threshold: 1.0 (linear Natural Sensitivity Scale).
-    /// - For |v| > flick_threshold: Accelerated sensitivity curve up to flick_max_multiplier.
     pub fn compute_speed_multiplier(&self, speed_rad_s: f32) -> f32 {
         if speed_rad_s <= 0.0 {
             return 0.0;
@@ -127,18 +114,14 @@ impl MotionAssistGovernor {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Unit Tests & Verification
-// -----------------------------------------------------------------------------
+// Unit tests and verification.
 
 /// Unit test verifying steady-aim tremor dampening, flick acceleration, and tilt-to-steer governor.
 pub fn verify_steady_aim_and_flick_acceleration() -> bool {
     let config = MotionAssistConfig::default_handheld();
     let governor = MotionAssistGovernor::new(config);
 
-    // 1. Verify Steady-Aim Tremor Dampening
-    // Tremor threshold = 0.5 deg/s (~0.00873 rad/s)
-    // Test at 0.25 deg/s (half threshold): multiplier should be (0.5)^2 = 0.25
+    // Verify steady-aim tremor dampening at 0.25 deg/s (half threshold, multiplier 0.25).
     let half_thresh = 0.25 * DEG_TO_RAD;
     let mult_half = governor.compute_speed_multiplier(half_thresh);
     if (mult_half - 0.25).abs() > 0.02 {
