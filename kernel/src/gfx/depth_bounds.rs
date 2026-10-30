@@ -191,3 +191,178 @@ impl PixelAabb {
         ]
     }
 }
+
+
+// -----------------------------------------------------------------------------
+// Depth Buffer & Early-Z Rejection Pipeline
+// -----------------------------------------------------------------------------
+
+/// Depth test comparison function (`D3D12_COMPARISON_FUNC`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DepthComparisonFunc {
+    Never = 0,
+    #[default]
+    Less = 1,
+    Equal = 2,
+    LessEqual = 3,
+    Greater = 4,
+    NotEqual = 5,
+    GreaterEqual = 6,
+    Always = 7,
+}
+
+impl DepthComparisonFunc {
+    #[inline(always)]
+    pub fn compare(&self, frag_z: f32, buf_z: f32) -> bool {
+        match self {
+            Self::Never => false,
+            Self::Less => frag_z < buf_z,
+            Self::Equal => (frag_z - buf_z).abs() < 1e-6,
+            Self::LessEqual => frag_z <= buf_z,
+            Self::Greater => frag_z > buf_z,
+            Self::NotEqual => (frag_z - buf_z).abs() >= 1e-6,
+            Self::GreaterEqual => frag_z >= buf_z,
+            Self::Always => true,
+        }
+    }
+}
+
+/// 2D floating-point depth buffer supporting fast clear and early-Z depth tests.
+#[derive(Debug, Clone)]
+pub struct DepthBuffer {
+    pub width: u32,
+    pub height: u32,
+    pub data: Vec<f32>,
+}
+
+impl DepthBuffer {
+    pub fn new(width: u32, height: u32, clear_depth: f32) -> Result<Self, DepthBoundsError> {
+        if width == 0 || height == 0 {
+            return Err(DepthBoundsError::InvalidViewportBounds);
+        }
+        let total = (width as usize) * (height as usize);
+        let data = alloc::vec![clear_depth; total];
+        Ok(Self { width, height, data })
+    }
+
+    #[inline(always)]
+    pub fn get_depth(&self, x: u32, y: u32) -> Option<f32> {
+        if x < self.width && y < self.height {
+            let idx = (y * self.width + x) as usize;
+            Some(self.data[idx])
+        } else {
+            None
+        }
+    }
+
+    #[inline(always)]
+    pub fn set_depth(&mut self, x: u32, y: u32, z: f32) -> bool {
+        if x < self.width && y < self.height {
+            let idx = (y * self.width + x) as usize;
+            self.data[idx] = z;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn clear(&mut self, clear_depth: f32) {
+        for z in self.data.iter_mut() {
+            *z = clear_depth;
+        }
+    }
+}
+
+/// Statistics tracking early-Z and Depth Bounds Testing efficiency.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct EarlyZStats {
+    pub total_fragments_tested: u64,
+    pub culled_by_depth_bounds: u64,
+    pub culled_by_depth_func: u64,
+    pub fragments_passed: u64,
+}
+
+impl EarlyZStats {
+    /// Computes the fraction of fragments successfully eliminated by depth bounds testing.
+    #[inline]
+    pub fn depth_bounds_cull_rate(&self) -> f32 {
+        if self.total_fragments_tested > 0 {
+            self.culled_by_depth_bounds as f32 / self.total_fragments_tested as f32
+        } else {
+            0.0
+        }
+    }
+}
+
+/// Dynamic Depth Bounds Testing & Early-Z Rejection Pipeline.
+#[derive(Debug, Clone, Default)]
+pub struct DepthBoundsEvaluator {
+    pub bounds_state: DepthBoundsState,
+    pub depth_func: DepthComparisonFunc,
+    pub depth_write_enable: bool,
+    pub stats: EarlyZStats,
+}
+
+impl DepthBoundsEvaluator {
+    pub fn new(bounds_state: DepthBoundsState, depth_func: DepthComparisonFunc, depth_write_enable: bool) -> Self {
+        Self {
+            bounds_state,
+            depth_func,
+            depth_write_enable,
+            stats: EarlyZStats::default(),
+        }
+    }
+
+    /// Direct3D 12 API: `OMSetDepthBounds(min_depth, max_depth)`
+    pub fn om_set_depth_bounds(&mut self, min_depth: f32, max_depth: f32) -> Result<(), DepthBoundsError> {
+        self.bounds_state = DepthBoundsState::new(min_depth, max_depth)?;
+        Ok(())
+    }
+
+    /// Disables Depth Bounds Testing.
+    pub fn disable_depth_bounds(&mut self) {
+        self.bounds_state = DepthBoundsState::disabled();
+    }
+
+    /// Evaluates a candidate fragment against Depth Bounds Testing and Early-Z.
+    ///
+    /// Pipeline Flow:
+    /// 1. Reads current buffer depth $z_{buf}$.
+    /// 2. Tests $z_{buf}$ against $[z_{min}, z_{max}]$. If outside, culled immediately without shading!
+    /// 3. Tests $z_{frag}$ against $z_{buf}$ via `depth_func`. If failed, culled.
+    /// 4. If passed and `depth_write_enable`, writes $z_{frag}$ into buffer.
+    pub fn evaluate_fragment(
+        &mut self,
+        depth_buffer: &mut DepthBuffer,
+        x: u32,
+        y: u32,
+        frag_z: f32,
+    ) -> bool {
+        self.stats.total_fragments_tested += 1;
+
+        let buf_z = match depth_buffer.get_depth(x, y) {
+            Some(z) => z,
+            None => return false,
+        };
+
+        // 1. Depth Bounds Testing (DBT) on current buffer depth
+        if !self.bounds_state.test(buf_z) {
+            self.stats.culled_by_depth_bounds += 1;
+            return false;
+        }
+
+        // 2. Standard Depth Test
+        if !self.depth_func.compare(frag_z, buf_z) {
+            self.stats.culled_by_depth_func += 1;
+            return false;
+        }
+
+        // 3. Depth Write
+        if self.depth_write_enable {
+            depth_buffer.set_depth(x, y, frag_z);
+        }
+
+        self.stats.fragments_passed += 1;
+        true
+    }
+}
