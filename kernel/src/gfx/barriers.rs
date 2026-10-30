@@ -810,3 +810,252 @@ impl EnhancedBarrierEngine {
         self.in_flight_barriers.len()
     }
 }
+
+
+/// Comprehensive verification self-test for Direct3D 12 Enhanced Barriers & Split-Barrier Engine.
+///
+/// Emits sentinel [KNT-GPU-ENHANCED-BARRIERS-PASS] upon successful verification.
+pub fn test_enhanced_barriers_subsystem() -> bool {
+    let mut engine = EnhancedBarrierEngine::new();
+
+    // 1. Register test resources (Buffers and Textures)
+    let buffer_va = 0x1_0000_0000u64;
+    let buffer_size = 64 * 1024u64; // 64 KiB
+    engine.validator.register_buffer(BufferResourceDesc::new(buffer_va, buffer_size));
+
+    let tex_id = 101u32;
+    let mip_levels = 4u32;
+    let array_size = 2u32;
+    let plane_count = 1u32;
+    engine.validator.register_texture(TextureResourceDesc::new(
+        tex_id,
+        mip_levels,
+        array_size,
+        plane_count,
+        BarrierLayout::Undefined,
+    ));
+
+    // 2. Test Global Barrier
+    let global_barrier = GlobalBarrier::new(
+        BarrierSync::COMPUTE,
+        BarrierSync::PIXEL_SHADING,
+        BarrierAccess::UNORDERED_ACCESS,
+        BarrierAccess::SHADER_RESOURCE,
+    );
+    if engine.validator.evaluate_global(&global_barrier).is_err() {
+        return false;
+    }
+
+    // 3. Test Buffer Barrier & bounds validation
+    let valid_buffer_barrier = BufferBarrier::new(
+        BarrierSync::COPY,
+        BarrierSync::VERTEX_SHADING,
+        BarrierAccess::COPY_DEST,
+        BarrierAccess::VERTEX_BUFFER,
+        buffer_va,
+        0,
+        1024,
+    );
+    if engine.validator.evaluate_buffer(&valid_buffer_barrier).is_err() {
+        return false;
+    }
+
+    // Out-of-bounds buffer barrier must fail
+    let oob_buffer_barrier = BufferBarrier::new(
+        BarrierSync::COPY,
+        BarrierSync::VERTEX_SHADING,
+        BarrierAccess::COPY_DEST,
+        BarrierAccess::VERTEX_BUFFER,
+        buffer_va,
+        buffer_size,
+        1024,
+    );
+    if engine.validator.evaluate_buffer(&oob_buffer_barrier).is_ok() {
+        return false;
+    }
+
+    // 4. Test Texture Barrier with SubresourceRange
+    // Initial transition: all subresources Undefined -> RenderTarget
+    let init_tex_barrier = TextureBarrier::new(
+        BarrierSync::ALL,
+        BarrierSync::RENDER_TARGET,
+        BarrierAccess::COMMON,
+        BarrierAccess::RENDER_TARGET,
+        BarrierLayout::Undefined,
+        BarrierLayout::RenderTarget,
+        tex_id,
+        SubresourceRange::all(),
+        TextureBarrierFlags::NONE,
+    );
+    if engine.validator.evaluate_texture(&init_tex_barrier).is_err() {
+        return false;
+    }
+
+    // Verify all 8 subresources are now RenderTarget
+    {
+        let tex = match engine.validator.find_texture(tex_id) {
+            Some(t) => t,
+            None => return false,
+        };
+        for slice in 0..array_size {
+            for mip in 0..mip_levels {
+                if tex.get_subresource(mip, slice, 0).map(|s| s.layout) != Some(BarrierLayout::RenderTarget) {
+                    return false;
+                }
+            }
+        }
+    }
+
+    // Transition a specific subresource mip range: Mip 0 across all slices RenderTarget -> ShaderResource
+    let mip0_range = SubresourceRange::mip_range(0, 1, 0, array_size);
+    let slice_barrier = TextureBarrier::new(
+        BarrierSync::RENDER_TARGET,
+        BarrierSync::PIXEL_SHADING,
+        BarrierAccess::RENDER_TARGET,
+        BarrierAccess::SHADER_RESOURCE,
+        BarrierLayout::RenderTarget,
+        BarrierLayout::ShaderResource,
+        tex_id,
+        mip0_range,
+        TextureBarrierFlags::NONE,
+    );
+    if engine.validator.evaluate_texture(&slice_barrier).is_err() {
+        return false;
+    }
+
+    // Verify Mip 0 is ShaderResource while Mip 1..3 remain RenderTarget
+    {
+        let tex = engine.validator.find_texture(tex_id).unwrap();
+        for slice in 0..array_size {
+            if tex.get_subresource(0, slice, 0).map(|s| s.layout) != Some(BarrierLayout::ShaderResource) {
+                return false;
+            }
+            if tex.get_subresource(1, slice, 0).map(|s| s.layout) != Some(BarrierLayout::RenderTarget) {
+                return false;
+            }
+        }
+    }
+
+    // Invalid layout transition detection: layout_before mismatch
+    let mismatched_barrier = TextureBarrier::new(
+        BarrierSync::RENDER_TARGET,
+        BarrierSync::PIXEL_SHADING,
+        BarrierAccess::RENDER_TARGET,
+        BarrierAccess::SHADER_RESOURCE,
+        BarrierLayout::DepthStencilWrite, // Incorrect expected layout!
+        BarrierLayout::ShaderResource,
+        tex_id,
+        mip0_range,
+        TextureBarrierFlags::NONE,
+    );
+    if engine.validator.evaluate_texture(&mismatched_barrier).is_ok() {
+        return false;
+    }
+
+    // With DISCARD flag, mismatched layout_before is permitted
+    let discard_barrier = TextureBarrier::new(
+        BarrierSync::ALL,
+        BarrierSync::RENDER_TARGET,
+        BarrierAccess::COMMON,
+        BarrierAccess::RENDER_TARGET,
+        BarrierLayout::Undefined,
+        BarrierLayout::RenderTarget,
+        tex_id,
+        mip0_range,
+        TextureBarrierFlags::DISCARD,
+    );
+    if engine.validator.evaluate_texture(&discard_barrier).is_err() {
+        return false;
+    }
+
+    // 5. Test Split-Barrier Pipelining (BeginBarrier / EndBarrier)
+    let mut split_group = BarrierGroup::new();
+    let split_tex_barrier = TextureBarrier::new(
+        BarrierSync::RENDER_TARGET,
+        BarrierSync::PIXEL_SHADING,
+        BarrierAccess::RENDER_TARGET,
+        BarrierAccess::SHADER_RESOURCE,
+        BarrierLayout::RenderTarget,
+        BarrierLayout::ShaderResource,
+        tex_id,
+        SubresourceRange::all(),
+        TextureBarrierFlags::NONE,
+    );
+    // Note: ensure texture subresources are all RenderTarget first
+    for slice in 0..array_size {
+        for mip in 0..mip_levels {
+            let idx = engine.validator.find_texture_mut(tex_id).unwrap().calc_subresource_index(mip, slice, 0);
+            engine.validator.find_texture_mut(tex_id).unwrap().subresources[idx].layout = BarrierLayout::RenderTarget;
+        }
+    }
+
+    if split_group.add_texture(split_tex_barrier).is_err() {
+        return false;
+    }
+
+    // Begin split barrier
+    let token = match engine.begin_barrier(split_group) {
+        Ok(t) => t,
+        Err(_) => return false,
+    };
+
+    if !engine.is_in_flight(token) || engine.in_flight_count() != 1 {
+        return false;
+    }
+
+    // Simulate independent GPU work while split barrier is asynchronously executing
+    engine.advance_clock(500);
+
+    // End split barrier
+    if engine.end_barrier(token).is_err() {
+        return false;
+    }
+
+    if engine.is_in_flight(token) || engine.in_flight_count() != 0 {
+        return false;
+    }
+
+    if engine.completed_split_barriers != 1 {
+        return false;
+    }
+
+    // Re-ending the retired token must fail
+    if engine.end_barrier(token).is_ok() {
+        return false;
+    }
+
+    // Verify subresources are transitioned to ShaderResource
+    {
+        let tex = engine.validator.find_texture(tex_id).unwrap();
+        for slice in 0..array_size {
+            for mip in 0..mip_levels {
+                if tex.get_subresource(mip, slice, 0).map(|s| s.layout) != Some(BarrierLayout::ShaderResource) {
+                    return false;
+                }
+            }
+        }
+    }
+
+    // 6. Test Immediate Execution Barrier
+    let mut imm_group = BarrierGroup::new();
+    let imm_global = GlobalBarrier::new(
+        BarrierSync::ALL_SHADING,
+        BarrierSync::COPY,
+        BarrierAccess::SHADER_RESOURCE,
+        BarrierAccess::COPY_SOURCE,
+    );
+    if imm_group.add_global(imm_global).is_err() {
+        return false;
+    }
+    if engine.execute_barrier(imm_group).is_err() {
+        return false;
+    }
+    if engine.immediate_barriers_executed != 1 {
+        return false;
+    }
+
+    // 7. Emit deterministic boot sentinel
+    crate::serial_write_str("[KNT-GPU-ENHANCED-BARRIERS-PASS] Direct3D 12 enhanced barriers and split-barrier GPU transition engine verified\r\n");
+
+    true
+}

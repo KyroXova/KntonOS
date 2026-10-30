@@ -356,6 +356,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Direct3D 12 sampler feedback streaming self-test failed!\r\n");
     }
 
+    // Initialize and verify Direct3D 12 Enhanced Barriers & Split-Barrier Synchronized GPU Transition Engine
+    if !gfx::test_enhanced_barriers_subsystem() {
+        serial_write_str("[KNT-PANIC] Direct3D 12 enhanced barriers subsystem self-test failed!\r\n");
+    }
+
     // Initialize and verify AHCI SATA Persistent Storage Subsystem
     if !drivers::storage::test_ahci_sata_subsystem() {
         serial_write_str("[KNT-PANIC] AHCI SATA storage subsystem self-test failed!\r\n");
