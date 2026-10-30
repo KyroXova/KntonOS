@@ -28,6 +28,7 @@ pub mod audio;
 pub mod time;
 pub mod video;
 pub mod sys;
+pub mod ui;
 
 pub use memory::ALLOCATOR;
 
