@@ -4,11 +4,13 @@ pub mod imu;
 pub mod gamepad;
 pub mod waveform;
 pub mod haptic;
+pub mod fast_ring;
 
 pub use imu::*;
 pub use gamepad::*;
 pub use waveform::*;
 pub use haptic::*;
+pub use fast_ring::*;
 
 use crate::serial_write_str;
 
