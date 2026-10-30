@@ -467,3 +467,213 @@ pub fn verify_cell_balancing_and_thermal_curves() -> bool {
 
     true
 }
+
+/// Operational power path routing modes for handheld hardware.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PowerPathMode {
+    /// No AC attached; system runs entirely from battery pack discharge.
+    BatteryDischarge,
+    /// AC adapter attached; charging battery while powering system.
+    BatteryCharging,
+    /// Pass-through bypass active: AC adapter powers APU directly; battery is isolated (0 mA).
+    PassThroughBypass,
+}
+
+/// Evaluates hardware power path routing based on AC capability, system load, and battery SoC.
+pub fn evaluate_power_path(
+    ac_profile: Option<PdPowerProfile>,
+    apu_load_watts: u16,
+    pack: &DualBatteryPack,
+    bypass_target_soc: u8,
+) -> (PowerPathMode, u16) {
+    let profile = match ac_profile {
+        Some(p) => p,
+        None => return (PowerPathMode::BatteryDischarge, 0),
+    };
+
+    // If AC power is less than APU load, system must draw from battery (hybrid discharge)
+    if profile.power_watts < apu_load_watts {
+        return (PowerPathMode::BatteryDischarge, 0);
+    }
+
+    let surplus_watts = profile.power_watts - apu_load_watts;
+    let avg_soc = pack.average_soc_pct();
+
+    // If battery is at or above bypass target SoC (e.g. 80% battery health protection or 100% full),
+    // engage Pass-Through Bypass mode: AC drives APU directly, zero current cycles battery.
+    if avg_soc >= bypass_target_soc {
+        (PowerPathMode::PassThroughBypass, 0)
+    } else {
+        // Battery needs charging: allocate remaining headroom up to pack voltage current limit
+        let pack_v = (pack.pack_voltage_mv / 1000).max(6) as u16;
+        let available_charge_current_ma = ((surplus_watts as u32 * 1000) / pack_v as u32) as u16;
+        (PowerPathMode::BatteryCharging, available_charge_current_ma.min(5000))
+    }
+}
+
+/// USB-PD 3.1 Extended Power Range (EPR) protocol negotiation state machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PdNegotiationState {
+    Disconnected,
+    SourceCapabilitiesReceived,
+    EprModeEntering,
+    EprModeActive,
+    ContractEstablished,
+    HardReset,
+}
+
+/// USB-PD 3.1 Extended Power Range (EPR) contract negotiator.
+pub struct UsbPdEprNegotiator {
+    pub state: PdNegotiationState,
+    pub advertised_pdos: [Option<PdPowerProfile>; 6],
+    pub advertised_count: usize,
+    pub active_contract: Option<PdPowerProfile>,
+}
+
+impl UsbPdEprNegotiator {
+    /// Creates a new unattached negotiator instance.
+    pub const fn new() -> Self {
+        Self {
+            state: PdNegotiationState::Disconnected,
+            advertised_pdos: [None; 6],
+            advertised_count: 0,
+            active_contract: None,
+        }
+    }
+
+    /// Ingests advertised Source_Capabilities Power Data Objects (PDOs).
+    pub fn on_source_capabilities_received(&mut self, pdos: &[PdPowerProfile]) {
+        self.advertised_count = 0;
+        for (i, pdo) in pdos.iter().take(6).enumerate() {
+            self.advertised_pdos[i] = Some(*pdo);
+            self.advertised_count += 1;
+        }
+        self.state = PdNegotiationState::SourceCapabilitiesReceived;
+    }
+
+    /// Selects the highest available power profile, preferring EPR 140W > SPR 100W > SPR 65W > SPR 15W.
+    pub fn select_optimal_profile(&self) -> Option<PdPowerProfile> {
+        let mut best: Option<PdPowerProfile> = None;
+        for i in 0..self.advertised_count {
+            if let Some(profile) = self.advertised_pdos[i] {
+                match best {
+                    None => best = Some(profile),
+                    Some(b) => {
+                        if profile.power_watts > b.power_watts {
+                            best = Some(profile);
+                        } else if profile.power_watts == b.power_watts && profile.is_epr() {
+                            best = Some(profile);
+                        }
+                    }
+                }
+            }
+        }
+        best
+    }
+
+    /// Advances the USB-PD 3.1 contract negotiation state machine.
+    pub fn step_negotiation(&mut self) -> Result<PdPowerProfile, &'static str> {
+        match self.state {
+            PdNegotiationState::Disconnected => Err("No Type-C source attached"),
+            PdNegotiationState::SourceCapabilitiesReceived => {
+                let optimal = self.select_optimal_profile().ok_or("No valid PDOs in source capabilities")?;
+                if optimal.is_epr() {
+                    self.state = PdNegotiationState::EprModeEntering;
+                    self.state = PdNegotiationState::EprModeActive;
+                }
+                self.active_contract = Some(optimal);
+                self.state = PdNegotiationState::ContractEstablished;
+                Ok(optimal)
+            }
+            PdNegotiationState::EprModeEntering => {
+                self.state = PdNegotiationState::EprModeActive;
+                let optimal = self.select_optimal_profile().ok_or("No valid PDOs")?;
+                self.active_contract = Some(optimal);
+                self.state = PdNegotiationState::ContractEstablished;
+                Ok(optimal)
+            }
+            PdNegotiationState::EprModeActive | PdNegotiationState::ContractEstablished => {
+                self.active_contract.ok_or("No active contract")
+            }
+            PdNegotiationState::HardReset => {
+                self.active_contract = None;
+                self.advertised_count = 0;
+                self.state = PdNegotiationState::Disconnected;
+                Err("Negotiator in HardReset; link reset to 5V SPR")
+            }
+        }
+    }
+}
+
+/// Unit test verifying Pass-Through Bypass mode and USB-PD 3.1 140W EPR negotiation.
+pub fn verify_bypass_mode_and_epr_negotiation() -> bool {
+    // 1. Verify Pass-Through Bypass Mode Logic
+    let mut pack = DualBatteryPack::new(4100, 4100);
+    pack.cell1.state_of_charge_pct = 85;
+    pack.cell2.state_of_charge_pct = 85;
+
+    // High TDP gameplay (35W APU) on 100W AC adapter, SoC at 85% >= 80% bypass target
+    let (mode_bypass, charge_current) = evaluate_power_path(
+        Some(PdPowerProfile::spr_100w()),
+        35,
+        &pack,
+        80,
+    );
+    if mode_bypass != PowerPathMode::PassThroughBypass || charge_current != 0 {
+        return false;
+    }
+
+    // Battery needs charging: SoC at 40% < 80% bypass target, APU 25W on 65W AC
+    pack.cell1.state_of_charge_pct = 40;
+    pack.cell2.state_of_charge_pct = 40;
+    let (mode_charge, charge_current_act) = evaluate_power_path(
+        Some(PdPowerProfile::spr_65w()),
+        25,
+        &pack,
+        80,
+    );
+    if mode_charge != PowerPathMode::BatteryCharging || charge_current_act == 0 {
+        return false;
+    }
+
+    // AC disconnected -> BatteryDischarge
+    let (mode_batt, _) = evaluate_power_path(None, 25, &pack, 80);
+    if mode_batt != PowerPathMode::BatteryDischarge {
+        return false;
+    }
+
+    // 2. Verify USB-PD 3.1 140W EPR Negotiator
+    let mut negotiator = UsbPdEprNegotiator::new();
+    let pdos = [
+        PdPowerProfile::spr_15w(),
+        PdPowerProfile::spr_65w(),
+        PdPowerProfile::spr_100w(),
+        PdPowerProfile::epr_140w(),
+    ];
+
+    negotiator.on_source_capabilities_received(&pdos);
+    if negotiator.state != PdNegotiationState::SourceCapabilitiesReceived {
+        return false;
+    }
+
+    let optimal = match negotiator.select_optimal_profile() {
+        Some(p) => p,
+        None => return false,
+    };
+    if optimal.voltage_mv != 28000 || optimal.power_watts != 140 || !optimal.is_epr() {
+        return false;
+    }
+
+    let contract = match negotiator.step_negotiation() {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    if contract.power_watts != 140 || contract.voltage_mv != 28000 || !contract.is_epr() {
+        return false;
+    }
+    if negotiator.state != PdNegotiationState::ContractEstablished {
+        return false;
+    }
+
+    true
+}
