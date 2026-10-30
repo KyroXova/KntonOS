@@ -23,8 +23,10 @@ pub mod udp;
 pub mod ring;
 pub mod multiqueue;
 pub mod ble_audio;
+pub mod wifi_sched;
 
 pub use ble_audio::*;
+pub use wifi_sched::*;
 
 pub use multiqueue::*;
 
