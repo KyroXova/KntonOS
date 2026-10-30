@@ -1,22 +1,12 @@
 //! NV12 / P010 Tiled Video Frame Buffer Allocator & Decoded Picture Buffer (DPB) Ring
 //! and Zero-Copy Direct Scanout Presentation Streamer.
-//!
-//! Implements GPU video surface memory layout, reference frame tracking, and presentation:
-//! - Bi-planar video surface layout: NV12 (8-bit SDR) and P010 (10-bit HDR10).
-//! - Hardware pitch alignment (128-byte and 256-byte cache-line row strides).
-//! - Linear and micro-tiled (Block-Linear) memory coordinate transformations.
-//! - Decoded Picture Buffer (DPB) reference frame ring with short-term / long-term picture marking and LRU eviction.
-//! - Fast fixed-point BT.709 (SDR) and BT.2020 (HDR10) color matrix conversion.
-//! - Zero-copy direct display scanout overlay pipeline with atomic VSYNC flipping and frame latency metrics.
 
 #![allow(dead_code)]
 
 extern crate alloc;
 use alloc::vec::Vec;
 
-// -----------------------------------------------------------------------------
 // Video Surface Formats & Memory Layouts
-// -----------------------------------------------------------------------------
 
 /// Bi-planar video pixel formats.
 #[repr(u8)]
@@ -78,9 +68,7 @@ pub enum ColorRange {
     Full = 2,
 }
 
-// -----------------------------------------------------------------------------
 // Video Surface Descriptor & Buffer
-// -----------------------------------------------------------------------------
 
 /// Individual decoded video frame buffer holding Y and UV planes.
 pub struct VideoSurface {
@@ -271,9 +259,7 @@ impl VideoSurface {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Fixed-Point Color Matrix Conversion (BT.709 SDR & BT.2020 HDR)
-// -----------------------------------------------------------------------------
 
 /// Convert 8-bit NV12 Y, U, V values to 8-bit RGB `(R, G, B)`.
 /// Uses 16.16 fixed-point arithmetic for zero-copy kernel execution without floating point.
@@ -297,8 +283,6 @@ pub fn nv12_to_rgb(y: u8, u: u8, v: u8, standard: ColorStandard, range: ColorRan
         ColorStandard::Bt709 => {
             // Rec.709 coefficients in 16.16 fixed-point:
             // R = 1.164383 * C + 1.792741 * E
-            // G = 1.164383 * C - 0.213249 * D - 0.532909 * E
-            // B = 1.164383 * C + 2.112402 * D
             let c_fixed = c * 76309;
             let r = (c_fixed + 117489 * e + 32768) >> 16;
             let g = (c_fixed - 13975 * d - 34925 * e + 32768) >> 16;
@@ -308,8 +292,6 @@ pub fn nv12_to_rgb(y: u8, u: u8, v: u8, standard: ColorStandard, range: ColorRan
         ColorStandard::Bt601 => {
             // Rec.601 coefficients in 16.16 fixed-point:
             // R = 1.164383 * C + 1.596027 * E
-            // G = 1.164383 * C - 0.391762 * D - 0.812968 * E
-            // B = 1.164383 * C + 2.017232 * D
             let c_fixed = c * 76309;
             let r = (c_fixed + 104597 * e + 32768) >> 16;
             let g = (c_fixed - 25675 * d - 53279 * e + 32768) >> 16;
@@ -319,8 +301,6 @@ pub fn nv12_to_rgb(y: u8, u: u8, v: u8, standard: ColorStandard, range: ColorRan
         ColorStandard::Bt2020 => {
             // Rec.2020 SDR coefficients in 16.16 fixed-point:
             // R = 1.164383 * C + 1.678670 * E
-            // G = 1.164383 * C - 0.187326 * D - 0.650420 * E
-            // B = 1.164383 * C + 2.141770 * D
             let c_fixed = c * 76309;
             let r = (c_fixed + 110013 * e + 32768) >> 16;
             let g = (c_fixed - 12277 * d - 42626 * e + 32768) >> 16;
@@ -384,9 +364,7 @@ pub fn p010_to_rgb(y: u16, u: u16, v: u16, standard: ColorStandard, range: Color
     (r_out, g_out, b_out)
 }
 
-// -----------------------------------------------------------------------------
 // Direct Scanout Overlay Plane & Presentation Pipeline
-// -----------------------------------------------------------------------------
 
 /// Hardware display overlay plane configuration for zero-copy scanout.
 #[derive(Debug, Clone, Copy)]
@@ -624,9 +602,7 @@ impl PresentationPipeline {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Decoded Picture Buffer (DPB) Reference Frame Ring
-// -----------------------------------------------------------------------------
 
 /// Reference frame status within the Decoded Picture Buffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -854,9 +830,7 @@ impl VideoSurfaceManager {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Unit Self-Tests for Video Surface Allocator, DPB, and Presentation Streamer
-// -----------------------------------------------------------------------------
 
 /// Verify NV12 and P010 surface layout calculations, pitch alignment, and pixel read/write operations.
 pub fn test_nv12_p010_allocator_and_dpb() -> bool {
@@ -1079,8 +1053,6 @@ pub fn test_zero_copy_presentation_and_color_matrices() -> bool {
 
     // Average latency should be calculated correctly
     // Flip 1: 16666 - 10000 = 6666
-    // Flip 2: 33333 - 20000 = 13333
-    // Total latency = 19999, avg = 19999 / 2 = 9999
     if pipeline.average_latency_us() != 9999 {
         return false;
     }

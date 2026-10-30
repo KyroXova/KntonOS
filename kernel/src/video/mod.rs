@@ -1,8 +1,5 @@
 //! Kernel-Direct Hardware Video Decode & Presentation Streamer Subsystem.
-//!
 //! Provides hardware-accelerated video decoding (H.264 / HEVC / AV1),
-//! tiled NV12/P010 decoded surface management, reference frame buffering,
-//! and zero-copy direct scanout presentation pipelines.
 
 #![allow(dead_code)]
 
@@ -14,8 +11,6 @@ pub use hdr_stream::test_video_hdr_stream_subsystem;
 
 /// Comprehensive verification self-test suite for Kernel-Direct Hardware Video Decode
 /// & Zero-Copy Presentation Streamer subsystem.
-///
-/// Emits sentinel [KNT-VIDEO-DECODE-PASS] upon successful validation.
 pub fn test_video_decode_subsystem() -> bool {
     crate::serial_write_str("[KNT-VIDEO-DECODE-TEST] Running hardware video decode & zero-copy presentation verification suite...\r\n");
 
