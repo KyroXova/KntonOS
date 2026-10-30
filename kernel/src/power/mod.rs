@@ -17,6 +17,9 @@ pub mod lz4_restore;
 pub mod battery;
 pub mod charger;
 pub mod cppc;
+pub mod dvfs;
+
+pub use dvfs::*;
 
 pub use cppc::*;
 
