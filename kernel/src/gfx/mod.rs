@@ -16,6 +16,7 @@ pub mod vrs;
 pub mod foveated;
 pub mod mesh_shader;
 pub mod work_graphs;
+pub mod sampler_feedback;
 
 pub use cmdbuf::*;
 pub use compute::*;
@@ -30,6 +31,7 @@ pub use vrs::*;
 pub use foveated::*;
 pub use mesh_shader::*;
 pub use work_graphs::*;
+pub use sampler_feedback::*;
 
 /// Comprehensive verification self-test suite for Direct3D / Vulkan-Style Command Buffer
 /// Recording and Hardware Queue Submission Engine.
