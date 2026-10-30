@@ -9,6 +9,8 @@
 //! - Amplification Shader threadgroup dispatch and payload passing.
 //! - Mesh Shader primitive expansion and output vertex/topology streaming directly to the rasterizer.
 
+use alloc::vec::Vec;
+
 /// Direct3D 12 maximum allowable output vertices per meshlet (D3D12_MESH_SHADER_MAX_VERTICES).
 pub const MAX_MESHLET_VERTICES: usize = 64;
 
@@ -275,5 +277,250 @@ impl MeshShaderPipelineState {
             }
         }
         Ok(())
+    }
+}
+
+/// Maximum number of surviving meshlet IDs that can be passed in a single Amplification Shader payload.
+pub const MAX_PAYLOAD_MESHLETS: usize = 32;
+
+/// Direct3D 12 Amplification Shader to Mesh Shader payload structure.
+///
+/// Passed via `DispatchMesh` from the amplification stage down to child mesh shader threadgroups.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[repr(C)]
+pub struct AmplificationPayload {
+    /// Array of surviving meshlet indices allocated to child threadgroups.
+    pub meshlet_indices: [u32; MAX_PAYLOAD_MESHLETS],
+    /// Total number of valid surviving meshlets in this payload.
+    pub meshlet_count: u32,
+    /// Evaluated Level-of-Detail (0 = high, 1 = medium, 2 = coarse).
+    pub lod_level: u8,
+    /// Instance ID for multi-draw instanced rendering.
+    pub instance_id: u32,
+    /// User payload custom scratch storage.
+    pub custom_data: [u8; 64],
+}
+
+impl Default for AmplificationPayload {
+    fn default() -> Self {
+        Self {
+            meshlet_indices: [0u32; MAX_PAYLOAD_MESHLETS],
+            meshlet_count: 0,
+            lod_level: 0,
+            instance_id: 0,
+            custom_data: [0u8; 64],
+        }
+    }
+}
+
+/// A 3D plane in Hessian normal form `(nx * x + ny * y + nz * z + d = 0)`.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[repr(C)]
+pub struct FrustumPlane {
+    /// Normalized surface normal pointing towards the inside of the frustum.
+    pub normal: Vec3,
+    /// Signed distance to the coordinate origin.
+    pub d: f32,
+}
+
+impl FrustumPlane {
+    pub const fn new(normal: Vec3, d: f32) -> Self {
+        Self { normal, d }
+    }
+}
+
+/// Camera view frustum consisting of 6 clipping planes (Near, Far, Left, Right, Top, Bottom).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Frustum {
+    /// 6 frustum clipping planes.
+    pub planes: [FrustumPlane; 6],
+}
+
+impl Frustum {
+    /// Creates a Frustum from 6 planes.
+    pub const fn new(planes: [FrustumPlane; 6]) -> Self {
+        Self { planes }
+    }
+
+    /// Evaluates whether a meshlet bounding sphere intersects or is inside the frustum.
+    ///
+    /// If the sphere is completely behind any plane, it is culled.
+    pub fn is_sphere_visible(&self, sphere: &MeshletBoundingSphere) -> bool {
+        for plane in &self.planes {
+            if sphere.is_outside_plane(plane.normal, plane.d) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// Direct3D 12 `DispatchMesh` command parameters.
+///
+/// Generated either by CPU command submission or emitted dynamically from an Amplification Shader.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DispatchMeshDesc {
+    /// Number of Mesh Shader threadgroups to spawn along X (one per surviving meshlet).
+    pub threadgroup_count_x: u32,
+    /// Number of Mesh Shader threadgroups along Y.
+    pub threadgroup_count_y: u32,
+    /// Number of Mesh Shader threadgroups along Z.
+    pub threadgroup_count_z: u32,
+    /// Amplification Shader payload passed to the spawned Mesh Shader threadgroups.
+    pub payload: AmplificationPayload,
+}
+
+impl DispatchMeshDesc {
+    /// Total Mesh Shader threadgroups dispatched.
+    #[inline]
+    pub const fn total_threadgroups(&self) -> u32 {
+        self.threadgroup_count_x * self.threadgroup_count_y * self.threadgroup_count_z
+    }
+}
+
+/// Telemetry metrics for Amplification Shader culling and LOD selection.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AmplificationStats {
+    /// Total meshlets processed across all amplification threadgroups.
+    pub total_meshlets_input: u32,
+    /// Meshlets eliminated by frustum culling.
+    pub meshlets_frustum_culled: u32,
+    /// Meshlets eliminated by cluster normal cone backface culling.
+    pub meshlets_backface_culled: u32,
+    /// Meshlets surviving culling and dispatched to Mesh Shaders.
+    pub meshlets_surviving_dispatched: u32,
+}
+
+impl AmplificationStats {
+    /// Percentage of meshlets culled before reaching the Mesh Shader stage (0 to 100%).
+    pub fn cull_rate_percentage(&self) -> u32 {
+        if self.total_meshlets_input == 0 {
+            return 0;
+        }
+        let culled = self.meshlets_frustum_culled + self.meshlets_backface_culled;
+        (culled * 100) / self.total_meshlets_input
+    }
+}
+
+/// Amplification Shader Execution Engine & Task Dispatcher.
+///
+/// Processes meshlet batches, performs parallel frustum and backface culling, selects
+/// dynamic LOD levels based on camera distance, packs payloads, and invokes `DispatchMesh`.
+#[derive(Debug)]
+pub struct AmplificationShaderDispatcher {
+    /// Active camera view frustum.
+    frustum: Frustum,
+    /// Active camera world position.
+    camera_pos: Vec3,
+    /// Distance threshold for high detail (LOD 0).
+    lod0_distance_sq: f32,
+    /// Distance threshold for medium detail (LOD 1).
+    lod1_distance_sq: f32,
+    /// Profiling and culling telemetry.
+    stats: AmplificationStats,
+}
+
+impl AmplificationShaderDispatcher {
+    /// Creates a new AmplificationShaderDispatcher with the specified camera view.
+    pub fn new(frustum: Frustum, camera_pos: Vec3) -> Self {
+        Self {
+            frustum,
+            camera_pos,
+            lod0_distance_sq: 2500.0, // 50 units squared
+            lod1_distance_sq: 10000.0, // 100 units squared
+            stats: AmplificationStats::default(),
+        }
+    }
+
+    /// Updates the camera frustum and position.
+    pub fn update_camera(&mut self, frustum: Frustum, camera_pos: Vec3) {
+        self.frustum = frustum;
+        self.camera_pos = camera_pos;
+    }
+
+    /// Configures LOD distance thresholds (in world units squared).
+    pub fn set_lod_thresholds(&mut self, lod0_sq: f32, lod1_sq: f32) {
+        self.lod0_distance_sq = lod0_sq;
+        self.lod1_distance_sq = lod1_sq;
+    }
+
+    /// Current culling telemetry statistics.
+    #[inline]
+    pub fn stats(&self) -> &AmplificationStats {
+        &self.stats
+    }
+
+    /// Resets culling telemetry statistics.
+    pub fn reset_stats(&mut self) {
+        self.stats = AmplificationStats::default();
+    }
+
+    /// Executes the Amplification Shader stage across a slice of meshlets.
+    ///
+    /// Evaluates frustum visibility and cluster backfacing for each meshlet.
+    /// Packs surviving meshlets into `AmplificationPayload` records and generates
+    /// `DispatchMeshDesc` commands to spawn child Mesh Shader threadgroups.
+    pub fn dispatch_meshlets(
+        &mut self,
+        meshlets: &[MeshletDescriptor],
+        base_instance_id: u32,
+    ) -> Result<Vec<DispatchMeshDesc>, MeshShaderError> {
+        let mut dispatches = Vec::new();
+
+        // Process meshlets in batches up to MAX_PAYLOAD_MESHLETS
+        for (chunk_idx, chunk) in meshlets.chunks(MAX_PAYLOAD_MESHLETS).enumerate() {
+            let mut payload = AmplificationPayload::default();
+            payload.instance_id = base_instance_id;
+
+            let chunk_base_index = (chunk_idx * MAX_PAYLOAD_MESHLETS) as u32;
+
+            for (local_idx, meshlet) in chunk.iter().enumerate() {
+                self.stats.total_meshlets_input += 1;
+                let meshlet_id = chunk_base_index + (local_idx as u32);
+
+                // 1. Frustum culling
+                if !self.frustum.is_sphere_visible(&meshlet.bounds_sphere) {
+                    self.stats.meshlets_frustum_culled += 1;
+                    continue;
+                }
+
+                // 2. Normal cone backface culling
+                if meshlet.bounds_cone.is_backfacing(self.camera_pos) {
+                    self.stats.meshlets_backface_culled += 1;
+                    continue;
+                }
+
+                // 3. Dynamic LOD selection based on camera distance
+                let dist_sq = meshlet.bounds_sphere.center.sub(self.camera_pos).length_squared();
+                let lod = if dist_sq <= self.lod0_distance_sq {
+                    0
+                } else if dist_sq <= self.lod1_distance_sq {
+                    1
+                } else {
+                    2
+                };
+
+                // Add to payload
+                let count = payload.meshlet_count as usize;
+                if count < MAX_PAYLOAD_MESHLETS {
+                    payload.meshlet_indices[count] = meshlet_id;
+                    payload.meshlet_count += 1;
+                    payload.lod_level = core::cmp::max(payload.lod_level, lod);
+                    self.stats.meshlets_surviving_dispatched += 1;
+                }
+            }
+
+            // If any meshlet survived culling in this threadgroup, issue DispatchMesh
+            if payload.meshlet_count > 0 {
+                dispatches.push(DispatchMeshDesc {
+                    threadgroup_count_x: payload.meshlet_count,
+                    threadgroup_count_y: 1,
+                    threadgroup_count_z: 1,
+                    payload,
+                });
+            }
+        }
+
+        Ok(dispatches)
     }
 }
