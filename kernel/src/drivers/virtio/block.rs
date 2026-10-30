@@ -1,8 +1,4 @@
 //! VirtIO Block Device Driver.
-//!
-//! Implements 512-byte sector block storage I/O according to the VirtIO 1.0+ block specification.
-//! Formats requests using 3-descriptor chains (Header -> Data -> Status) and submits them
-//! through the primary request virtqueue.
 
 use super::pci::PciDevice;
 use super::virtqueue::{Virtqueue, VIRTQ_DESC_F_NEXT, VIRTQ_DESC_F_WRITE};

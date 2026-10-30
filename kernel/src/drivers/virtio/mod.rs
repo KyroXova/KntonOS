@@ -1,10 +1,4 @@
 //! VirtIO Modern Driver Subsystem for KntonOS.
-//!
-//! Provides modular hardware driver infrastructure for VirtIO PCI devices:
-//! - PCI capability enumeration and memory-mapped configuration spaces
-//! - OASIS split virtqueue DMA ring management
-//! - 512-byte block device driver for persistent storage
-//! - VirtIO network device driver (virtio-net) with packet ring buffer
 
 pub mod block;
 pub mod net;
@@ -66,7 +60,7 @@ pub fn init() {
 pub fn test_virtio_subsystem() -> bool {
     crate::serial_write_str("[KNT-VIRTIO-TEST] Executing VirtIO driver self-test suite...\r\n");
 
-    // --- TEST 1: PCI Capability & Enumeration ---
+    // 1. PCI capability and enumeration.
     {
         let devices = scan_pci();
         if devices.is_empty() {
@@ -77,7 +71,7 @@ pub fn test_virtio_subsystem() -> bool {
         crate::serial_write_str("[KNT-VIRTIO-PCI-PASS] VirtIO PCI enumeration and capability scan verified\r\n");
     }
 
-    // --- TEST 2: Split Virtqueue Ring Management ---
+    // 2. Split virtqueue ring management.
     {
         let mut vq = Virtqueue::new(32);
         if vq.queue_size() != 32 || vq.free_descriptors() != 32 {
@@ -121,7 +115,7 @@ pub fn test_virtio_subsystem() -> bool {
         crate::serial_write_str("[KNT-VIRTIO-QUEUE-PASS] Split Virtqueue descriptor allocation, chaining, and ring submit verified\r\n");
     }
 
-    // --- TEST 3: VirtIO Block Device Read / Write Transactions ---
+    // 3. VirtIO block device read/write transactions.
     {
         let mut blk_lock = BLOCK_DEVICE.lock();
         let blk = blk_lock.as_mut().expect("VirtIO block device not initialized");
@@ -167,7 +161,7 @@ pub fn test_virtio_subsystem() -> bool {
         crate::serial_write_str("[KNT-VIRTIO-BLOCK-PASS] 512-byte block sector read/write transactions verified\r\n");
     }
 
-    // --- TEST 4: VirtIO Network Packet Transmit & Loopback Reception ---
+    // 4. VirtIO network packet transmit and loopback reception.
     {
         let mut net_lock = NET_DEVICE.lock();
         let net = net_lock.as_mut().expect("VirtIO network device not initialized");
