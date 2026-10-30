@@ -1,7 +1,5 @@
 //! Wayland Shared Memory (`wl_shm`, `wl_shm_pool`, `wl_buffer`) & Damage Tracking.
-//!
 //! Implements zero-copy shared memory buffer pools, pixel format negotiations (ARGB8888, XRGB8888),
-//! buffer attachments to surfaces, and damage tracking regions.
 
 use alloc::vec::Vec;
 use crate::compositor::dirty::{DamageRegion, Rect};

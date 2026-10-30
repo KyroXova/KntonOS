@@ -1,11 +1,5 @@
 //! Wayland Sub-Surface Hierarchy, Z-Order Staging, & Frame Callback Synchronization.
-//!
 //! Implements `wl_subcompositor` and `wl_subsurface` abstractions:
-//! - Parent-child surface tree hierarchy.
-//! - Relative position offsets (x, y).
-//! - Z-order stacking (`place_above`, `place_below`).
-//! - Synchronized vs. Desynchronized commit modes.
-//! - Frame callback (`wl_callback`) presentation dispatching.
 
 use alloc::vec::Vec;
 use crate::compositor::wayland::shm::WlSurface;
