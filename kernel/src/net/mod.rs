@@ -1355,3 +1355,29 @@ pub fn test_net_multiqueue_subsystem() -> bool {
 
     true
 }
+
+/// Verification self-test suite for Handheld PC Wi-Fi 6E/7 Latency-Optimized Packet Scheduler & Roaming Daemon.
+pub fn test_wifi_scheduler_and_roaming_subsystem() -> bool {
+    crate::serial_write_str("[KNT-NET] Testing handheld Wi-Fi 6E/7 packet scheduler & fast roaming daemon...\r\n");
+
+    // 1. Verify 802.11ax/be Frame Structures, WMM QoS Access Categories & TWT Descriptors
+    if !verify_wifi_structures_and_wmm_mappings() {
+        crate::serial_write_str("[KNT-PANIC] Wi-Fi 802.11ax/be structures and WMM mapping verification failed!\r\n");
+        return false;
+    }
+
+    // 2. Verify Latency-Sensitive Gaming Packet Scheduler with Airtime Fairness & CoDel AQM
+    if !verify_scheduler_and_bufferbloat_control() {
+        crate::serial_write_str("[KNT-PANIC] Wi-Fi packet scheduler and CoDel bufferbloat verification failed!\r\n");
+        return false;
+    }
+
+    // 3. Verify Multi-Link Operation (MLO) Aggregation and Sub-10ms 802.11r Fast Roaming Daemon
+    if !verify_mlo_aggregation_and_fast_roaming() {
+        crate::serial_write_str("[KNT-PANIC] Wi-Fi MLO aggregation and 802.11r fast roaming verification failed!\r\n");
+        return false;
+    }
+
+    crate::serial_write_str("[KNT-NET-WIFI-PASS] Handheld Wi-Fi 6E/7 packet scheduler and fast roaming daemon verified\r\n");
+    true
+}
