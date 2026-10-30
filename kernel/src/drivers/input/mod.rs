@@ -670,3 +670,29 @@ pub fn test_hall_effect_subsystem() -> bool {
     serial_write_str("[KNT-INPUT-HALL-PASS] Handheld Hall effect joystick and trigger calibration engine verified\r\n");
     true
 }
+
+/// Verification self-test suite for Handheld PC Fingerprint Sensor & Biometric Windows Hello Token Engine.
+pub fn test_biometric_fingerprint_subsystem() -> bool {
+    serial_write_str("[KNT-SEC] Testing handheld fingerprint sensor & biometric Windows Hello token engine...\r\n");
+
+    // 1. Verify Biometric Sensor Register Map, SPI Framing & Raw Image Buffers
+    if !verify_sensor_registers_and_spi_framing() {
+        serial_write_str("[KNT-PANIC] Biometric sensor registers and SPI framing verification failed!\r\n");
+        return false;
+    }
+
+    // 2. Verify Minutiae Feature Extraction, Ridge Frequency & Anti-Spoof Liveness
+    if !verify_minutiae_extraction_and_liveness() {
+        serial_write_str("[KNT-PANIC] Minutiae feature extraction and liveness check verification failed!\r\n");
+        return false;
+    }
+
+    // 3. Verify Biometric Template Matching and Windows Hello Auth Token Issuer
+    if !verify_template_matching_and_hello_tokens() {
+        serial_write_str("[KNT-PANIC] Biometric template matching and Windows Hello token verification failed!\r\n");
+        return false;
+    }
+
+    serial_write_str("[KNT-SEC-BIOMETRIC-PASS] Handheld fingerprint sensor and Windows Hello token engine verified\r\n");
+    true
+}
