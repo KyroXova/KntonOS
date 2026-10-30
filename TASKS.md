@@ -17,9 +17,9 @@ These branches are managed by their respective developers with granular commit l
 
 | Contributor identity | Branch | Local workspace | Status |
 | --- | --- | --- | --- |
-| Ada Chen | `workspace/ada-chen` | `E:\Git Lab's\kntonOS-ada-chen` | Active (TASK-KNT-118) |
-| Jules Martin | `workspace/jules-martin` | `E:\Git Lab's\kntonOS-jules-martin` | Active (TASK-KNT-116) |
-| Priya Nair | `workspace/priya-nair` | `E:\Git Lab's\kntonOS-priya-nair` | Active (TASK-KNT-117) |
+| Ada Chen | `workspace/ada-chen` | `E:\Git Lab's\kntonOS-ada-chen` | Idle (TASK-KNT-118 complete) |
+| Jules Martin | `workspace/jules-martin` | `E:\Git Lab's\kntonOS-jules-martin` | Idle (TASK-KNT-116 complete) |
+| Priya Nair | `workspace/priya-nair` | `E:\Git Lab's\kntonOS-priya-nair` | Idle (TASK-KNT-117 complete) |
 
 ## Task index
 
@@ -140,13 +140,10 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-113 | Unified Handheld PC Dual-IMU Dead Reckoning & Motion Drift Eliminator | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-113-imu-fusion.md) |
 | TASK-KNT-114 | Direct3D 12 Dynamic Depth Bounds Testing & Conservative Rasterization Engine | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-114-depth-bounds.md) |
 | TASK-KNT-115 | Kernel-Direct Crash Telemetry Core Dump & Instant Mini-Dump Restorer Engine | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-115-crash-dump.md) |
-| TASK-KNT-116 | Unified Handheld PC Dual-Battery Balance Manager & Fast USB-PD 3.1 Extended Power Profile Engine | Claimed | TASK-KNT-077 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-116-battery-balance.md) |
-| TASK-KNT-117 | Direct3D 12 Low-Latency Frame Pacing & Latency Marker Engine | Claimed | TASK-KNT-071 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-117-frame-pacing.md) |
-| TASK-KNT-118 | Kernel-Direct Low-Latency Spatial Audio Virtualizer & Ear-Canal Impedance Compensator Engine | Claimed | TASK-KNT-075 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-118-spatial-ear.md) |
+| TASK-KNT-116 | Unified Handheld PC Dual-Battery Balance Manager & Fast USB-PD 3.1 Extended Power Profile Engine | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-116-battery-balance.md) |
+| TASK-KNT-117 | Direct3D 12 Low-Latency Frame Pacing & Latency Marker Engine | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-117-frame-pacing.md) |
+| TASK-KNT-118 | Kernel-Direct Low-Latency Spatial Audio Virtualizer & Ear-Canal Impedance Compensator Engine | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-118-spatial-ear.md) |
 
 ## Active reservations
 
 - `kernel/src/pkg/`: reserved by ArdenKestrel for TASK-KNT-045.
-- `kernel/src/drivers/power/battery_balance.rs`: reserved by Jules Martin for TASK-KNT-116.
-- `kernel/src/gfx/frame_pacing.rs`: reserved by Priya Nair for TASK-KNT-117.
-- `kernel/src/audio/spatial_ear.rs`: reserved by Ada Chen for TASK-KNT-118.
