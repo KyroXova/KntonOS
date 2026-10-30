@@ -17,9 +17,9 @@ These branches are managed by their respective developers with granular commit l
 
 | Contributor identity | Branch | Local workspace | Status |
 | --- | --- | --- | --- |
-| Ada Chen | `workspace/ada-chen` | `E:\Git Lab's\kntonOS-ada-chen` | Idle (TASK-KNT-118 complete) |
-| Jules Martin | `workspace/jules-martin` | `E:\Git Lab's\kntonOS-jules-martin` | Idle (TASK-KNT-116 complete) |
-| Priya Nair | `workspace/priya-nair` | `E:\Git Lab's\kntonOS-priya-nair` | Idle (TASK-KNT-117 complete) |
+| Ada Chen | `workspace/ada-chen` | `E:\Git Lab's\kntonOS-ada-chen` | Active (TASK-KNT-121) |
+| Jules Martin | `workspace/jules-martin` | `E:\Git Lab's\kntonOS-jules-martin` | Active (TASK-KNT-119) |
+| Priya Nair | `workspace/priya-nair` | `E:\Git Lab's\kntonOS-priya-nair` | Active (TASK-KNT-120) |
 
 ## Task index
 
@@ -143,7 +143,13 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-116 | Unified Handheld PC Dual-Battery Balance Manager & Fast USB-PD 3.1 Extended Power Profile Engine | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-116-battery-balance.md) |
 | TASK-KNT-117 | Direct3D 12 Low-Latency Frame Pacing & Latency Marker Engine | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-117-frame-pacing.md) |
 | TASK-KNT-118 | Kernel-Direct Low-Latency Spatial Audio Virtualizer & Ear-Canal Impedance Compensator Engine | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-118-spatial-ear.md) |
+| TASK-KNT-119 | Unified Handheld PC Multi-Zone Thermocouple & Peltier Active Cooler Module Driver | Claimed | TASK-KNT-068 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-119-peltier-cooler.md) |
+| TASK-KNT-120 | Direct3D 12 Dynamic Primitive Culling & Mesh-Cluster LOD Streamer Engine | Claimed | TASK-KNT-099 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-120-cluster-cull.md) |
+| TASK-KNT-121 | Kernel-Direct Micro-Checkpoint Fast State Snapshot & Instant Resumption Engine | Claimed | TASK-KNT-072 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-121-micro-checkpoint.md) |
 
 ## Active reservations
 
 - `kernel/src/pkg/`: reserved by ArdenKestrel for TASK-KNT-045.
+- `kernel/src/drivers/thermal/peltier.rs`: reserved by Jules Martin for TASK-KNT-119.
+- `kernel/src/gfx/cluster_cull.rs`: reserved by Priya Nair for TASK-KNT-120.
+- `kernel/src/sys/checkpoint.rs`: reserved by Ada Chen for TASK-KNT-121.
