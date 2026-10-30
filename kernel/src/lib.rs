@@ -21,6 +21,7 @@ pub mod gfx;
 pub mod terminal;
 pub mod power;
 pub mod mm;
+pub mod mem;
 pub mod trace;
 pub mod bpf;
 pub mod audio;
@@ -134,6 +135,11 @@ pub extern "C" fn kmain() -> ! {
     // Initialize and verify Dynamic VMM Memory Compactor & Transparent Page Defragmentation
     if !mm::test_memory_compaction_subsystem() {
         serial_write_str("[KNT-PANIC] Memory compactor and defragmentation self-test failed!\r\n");
+    }
+
+    // Initialize and verify Micro-Kernel Lock-Free Ring Buffer Object Pool & Slab Cache Allocator
+    if !mem::test_slab_allocator_subsystem() {
+        serial_write_str("[KNT-PANIC] Slab cache and magazine allocator self-test failed!\r\n");
     }
 
     // Initialize SMP multi-core discovery and Local APIC timer
