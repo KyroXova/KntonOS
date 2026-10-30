@@ -7,6 +7,16 @@ pub mod apic;
 pub mod timer;
 pub mod smp;
 pub mod power;
+pub mod hpet;
+
+pub use hpet::{
+    verify_hpet_structures, AcpiHpetTable, HpetInfo, HpetRegisters, HpetTableParser,
+    DEFAULT_HPET_BASE_ADDRESS, HPET_GEN_CONF_ENABLE, HPET_GEN_CONF_LEG_RT, HPET_REG_GCAP_ID,
+    HPET_REG_GEN_CONF, HPET_REG_GINTR_STA, HPET_REG_MAIN_CNT, HPET_REG_TIM0_COMP,
+    HPET_REG_TIM0_CONF, HPET_REG_TIM0_FSB, HPET_SIGNATURE, HPET_SIGNATURE_U32, HPET_TIMER_STRIDE,
+    HPET_TN_32MODE, HPET_TN_INT_ENABLE, HPET_TN_INT_TYPE, HPET_TN_PERIODIC_CAP, HPET_TN_SIZE_CAP,
+    HPET_TN_TYPE_PERIODIC, HPET_TN_VAL_SET,
+};
 
 pub use smp::{test_smp_and_timer_subsystem, SMP};
 pub use power::{
