@@ -638,6 +638,258 @@ impl ShapeWritingTokenizer {
     }
 }
 
+// =============================================================================
+// 3. Spatial Error Ellipse, Predictive Lattice & Win32 Event Injector
+// =============================================================================
+
+pub const VK_BACK: u8 = 0x08;
+pub const VK_TAB: u8 = 0x09;
+pub const VK_RETURN: u8 = 0x0D;
+pub const VK_SHIFT: u8 = 0x10;
+pub const VK_SPACE: u8 = 0x20;
+
+pub const KEYEVENTF_KEYDOWN: u32 = 0x0000;
+pub const KEYEVENTF_KEYUP: u32 = 0x0002;
+
+/// Standard Win32 virtual keyboard input event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Win32KeyEvent {
+    pub vk_code: u8,
+    pub scan_code: u8,
+    pub flags: u32,
+    pub is_up: bool,
+    pub timestamp_us: u64,
+}
+
+impl Win32KeyEvent {
+    pub fn key_down(vk_code: u8, timestamp_us: u64) -> Self {
+        Self {
+            vk_code,
+            scan_code: 0,
+            flags: KEYEVENTF_KEYDOWN,
+            is_up: false,
+            timestamp_us,
+        }
+    }
+
+    pub fn key_up(vk_code: u8, timestamp_us: u64) -> Self {
+        Self {
+            vk_code,
+            scan_code: 0,
+            flags: KEYEVENTF_KEYUP,
+            is_up: true,
+            timestamp_us,
+        }
+    }
+}
+
+/// Ring buffer for injecting keyboard events into the OS input dispatch queue.
+#[derive(Debug, Default)]
+pub struct KeyEventInjector {
+    pub queue: alloc::collections::VecDeque<Win32KeyEvent>,
+    pub injected_count: u64,
+}
+
+impl KeyEventInjector {
+    pub fn new() -> Self {
+        Self {
+            queue: alloc::collections::VecDeque::with_capacity(64),
+            injected_count: 0,
+        }
+    }
+
+    /// Injects a key-down or key-up event.
+    pub fn inject_vk(&mut self, vk_code: u8, is_down: bool, timestamp_us: u64) {
+        let event = if is_down {
+            Win32KeyEvent::key_down(vk_code, timestamp_us)
+        } else {
+            Win32KeyEvent::key_up(vk_code, timestamp_us)
+        };
+        self.queue.push_back(event);
+        self.injected_count += 1;
+    }
+
+    /// Injects a complete keystroke (KeyDown followed by KeyUp).
+    pub fn inject_char_keystroke(&mut self, c: char, timestamp_us: u64) {
+        let upper = c.to_ascii_uppercase();
+        let vk_code = match upper {
+            'A'..='Z' => upper as u8,
+            '0'..='9' => upper as u8,
+            ' ' => VK_SPACE,
+            '\n' => VK_RETURN,
+            '\t' => VK_TAB,
+            '\x08' => VK_BACK,
+            _ => return,
+        };
+        self.inject_vk(vk_code, true, timestamp_us);
+        self.inject_vk(vk_code, false, timestamp_us + 1000);
+    }
+
+    /// Injects an entire word string followed by an automatic trailing space.
+    pub fn inject_word(&mut self, word: &str, timestamp_us: u64) {
+        let mut t = timestamp_us;
+        for c in word.chars() {
+            self.inject_char_keystroke(c, t);
+            t += 2000;
+        }
+        self.inject_char_keystroke(' ', t);
+    }
+
+    pub fn pop_event(&mut self) -> Option<Win32KeyEvent> {
+        self.queue.pop_front()
+    }
+
+    pub fn pending_count(&self) -> usize {
+        self.queue.len()
+    }
+}
+
+/// Spatial touch error tolerance model.
+#[derive(Debug, Clone, Copy)]
+pub struct SpatialErrorEllipse {
+    pub radius_x: f32, // Horizontal error tolerance in pixels (e.g. 40px)
+    pub radius_y: f32, // Vertical error tolerance in pixels (e.g. 30px)
+}
+
+impl SpatialErrorEllipse {
+    pub const fn default_handheld() -> Self {
+        Self {
+            radius_x: 40.0,
+            radius_y: 30.0,
+        }
+    }
+
+    /// Computes spatial match score [0.0..1.0] from touch point to key center.
+    pub fn score(&self, tx: f32, ty: f32, kx: f32, ky: f32) -> f32 {
+        let dx = (tx - kx) / self.radius_x;
+        let dy = (ty - ky) / self.radius_y;
+        let d_ellipse = dx * dx + dy * dy;
+        1.0 / (1.0 + d_ellipse)
+    }
+}
+
+/// Candidate word suggestion scored by spatial match and frequency.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WordCandidate {
+    pub word: String,
+    pub score: f32,
+}
+
+/// Predictive N-Gram Word Candidate Lattice for Handheld Gaming Comms.
+pub struct PredictiveWordLattice {
+    pub vocabulary: Vec<(&'static str, f32)>, // Word and unigram frequency [0..1]
+    pub spatial_model: SpatialErrorEllipse,
+}
+
+impl PredictiveWordLattice {
+    pub fn new() -> Self {
+        let vocabulary = alloc::vec![
+            ("GAME", 0.95),
+            ("HELP", 0.88),
+            ("GOOD", 0.85),
+            ("PLAY", 0.82),
+            ("TEAM", 0.80),
+            ("GG", 0.78),
+            ("RUSH", 0.75),
+            ("ATTACK", 0.72),
+            ("DEFEND", 0.70),
+            ("READY", 0.68),
+            ("PAUSE", 0.65),
+            ("START", 0.62),
+            ("QUIT", 0.60),
+            ("MENU", 0.58),
+            ("CHAT", 0.55),
+            ("LOOT", 0.52),
+            ("BOSS", 0.50),
+            ("HEAL", 0.48),
+            ("SAVE", 0.45),
+            ("FAST", 0.42),
+        ];
+
+        Self {
+            vocabulary,
+            spatial_model: SpatialErrorEllipse::default_handheld(),
+        }
+    }
+
+    /// Evaluates swipe trajectory against vocabulary and returns top candidates.
+    pub fn rank_candidates(
+        &self,
+        trajectory: &[TouchPoint],
+        layout: &VirtualKeyboardLayout,
+    ) -> Vec<WordCandidate> {
+        if trajectory.len() < 2 {
+            return Vec::new();
+        }
+
+        let start_pt = trajectory[0];
+        let end_pt = trajectory[trajectory.len() - 1];
+
+        let mut scored_candidates: Vec<WordCandidate> = Vec::new();
+
+        for &(vocab_word, freq) in &self.vocabulary {
+            let chars: Vec<char> = vocab_word.chars().collect();
+            if chars.len() < 2 {
+                continue;
+            }
+
+            // Find key centers for word letters
+            let first_key = layout.keys.iter().find(|k| k.id == VirtualKeyId::Char(chars[0]));
+            let last_key = layout.keys.iter().find(|k| k.id == VirtualKeyId::Char(chars[chars.len() - 1]));
+
+            let (fk, lk) = match (first_key, last_key) {
+                (Some(f), Some(l)) => (f, l),
+                _ => continue,
+            };
+
+            // Evaluate spatial scores for start and end
+            let start_score = self.spatial_model.score(start_pt.x, start_pt.y, fk.center_x, fk.center_y);
+            let end_score = self.spatial_model.score(end_pt.x, end_pt.y, lk.center_x, lk.center_y);
+
+            // Discard if start or end is too far
+            if start_score < 0.25 || end_score < 0.25 {
+                continue;
+            }
+
+            // Intermediate alignment score
+            let mut intermediate_score = 0.0f32;
+            let n_intermediate = chars.len() - 2;
+
+            if n_intermediate > 0 {
+                for (idx, &c) in chars[1..chars.len() - 1].iter().enumerate() {
+                    if let Some(mid_key) = layout.keys.iter().find(|k| k.id == VirtualKeyId::Char(c)) {
+                        // Sample trajectory proportionally
+                        let traj_idx = ((idx + 1) * trajectory.len()) / chars.len();
+                        let pt = trajectory[traj_idx.min(trajectory.len() - 1)];
+                        let s = self.spatial_model.score(pt.x, pt.y, mid_key.center_x, mid_key.center_y);
+                        intermediate_score += s;
+                    }
+                }
+                intermediate_score /= n_intermediate as f32;
+            } else {
+                intermediate_score = 1.0;
+            }
+
+            let total_score = (start_score * 0.35)
+                + (end_score * 0.35)
+                + (intermediate_score * 0.20)
+                + (freq * 0.10);
+
+            scored_candidates.push(WordCandidate {
+                word: String::from(vocab_word),
+                score: total_score,
+            });
+        }
+
+        // Sort descending by score
+        scored_candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(core::cmp::Ordering::Equal));
+
+        // Return top 3
+        scored_candidates.truncate(3);
+        scored_candidates
+    }
+}
+
 // -----------------------------------------------------------------------------
 // Unit Tests for Commit 1
 // -----------------------------------------------------------------------------
@@ -695,5 +947,37 @@ mod tests {
         assert!(features.len() >= 2);
         assert_eq!(features[0].feature_type, GestureFeatureType::StrokeStart);
         assert_eq!(features.last().unwrap().feature_type, GestureFeatureType::StrokeEnd);
+    }
+    #[test]
+    pub fn test_word_lattice_and_key_injector() {
+        let kb = VirtualKeyboardLayout::new(1280, 800, KeyboardLayoutMode::FullQwerty);
+        let lattice = PredictiveWordLattice::new();
+
+        // Construct synthetic trajectory for word "GAME" (G -> A -> M -> E)
+        let g_key = kb.keys.iter().find(|k| k.id == VirtualKeyId::Char('G')).unwrap();
+        let a_key = kb.keys.iter().find(|k| k.id == VirtualKeyId::Char('A')).unwrap();
+        let m_key = kb.keys.iter().find(|k| k.id == VirtualKeyId::Char('M')).unwrap();
+        let e_key = kb.keys.iter().find(|k| k.id == VirtualKeyId::Char('E')).unwrap();
+
+        let traj = [
+            TouchPoint::new(g_key.center_x, g_key.center_y, 1000),
+            TouchPoint::new(a_key.center_x, a_key.center_y, 2000),
+            TouchPoint::new(m_key.center_x, m_key.center_y, 3000),
+            TouchPoint::new(e_key.center_x, e_key.center_y, 4000),
+        ];
+
+        let candidates = lattice.rank_candidates(&traj, &kb);
+        assert!(!candidates.is_empty());
+        assert_eq!(candidates[0].word, "GAME");
+        assert!(candidates[0].score > 0.5);
+
+        // Win32 key event injector test
+        let mut injector = KeyEventInjector::new();
+        injector.inject_word("GG", 10_000);
+        assert_eq!(injector.pending_count(), 6); // 'G'(down,up) + 'G'(down,up) + ' '(down,up) = 6 events
+
+        let ev1 = injector.pop_event().unwrap();
+        assert_eq!(ev1.vk_code, b'G');
+        assert!(!ev1.is_up);
     }
 }
