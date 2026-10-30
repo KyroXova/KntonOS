@@ -1,13 +1,6 @@
-//! Dynamic Active Reverse-Phase Braking Pulse Synthesizer for Sub-5ms Haptic Cutoff.
-//!
-//! Eliminates mechanical ringing ("buzz trailing") in high-Q Linear Resonant Actuators (LRAs):
-//! - Injects a 180° phase-inverted electromagnetic damping pulse immediately upon effect termination
-//! - Actively decelerates the oscillating magnetic mass within a single half-cycle (sub-5ms cutoff)
-//! - Automatically transitions from active reverse braking to low-impedance coil shorting (dynamic quenching)
+//! Dynamic active reverse-phase braking pulse synthesizer for sub-5ms haptic cutoff.
 
-// -----------------------------------------------------------------------------
-// Braking State Machine & Parameters
-// -----------------------------------------------------------------------------
+// Braking state machine and parameters.
 
 /// Operating state of the active braking pulse synthesizer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,9 +72,7 @@ impl BrakingOutput {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Braking Pulse Synthesizer
-// -----------------------------------------------------------------------------
+// Braking pulse synthesizer.
 
 /// Dynamic active reverse-phase braking pulse synthesizer for a single LRA actuator.
 #[derive(Debug, Clone)]
@@ -117,10 +108,6 @@ impl BrakingPulseSynthesizer {
     }
 
     /// Triggers an active reverse-phase braking pulse upon effect cutoff.
-    ///
-    /// Evaluates the actuator's resonant frequency $f_0$ and terminating vibration amplitude,
-    /// computing an exact half-cycle ($180^\circ$) reverse pulse:
-    ///   $T_{\text{brake}} = \frac{10^6 \cdot \text{cycles}}{f_0} \text{ microseconds}$
     pub fn trigger_braking(&mut self, terminating_amplitude: u8, resonant_freq_hz: f32) -> BrakingOutput {
         if terminating_amplitude == 0 || resonant_freq_hz <= 0.0 {
             self.state = BrakingState::Idle;
@@ -227,9 +214,7 @@ impl BrakingPulseSynthesizer {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Unit Tests & Verification
-// -----------------------------------------------------------------------------
+// Unit tests and verification.
 
 /// Unit test verifying dynamic active reverse-phase braking pulse synthesizer for sub-5ms haptic cutoff.
 pub fn verify_active_reverse_phase_braking() -> bool {
@@ -240,9 +225,7 @@ pub fn verify_active_reverse_phase_braking() -> bool {
         return false;
     }
 
-    // 1. Trigger Braking for Palm LRA at 175 Hz (terminating amplitude = 200)
-    // Resonant period T = 1_000_000 / 175 = 5714 us
-    // Half-cycle pulse duration = 2857 us (< 3.0 ms, well under 5ms cutoff requirement)
+    // Trigger braking for palm LRA at 175 Hz (half-cycle pulse = 2857 us).
     let initial_out = synth.trigger_braking(200, 175.0);
     if initial_out.state != BrakingState::ActiveBraking {
         return false;
