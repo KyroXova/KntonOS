@@ -258,3 +258,212 @@ pub fn verify_battery_descriptors_and_pd_profiles() -> bool {
 
     true
 }
+
+
+/// Threshold in millivolts where active cell balancing engages.
+pub const BALANCE_THRESHOLD_MV: u16 = 30;
+/// Threshold in millivolts where active cell balancing disengages (hysteresis).
+pub const BALANCE_HYSTERESIS_MV: u16 = 10;
+
+/// Active balancing state across the dual-cell battery pack.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BalanceState {
+    /// Both cells balanced within threshold; shunts disabled.
+    Idle,
+    /// Cell 1 voltage exceeds Cell 2; bleeding Cell 1 via active shunt.
+    BalancingCell1,
+    /// Cell 2 voltage exceeds Cell 1; bleeding Cell 2 via active shunt.
+    BalancingCell2,
+}
+
+/// Thermal throttle zones for handheld battery charging safety.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThermalThrottleZone {
+    /// Below 0°C: Lithium plating hazard, charge strictly disabled.
+    ColdCutoff,
+    /// 0°C - 15°C: Sub-optimal cell temperature, 50% charge current.
+    CoolReduced,
+    /// 15°C - 40°C: Optimal operating window, 100% full-rate charge.
+    Normal,
+    /// 40°C - 45°C: Warm pack during heavy gameplay, 75% throttled current.
+    WarmThrottled,
+    /// 45°C - 50°C: Hot pack, 40% throttled current.
+    HotThrottled,
+    /// Above 50°C: Thermal runaway prevention cutoff, 0% current.
+    CriticalCutoff,
+}
+
+/// Evaluates inter-cell voltage imbalance and manages active balance shunts.
+pub fn evaluate_cell_balance(pack: &mut DualBatteryPack, is_charging: bool) -> BalanceState {
+    let delta = pack.cell_delta_mv();
+
+    if delta > BALANCE_THRESHOLD_MV {
+        if pack.cell1.voltage_mv > pack.cell2.voltage_mv {
+            pack.cell1.balance_shunt_active = true;
+            pack.cell2.balance_shunt_active = false;
+            BalanceState::BalancingCell1
+        } else {
+            pack.cell1.balance_shunt_active = false;
+            pack.cell2.balance_shunt_active = true;
+            BalanceState::BalancingCell2
+        }
+    } else if delta <= BALANCE_HYSTERESIS_MV || !is_charging {
+        pack.cell1.balance_shunt_active = false;
+        pack.cell2.balance_shunt_active = false;
+        BalanceState::Idle
+    } else {
+        if pack.cell1.balance_shunt_active {
+            BalanceState::BalancingCell1
+        } else if pack.cell2.balance_shunt_active {
+            BalanceState::BalancingCell2
+        } else {
+            BalanceState::Idle
+        }
+    }
+}
+
+/// OCV (Open Circuit Voltage) lookup table for Li-ion / LiPo pouch cells.
+const OCV_CURVE: &[(u16, u8)] = &[
+    (4200, 100),
+    (4100, 90),
+    (4000, 80),
+    (3900, 70),
+    (3820, 60),
+    (3760, 50),
+    (3720, 40),
+    (3680, 30),
+    (3640, 20),
+    (3580, 10),
+    (3300, 0),
+];
+
+/// Estimates cell State-of-Charge (0..100%) using load-compensated Open Circuit Voltage (OCV).
+pub fn estimate_cell_soc(terminal_mv: u16, current_ma: i32, internal_res_mohm: u16) -> u8 {
+    let ir_drop_mv = (current_ma as i64 * internal_res_mohm as i64) / 1000;
+    let ocv_mv = (terminal_mv as i64 - ir_drop_mv).clamp(3000, 4400) as u16;
+
+    if ocv_mv >= OCV_CURVE[0].0 {
+        return 100;
+    }
+    let last_idx = OCV_CURVE.len() - 1;
+    if ocv_mv <= OCV_CURVE[last_idx].0 {
+        return 0;
+    }
+
+    for i in 0..last_idx {
+        let (v_high, soc_high) = OCV_CURVE[i];
+        let (v_low, soc_low) = OCV_CURVE[i + 1];
+
+        if ocv_mv <= v_high && ocv_mv >= v_low {
+            let v_span = (v_high - v_low) as u32;
+            let soc_span = (soc_high - soc_low) as u32;
+            let offset = (ocv_mv - v_low) as u32;
+            return (soc_low as u32 + (offset * soc_span) / v_span) as u8;
+        }
+    }
+
+    50
+}
+
+/// Updates SoC estimates for both cells in the pack using current telemetry.
+pub fn update_pack_soc(pack: &mut DualBatteryPack) {
+    pack.cell1.state_of_charge_pct = estimate_cell_soc(
+        pack.cell1.voltage_mv,
+        pack.cell1.current_ma,
+        pack.cell1.internal_resistance_mohm,
+    );
+    pack.cell2.state_of_charge_pct = estimate_cell_soc(
+        pack.cell2.voltage_mv,
+        pack.cell2.current_ma,
+        pack.cell2.internal_resistance_mohm,
+    );
+}
+
+/// Computes the safe thermal charge current limit and throttle zone.
+pub fn calculate_thermal_charge_limit(max_temp_c: f32, max_current_ma: u32) -> (ThermalThrottleZone, u32) {
+    if max_temp_c < 0.0 {
+        (ThermalThrottleZone::ColdCutoff, 0)
+    } else if max_temp_c < 15.0 {
+        (ThermalThrottleZone::CoolReduced, max_current_ma / 2)
+    } else if max_temp_c <= 40.0 {
+        (ThermalThrottleZone::Normal, max_current_ma)
+    } else if max_temp_c <= 45.0 {
+        (ThermalThrottleZone::WarmThrottled, (max_current_ma * 3) / 4)
+    } else if max_temp_c <= 50.0 {
+        (ThermalThrottleZone::HotThrottled, (max_current_ma * 2) / 5)
+    } else {
+        (ThermalThrottleZone::CriticalCutoff, 0)
+    }
+}
+
+/// Unit test verifying cell load balancing, SoC estimation, and thermal curves.
+pub fn verify_cell_balancing_and_thermal_curves() -> bool {
+    // 1. Verify Active Cell Load Balancing
+    let mut pack = DualBatteryPack::new(3950, 3900); // 50 mV delta > 30 mV
+    let state = evaluate_cell_balance(&mut pack, true);
+    if state != BalanceState::BalancingCell1 || !pack.cell1.balance_shunt_active || pack.cell2.balance_shunt_active {
+        return false;
+    }
+
+    // Cell 2 higher
+    let mut pack2 = DualBatteryPack::new(3880, 3930); // 50 mV delta
+    let state2 = evaluate_cell_balance(&mut pack2, true);
+    if state2 != BalanceState::BalancingCell2 || pack2.cell1.balance_shunt_active || !pack2.cell2.balance_shunt_active {
+        return false;
+    }
+
+    // Balanced within hysteresis (<= 10 mV)
+    let mut pack_balanced = DualBatteryPack::new(3905, 3900); // 5 mV delta
+    let state_b = evaluate_cell_balance(&mut pack_balanced, true);
+    if state_b != BalanceState::Idle || pack_balanced.cell1.balance_shunt_active || pack_balanced.cell2.balance_shunt_active {
+        return false;
+    }
+
+    // 2. Verify SoC Estimation with Load Compensation
+    // At rest (0 mA), 4200 mV -> 100%
+    let soc_full = estimate_cell_soc(4200, 0, 20);
+    if soc_full != 100 {
+        return false;
+    }
+
+    // At rest (0 mA), 3760 mV -> 50%
+    let soc_half = estimate_cell_soc(3760, 0, 20);
+    if soc_half != 50 {
+        return false;
+    }
+
+    // Under heavy load (discharging -2000 mA), IR drop = (-2000 * 20)/1000 = -40 mV
+    // V_terminal = 3720 mV -> V_ocv = 3720 - (-40) = 3760 mV -> 50%
+    let soc_loaded = estimate_cell_soc(3720, -2000, 20);
+    if soc_loaded != 50 {
+        return false;
+    }
+
+    // 3. Verify Thermal Throttle Curves
+    let (zone_norm, i_norm) = calculate_thermal_charge_limit(35.0, 5000);
+    if zone_norm != ThermalThrottleZone::Normal || i_norm != 5000 {
+        return false;
+    }
+
+    let (zone_warm, i_warm) = calculate_thermal_charge_limit(42.0, 5000);
+    if zone_warm != ThermalThrottleZone::WarmThrottled || i_warm != 3750 {
+        return false;
+    }
+
+    let (zone_hot, i_hot) = calculate_thermal_charge_limit(48.0, 5000);
+    if zone_hot != ThermalThrottleZone::HotThrottled || i_hot != 2000 {
+        return false;
+    }
+
+    let (zone_crit, i_crit) = calculate_thermal_charge_limit(52.5, 5000);
+    if zone_crit != ThermalThrottleZone::CriticalCutoff || i_crit != 0 {
+        return false;
+    }
+
+    let (zone_cold, i_cold) = calculate_thermal_charge_limit(-5.0, 5000);
+    if zone_cold != ThermalThrottleZone::ColdCutoff || i_cold != 0 {
+        return false;
+    }
+
+    true
+}
