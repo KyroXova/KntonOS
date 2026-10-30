@@ -717,3 +717,239 @@ pub fn verify_stationary_drift_calibration() -> bool {
 
     true
 }
+
+// -----------------------------------------------------------------------------
+// Pure no_std Fast Math Approximations for Curve Calculation
+// -----------------------------------------------------------------------------
+
+/// Fast natural logarithm approximation for positive f32.
+pub fn ln_f32(x: f32) -> f32 {
+    if x <= 0.0 {
+        return 0.0;
+    }
+    let bits = x.to_bits();
+    let exp = ((bits >> 23) & 0xFF) as i32 - 127;
+    let mant = (bits & 0x007F_FFFF) | 0x3F80_0000;
+    let m = f32::from_bits(mant);
+    let u = (m - 1.0) / (m + 1.0);
+    let u2 = u * u;
+    let res = 2.0 * u * (1.0 + u2 * ((1.0 / 3.0) + u2 * ((1.0 / 5.0) + u2 * ((1.0 / 7.0) + u2 * (1.0 / 9.0)))));
+    res + (exp as f32) * 0.69314718
+}
+
+/// Fast exponential approximation e^y.
+pub fn exp_f32(y: f32) -> f32 {
+    const LN2: f32 = 0.69314718;
+    const INV_LN2: f32 = 1.44269504;
+    let k_f = y * INV_LN2;
+    let k = if k_f >= 0.0 {
+        (k_f + 0.5) as i32
+    } else {
+        (k_f - 0.5) as i32
+    };
+    let r = y - (k as f32) * LN2;
+    let expr = 1.0 + r * (1.0 + r * (0.5 + r * ((1.0 / 6.0) + r * ((1.0 / 24.0) + r * (1.0 / 120.0)))));
+    let exp_bits = ((k + 127).max(0).min(255) as u32) << 23;
+    let scale = f32::from_bits(exp_bits);
+    expr * scale
+}
+
+/// Fast power function base^exp for positive base.
+pub fn powf_f32(base: f32, exp: f32) -> f32 {
+    if base <= 0.0 {
+        return 0.0;
+    }
+    exp_f32(exp * ln_f32(base))
+}
+
+// -----------------------------------------------------------------------------
+// Motion Aiming Governor & Auto-Centering Ratchet
+// -----------------------------------------------------------------------------
+
+/// Motion aiming governor handling sensitivity curve mapping, tremor deadzone suppression,
+/// flick angular acceleration, and yaw auto-centering ratcheting during thumbstick panning.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MotionAimingGovernor {
+    /// Active aiming profile configuration.
+    pub profile: GyroAimProfile,
+    /// Stick deflection threshold [0.0..1.0] above which yaw auto-centering activates.
+    pub ratchet_threshold: f32,
+    /// Rate at which accumulated yaw is recentered during ratcheting (degrees/second).
+    pub ratchet_speed_dps: f32,
+    /// Indicates whether auto-centering ratchet is actively engaged.
+    pub is_ratcheting: bool,
+    /// Current accumulated integrated yaw angle in degrees.
+    pub integrated_yaw_deg: f32,
+}
+
+impl MotionAimingGovernor {
+    /// Creates a motion aiming governor with default competitive profile and ratchet parameters.
+    pub const fn new(profile: GyroAimProfile) -> Self {
+        Self {
+            profile,
+            ratchet_threshold: 0.70,
+            ratchet_speed_dps: 30.0,
+            is_ratcheting: false,
+            integrated_yaw_deg: 0.0,
+        }
+    }
+
+    /// Evaluates transfer function for a single angular velocity axis in °/s.
+    ///
+    /// Applies tremor deadzone clamping, curve translation (Linear, Exponential, DualZone),
+    /// and speed-dependent angular flick acceleration.
+    pub fn apply_transfer_function(&self, speed_dps: f32) -> f32 {
+        let abs_speed = speed_dps.abs();
+        if abs_speed <= self.profile.tremor_deadzone_dps {
+            return 0.0;
+        }
+
+        let effective_speed = abs_speed - self.profile.tremor_deadzone_dps;
+
+        let mut curved_speed = match self.profile.curve_type {
+            AimingCurveType::Linear => effective_speed * self.profile.base_sensitivity,
+            AimingCurveType::Exponential => {
+                powf_f32(effective_speed, self.profile.exponent) * self.profile.base_sensitivity
+            }
+            AimingCurveType::DualZone => {
+                if effective_speed <= 15.0 {
+                    effective_speed * 0.65 * self.profile.base_sensitivity
+                } else {
+                    (15.0 * 0.65 + (effective_speed - 15.0) * 1.35) * self.profile.base_sensitivity
+                }
+            }
+        };
+
+        // Speed-dependent angular acceleration (flick turns)
+        if abs_speed >= self.profile.acceleration_threshold_dps {
+            let accel_ratio =
+                (abs_speed - self.profile.acceleration_threshold_dps) / self.profile.acceleration_threshold_dps;
+            let accel_mult = (1.0 + accel_ratio).min(self.profile.max_acceleration_multiplier);
+            curved_speed *= accel_mult;
+        }
+
+        if speed_dps < 0.0 {
+            -curved_speed
+        } else {
+            curved_speed
+        }
+    }
+
+    /// Updates the auto-centering ratchet governor based on right analog stick deflection.
+    ///
+    /// When the player holds a large stick turn (|right_stick_x| >= ratchet_threshold),
+    /// the gyro yaw angle is smoothly ratcheted back toward zero to relieve wrist strain.
+    pub fn update_ratchet(&mut self, right_stick_x: f32, dt_sec: f32) -> bool {
+        if right_stick_x.abs() >= self.ratchet_threshold {
+            self.is_ratcheting = true;
+            let decay = (self.ratchet_speed_dps * dt_sec).min(self.integrated_yaw_deg.abs());
+            if self.integrated_yaw_deg > 0.0 {
+                self.integrated_yaw_deg -= decay;
+            } else if self.integrated_yaw_deg < 0.0 {
+                self.integrated_yaw_deg += decay;
+            }
+            true
+        } else {
+            self.is_ratcheting = false;
+            false
+        }
+    }
+
+    /// Processes an input angular velocity frame, updating yaw integration and auto-centering.
+    ///
+    /// Returns compensated and curved angular velocity: `(pitch_dps, yaw_dps)`.
+    pub fn process_motion(
+        &mut self,
+        sample: &GyroAngularVelocity,
+        right_stick_x: f32,
+        dt_sec: f32,
+    ) -> (f32, f32) {
+        let curved_pitch = self.apply_transfer_function(sample.pitch_dps);
+        let curved_yaw = self.apply_transfer_function(sample.yaw_dps);
+
+        // Accumulate integrated yaw
+        self.integrated_yaw_deg += curved_yaw * dt_sec;
+
+        // Apply auto-centering ratchet
+        self.update_ratchet(right_stick_x, dt_sec);
+
+        (curved_pitch, curved_yaw)
+    }
+}
+
+/// Verification helper for Commit 3 motion transfer, deadzone filter, and yaw auto-centering ratchet.
+pub fn verify_motion_transfer_and_yaw_autocentering() -> bool {
+    let profile = GyroAimProfile::default_competitive();
+    let mut governor = MotionAimingGovernor::new(profile);
+
+    // 1. Verify Tremor Deadzone Suppression (deadzone = 0.25 °/s)
+    let micro_tremor_pos = governor.apply_transfer_function(0.18);
+    let micro_tremor_neg = governor.apply_transfer_function(-0.24);
+    if micro_tremor_pos != 0.0 || micro_tremor_neg != 0.0 {
+        return false;
+    }
+
+    // 2. Verify Linear vs Exponential Curve Dynamics
+    let linear_profile = GyroAimProfile {
+        curve_type: AimingCurveType::Linear,
+        base_sensitivity: 1.0,
+        exponent: 1.0,
+        tremor_deadzone_dps: 0.25,
+        acceleration_threshold_dps: 50.0,
+        max_acceleration_multiplier: 2.0,
+    };
+    let linear_gov = MotionAimingGovernor::new(linear_profile);
+    let lin_out = linear_gov.apply_transfer_function(5.25);
+    // (5.25 - 0.25) * 1.0 = 5.0
+    if (lin_out - 5.0).abs() > 0.01 {
+        return false;
+    }
+
+    // Exponential curve with gamma 1.4: (5.25 - 0.25)^1.4 = 5.0^1.4 ≈ 9.52
+    let exp_out = governor.apply_transfer_function(5.25);
+    if (exp_out - 9.52).abs() > 0.5 {
+        return false;
+    }
+
+    // Negative velocity must maintain sign
+    let neg_out = governor.apply_transfer_function(-5.25);
+    if (neg_out - (-exp_out)).abs() > 0.001 {
+        return false;
+    }
+
+    // 3. Verify Flick Angular Acceleration (threshold = 30.0 °/s, max_mult = 2.5)
+    // Speed = 60.0 °/s -> effective = 59.75. abs_speed >= 30.0 -> accel_ratio = (60 - 30) / 30 = 1.0 -> mult = 2.0
+    let flick_out = governor.apply_transfer_function(60.0);
+    let unaccelerated = powf_f32(60.0 - 0.25, 1.4);
+    if flick_out <= unaccelerated * 1.5 {
+        return false;
+    }
+
+    // 4. Verify Yaw Auto-Centering Ratchet Governor
+    governor.integrated_yaw_deg = 20.0;
+    // With stick neutral (0.0), ratchet should not engage and yaw should not decay
+    let ratcheting = governor.update_ratchet(0.0, 0.05);
+    if ratcheting || governor.is_ratcheting || governor.integrated_yaw_deg != 20.0 {
+        return false;
+    }
+
+    // Deflect right stick past threshold (0.85 >= 0.70)
+    let ratcheting_active = governor.update_ratchet(0.85, 0.1);
+    if !ratcheting_active || !governor.is_ratcheting {
+        return false;
+    }
+    // With ratchet_speed_dps = 30.0 and dt = 0.1, decay = 3.0 degrees
+    if (governor.integrated_yaw_deg - 17.0).abs() > 0.01 {
+        return false;
+    }
+
+    // Run additional steps to recenter past 0: decay clamps smoothly at 0 without overshoot
+    for _ in 0..10 {
+        governor.update_ratchet(0.85, 0.1);
+    }
+    if governor.integrated_yaw_deg != 0.0 {
+        return false;
+    }
+
+    true
+}
