@@ -20,6 +20,12 @@ pub mod socket;
 pub mod tcp;
 pub mod tls;
 pub mod udp;
+pub mod ring;
+pub mod multiqueue;
+
+pub use multiqueue::*;
+
+pub use ring::*;
 
 pub use af_unix::{
     sockaddr_un, ucred, UnixDatagramPacket, UnixDatagramQueue, UnixSocketAddress, UnixSocketError,
@@ -1241,5 +1247,106 @@ pub fn test_network_stack() -> bool {
     }
 
     crate::serial_write_str("[KNT-NET-TESTS-PASS] All embedded network protocol stack checks passed\r\n");
+    true
+}
+
+/// Comprehensive verification self-test for Multi-Queue Network Packet Transmission & Zero-Copy DMA RX/TX Ring Engine.
+///
+/// Tests cacheline-aligned DMA RX/TX descriptor rings, hardware ownership bits, zero-copy packet slicing,
+/// Toeplitz RSS 4-tuple hashing and RX flow steering, per-core lockless TX submission queues,
+/// and priority QoS traffic scheduling (Urgent game traffic vs background bulk).
+///
+/// Emits sentinel [KNT-NET-MULTIQUEUE-PASS] upon successful validation.
+pub fn test_net_multiqueue_subsystem() -> bool {
+    // 1. Verify zero-copy DMA RX/TX ring buffers, ownership flags, and wrapping
+    if !verify_dma_ring_buffers() {
+        return false;
+    }
+
+    // 2. Verify Toeplitz RSS 4-tuple hashing and RX multi-queue flow steering
+    if !verify_toeplitz_and_rss_steering() {
+        return false;
+    }
+
+    // 3. Verify per-core lockless TX submission queues and priority QoS scheduler
+    if !verify_per_core_tx_and_qos() {
+        return false;
+    }
+
+    // 4. End-to-end integration test:
+    // Configure multi-queue manager across 4 cores, steer incoming game and background flows,
+    // dispatch outbound multi-priority traffic across per-core TX rings, and verify zero-copy transmission.
+    let mut rx_mgr = MultiQueueRxManager::new(4);
+    let mut tx_scheduler = MultiQueueTxScheduler::new(4);
+    let mut hw_tx_ring = DmaRingBuffer::<16>::new();
+
+    // Stream 1: High-priority gaming UDP flow (Port 27015)
+    let game_flow = Flow4Tuple::new([192, 168, 1, 50], [10, 0, 0, 1], 27015, 27015, 17);
+    let (game_rx_q, game_hash, game_rx_ok) = rx_mgr.enqueue_rx_packet(&game_flow, 0x4000_0000, 128);
+    if !game_rx_ok || game_rx_q >= 4 || game_hash == 0 {
+        return false;
+    }
+
+    // Stream 2: Bulk download TCP flow (Port 80)
+    let bulk_flow = Flow4Tuple::new([192, 168, 1, 60], [10, 0, 0, 2], 51234, 80, 6);
+    let (bulk_rx_q, bulk_hash, bulk_rx_ok) = rx_mgr.enqueue_rx_packet(&bulk_flow, 0x4000_1000, 1460);
+    if !bulk_rx_ok || bulk_rx_q >= 4 || bulk_hash == 0 {
+        return false;
+    }
+
+    // Outbound multi-priority TX submission on Core 2:
+    // Core 2 submits bulk update first, then high-priority game tick
+    let req_bulk = TxPacketRequest {
+        buf_phys: 0x5000_0000,
+        length: 1460,
+        priority: PacketQosPriority::BackgroundBulk,
+        csum_offload: false,
+        token: 0xDEAD_0001,
+    };
+    let req_game = TxPacketRequest {
+        buf_phys: 0x5000_1000,
+        length: 64,
+        priority: PacketQosPriority::HighUrgent,
+        csum_offload: true,
+        token: 0xDEAD_0002,
+    };
+
+    if !tx_scheduler.submit_core_packet(2, req_bulk) {
+        return false;
+    }
+    if !tx_scheduler.submit_core_packet(2, req_game) {
+        return false;
+    }
+
+    // Drain Core 2 to hardware DMA ring: QoS scheduler must submit game packet BEFORE bulk packet
+    let dispatched = tx_scheduler.drain_core_to_ring(2, &mut hw_tx_ring, 2);
+    if dispatched != 2 {
+        return false;
+    }
+
+    let d0 = hw_tx_ring.descriptors[0];
+    let d1 = hw_tx_ring.descriptors[1];
+
+    if d0.buffer_addr != 0x5000_1000 || d0.length != 64 {
+        return false; // Game packet was not prioritized first!
+    }
+    if d1.buffer_addr != 0x5000_0000 || d1.length != 1460 {
+        return false; // Bulk packet was not scheduled second!
+    }
+
+    // Simulate hardware completion of transmission
+    hw_tx_ring.simulate_hw_completion(64);
+    hw_tx_ring.simulate_hw_completion(1460);
+
+    let reaped_game = hw_tx_ring.reap_completed().expect("reap game failed");
+    let reaped_bulk = hw_tx_ring.reap_completed().expect("reap bulk failed");
+
+    if reaped_game.length != 64 || reaped_bulk.length != 1460 {
+        return false;
+    }
+
+    // 5. Emit deterministic boot sentinel
+    crate::serial_write_str("[KNT-NET-MULTIQUEUE-PASS] Multi-queue packet steering and zero-copy DMA engine verified\r\n");
+
     true
 }
