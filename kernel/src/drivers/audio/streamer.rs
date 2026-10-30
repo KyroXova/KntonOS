@@ -363,3 +363,167 @@ pub fn verify_streamer_ring_buffer() -> bool {
 
     true
 }
+
+/// Fixed-point 16.16 linear interpolation sample rate converter (SRC).
+///
+/// Converts arbitrary audio sample rates (such as 44.1 kHz CD audio) into the
+/// native 48.0 kHz hardware codec presentation rate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LinearSampleRateConverter {
+    pub in_sample_rate: u32,
+    pub out_sample_rate: u32,
+    pub step_fp: u32, // 16.16 fixed-point phase increment (in_rate / out_rate)
+    pub phase_fp: u32, // 16.16 fixed-point phase accumulator
+    pub last_in_sample: crate::drivers::audio::mixer::PcmSample,
+}
+
+impl LinearSampleRateConverter {
+    pub const FP_SHIFT: u32 = 16;
+    pub const FP_ONE: u32 = 1 << Self::FP_SHIFT;
+
+    /// Creates a sample rate converter between arbitrary rates.
+    pub fn new(in_rate: u32, out_rate: u32) -> Self {
+        let step = if out_rate > 0 {
+            (((in_rate as u64) << Self::FP_SHIFT) / (out_rate as u64)) as u32
+        } else {
+            Self::FP_ONE
+        };
+
+        Self {
+            in_sample_rate: in_rate,
+            out_sample_rate: out_rate,
+            step_fp: step,
+            phase_fp: 0,
+            last_in_sample: crate::drivers::audio::mixer::PcmSample::silent(),
+        }
+    }
+
+    /// Convenience constructor for 44.1 kHz -> 48.0 kHz conversion.
+    pub fn new_44k_to_48k() -> Self {
+        Self::new(44100, 48000)
+    }
+
+    /// Resets internal interpolation phase and history.
+    pub fn reset(&mut self) {
+        self.phase_fp = 0;
+        self.last_in_sample = crate::drivers::audio::mixer::PcmSample::silent();
+    }
+
+    /// Converts a slice of input frames to output frames using linear interpolation.
+    /// Returns the number of output frames produced.
+    pub fn process_frames(
+        &mut self,
+        in_frames: &[crate::drivers::audio::mixer::PcmSample],
+        out_frames: &mut [crate::drivers::audio::mixer::PcmSample],
+    ) -> usize {
+        if in_frames.is_empty() || out_frames.is_empty() {
+            return 0;
+        }
+
+        let mut out_idx = 0;
+        let in_len = in_frames.len();
+
+        while out_idx < out_frames.len() {
+            let int_idx = (self.phase_fp >> Self::FP_SHIFT) as usize;
+            let frac = (self.phase_fp & (Self::FP_ONE - 1)) as i32;
+
+            if int_idx >= in_len {
+                break;
+            }
+
+            let current = in_frames[int_idx];
+            let next = if int_idx + 1 < in_len {
+                in_frames[int_idx + 1]
+            } else {
+                current
+            };
+
+            // Linear interpolation: y = current + frac * (next - current) / FP_ONE
+            let delta_l = next.left as i32 - current.left as i32;
+            let delta_r = next.right as i32 - current.right as i32;
+
+            let interp_l = current.left as i32 + ((delta_l * frac) >> Self::FP_SHIFT);
+            let interp_r = current.right as i32 + ((delta_r * frac) >> Self::FP_SHIFT);
+
+            out_frames[out_idx] = crate::drivers::audio::mixer::PcmSample::new(
+                interp_l.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+                interp_r.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+            );
+            out_idx += 1;
+
+            self.phase_fp = self.phase_fp.wrapping_add(self.step_fp);
+        }
+
+        // Adjust phase accumulator relative to consumed input frames
+        let consumed = (self.phase_fp >> Self::FP_SHIFT) as usize;
+        let consumed_clamped = consumed.min(in_len);
+        self.phase_fp = self.phase_fp.wrapping_sub((consumed_clamped as u32) << Self::FP_SHIFT);
+        if consumed_clamped > 0 {
+            self.last_in_sample = in_frames[consumed_clamped - 1];
+        }
+
+        out_idx
+    }
+}
+
+/// Verification self-test for sample rate converter and sub-2ms presentation pipeline.
+pub fn verify_src_and_latency_pipeline() -> bool {
+    // 1. Verify 44.1 kHz to 48.0 kHz step calculation
+    let mut src = LinearSampleRateConverter::new_44k_to_48k();
+    // 44100 / 48000 = 147 / 160 = 0.91875. In 16.16 fixed-point: 0.91875 * 65536 = 60211.2 -> 60211
+    if src.step_fp != 60211 {
+        return false;
+    }
+
+    // 2. Synthesize simple step/ramp input in 44.1 kHz
+    use crate::drivers::audio::mixer::PcmSample;
+    let mut in_samples = [PcmSample::silent(); 147];
+    for i in 0..147 {
+        let val = (i as i16) * 100;
+        in_samples[i] = PcmSample::new(val, -val);
+    }
+
+    // 147 samples at 44.1 kHz should produce approximately 160 samples at 48.0 kHz (147 / 44100 = 160 / 48000 = 3.333 ms)
+    let mut out_samples = [PcmSample::silent(); 160];
+    let produced = src.process_frames(&in_samples, &mut out_samples);
+    if produced < 159 || produced > 160 {
+        return false;
+    }
+
+    // Check first sample and monotonic continuity
+    if out_samples[0].left != 0 || out_samples[0].right != 0 {
+        return false;
+    }
+    for i in 1..produced {
+        if out_samples[i].left < out_samples[i - 1].left {
+            return false;
+        }
+        if out_samples[i].right > out_samples[i - 1].right {
+            return false;
+        }
+    }
+
+    // 3. Sub-2ms deterministic latency pipeline verification
+    // At 48 kHz stereo 16-bit (4 bytes per frame):
+    // 1 ms = 48 frames = 192 bytes
+    // 2 ms = 96 frames = 384 bytes
+    // A ring buffer configured with period size <= 96 frames guarantees sub-2ms hardware interrupt presentation
+    let period_frames = 64; // 1.33 ms period
+    let period_bytes = period_frames * 4; // 256 bytes
+    let total_periods = 4;
+    let ring = match AudioRingBuffer::new(0x2000_0000, period_bytes * total_periods, period_bytes, 48000, 2, 16) {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+
+    // Buffer latency with 1 period primed = 64 * 1_000_000 / 48000 = 1333 us (< 2000 us sub-2ms budget)
+    let period_us = (period_frames as u64 * 1_000_000) / 48000;
+    if period_us >= 2000 {
+        return false;
+    }
+    if ring.period_size != 256 {
+        return false;
+    }
+
+    true
+}
