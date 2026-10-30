@@ -323,3 +323,249 @@ pub fn build_zone_management_receive(
     entry.cdw13 = report_opts as u32;
     entry
 }
+
+
+// -----------------------------------------------------------------------------
+// Zone Append Command Queue & Multi-Writer Dispatcher
+// -----------------------------------------------------------------------------
+
+/// Status of an asynchronous Zone Append operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZoneAppendStatus {
+    Pending,
+    Submitted,
+    Completed,
+    Failed,
+}
+
+/// Asynchronous Zone Append request allowing lock-free concurrent zone writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ZoneAppendRequest {
+    pub request_id: u64,
+    pub zone_index: u32,
+    pub lba_count: u32,
+    pub prp1: u64,
+    pub prp2: u64,
+    pub status: ZoneAppendStatus,
+    pub assigned_lba: Option<u64>,
+}
+
+impl ZoneAppendRequest {
+    pub const fn new(
+        request_id: u64,
+        zone_index: u32,
+        lba_count: u32,
+        prp1: u64,
+        prp2: u64,
+    ) -> Self {
+        Self {
+            request_id,
+            zone_index,
+            lba_count,
+            prp1,
+            prp2,
+            status: ZoneAppendStatus::Pending,
+            assigned_lba: None,
+        }
+    }
+}
+
+/// Constructs an NVMe Zone Append submission entry (Opcode 0x7D).
+pub fn build_zone_append(
+    cid: u16,
+    nsid: u32,
+    zslba: u64,
+    nlb: u16,
+    prp1: u64,
+    prp2: u64,
+) -> NvmeSubmissionEntry {
+    let mut entry = NvmeSubmissionEntry::new(NVME_ZNS_ZONE_APPEND, cid, nsid);
+    entry.prp1 = prp1;
+    entry.prp2 = prp2;
+    entry.cdw10 = (zslba & 0xFFFF_FFFF) as u32;
+    entry.cdw11 = (zslba >> 32) as u32;
+    entry.cdw12 = (nlb.saturating_sub(1)) as u32; // 0-based count
+    entry
+}
+
+/// Queue manager for submitting concurrent Zone Append commands without host-side write pointer serialization.
+#[derive(Debug, Default)]
+pub struct ZoneAppendQueue {
+    pub requests: Vec<ZoneAppendRequest>,
+    next_id: u64,
+    pub total_appended_lbas: u64,
+}
+
+impl ZoneAppendQueue {
+    pub fn new() -> Self {
+        Self {
+            requests: Vec::new(),
+            next_id: 1,
+            total_appended_lbas: 0,
+        }
+    }
+
+    /// Enqueues a new append request to a target zone.
+    pub fn enqueue(
+        &mut self,
+        zone_index: u32,
+        lba_count: u32,
+        prp1: u64,
+        prp2: u64,
+    ) -> u64 {
+        let req_id = self.next_id;
+        self.next_id += 1;
+        self.requests.push(ZoneAppendRequest::new(
+            req_id,
+            zone_index,
+            lba_count,
+            prp1,
+            prp2,
+        ));
+        req_id
+    }
+
+    /// Submits a batch of pending Zone Append requests to the ZNS namespace,
+    /// atomically advancing write pointers and generating NVMe hardware submission entries.
+    pub fn submit_batch(
+        &mut self,
+        zns: &mut ZnsNamespace,
+    ) -> Result<Vec<NvmeSubmissionEntry>, &'static str> {
+        let mut submissions = Vec::new();
+
+        for req in self.requests.iter_mut() {
+            if req.status != ZoneAppendStatus::Pending {
+                continue;
+            }
+
+            let zone = zns.zones.get_mut(req.zone_index as usize).ok_or("Zone index out of bounds")?;
+            if zone.state == ZoneState::Empty {
+                zns.open_zone(req.zone_index, false)?;
+            }
+            let zone = zns.zones.get_mut(req.zone_index as usize).unwrap();
+            if !zone.is_open() {
+                req.status = ZoneAppendStatus::Failed;
+                return Err("Zone is not open for append");
+            }
+            if (req.lba_count as u64) > zone.remaining_capacity() {
+                req.status = ZoneAppendStatus::Failed;
+                return Err("Append exceeds zone remaining capacity");
+            }
+
+            // The controller atomically assigns the current write pointer
+            let assigned = zone.write_pointer;
+            zone.write_pointer += req.lba_count as u64;
+            if zone.remaining_capacity() == 0 {
+                zone.state = ZoneState::Full;
+            }
+
+            req.assigned_lba = Some(assigned);
+            req.status = ZoneAppendStatus::Completed;
+            self.total_appended_lbas += req.lba_count as u64;
+
+            let cid = (req.request_id & 0xFFFF) as u16;
+            submissions.push(build_zone_append(
+                cid,
+                zns.nsid,
+                zone.start_lba,
+                req.lba_count as u16,
+                req.prp1,
+                req.prp2,
+            ));
+        }
+
+        Ok(submissions)
+    }
+
+    pub fn get_request(&self, request_id: u64) -> Option<&ZoneAppendRequest> {
+        self.requests.iter().find(|r| r.request_id == request_id)
+    }
+
+    pub fn pending_count(&self) -> usize {
+        self.requests.iter().filter(|r| r.status == ZoneAppendStatus::Pending).count()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Active Zone Capacity Tracker & Governor
+// -----------------------------------------------------------------------------
+
+/// Active zone capacity tracker ensuring active/open zone limits and capacity monitoring.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ActiveZoneCapacityTracker;
+
+impl ActiveZoneCapacityTracker {
+    pub const fn new() -> Self {
+        Self
+    }
+
+    /// Computes the total active capacity across all active zones in the namespace.
+    pub fn total_active_capacity(&self, zns: &ZnsNamespace) -> u64 {
+        zns.zones
+            .iter()
+            .filter(|z| z.is_active())
+            .map(|z| z.capacity_lbas)
+            .sum()
+    }
+
+    /// Computes total writeable remaining LBAs across all active zones.
+    pub fn total_remaining_capacity(&self, zns: &ZnsNamespace) -> u64 {
+        zns.zones
+            .iter()
+            .filter(|z| z.is_active())
+            .map(|z| z.remaining_capacity())
+            .sum()
+    }
+
+    /// Collects list of active zone indices.
+    pub fn active_zone_indices(&self, zns: &ZnsNamespace) -> Vec<u32> {
+        zns.zones
+            .iter()
+            .filter(|z| z.is_active())
+            .map(|z| z.zone_index)
+            .collect()
+    }
+
+    /// Checks if a write or append of `lba_count` is permitted in the designated zone.
+    pub fn can_write(&self, zns: &ZnsNamespace, zone_index: u32, lba_count: u64) -> bool {
+        if let Some(zone) = zns.zones.get(zone_index as usize) {
+            match zone.state {
+                ZoneState::Full | ZoneState::ReadOnly | ZoneState::Offline => false,
+                ZoneState::Empty => {
+                    zns.active_zone_count() < zns.max_active_zones
+                        && zns.open_zone_count() < zns.max_open_zones
+                        && lba_count <= zone.capacity_lbas
+                }
+                ZoneState::Closed => {
+                    zns.open_zone_count() < zns.max_open_zones
+                        && lba_count <= zone.remaining_capacity()
+                }
+                ZoneState::ImplicitlyOpened | ZoneState::ExplicitlyOpened => {
+                    lba_count <= zone.remaining_capacity()
+                }
+            }
+        } else {
+            false
+        }
+    }
+
+    /// Selects the best existing open zone with sufficient capacity to satisfy an append,
+    /// or opens a new empty zone if allowed.
+    pub fn find_best_zone_for_append(&self, zns: &ZnsNamespace, lba_count: u64) -> Option<u32> {
+        // First try already opened zones with enough capacity
+        for zone in &zns.zones {
+            if zone.is_open() && zone.remaining_capacity() >= lba_count {
+                return Some(zone.zone_index);
+            }
+        }
+        // Next try empty zones if active and open limits permit
+        if zns.active_zone_count() < zns.max_active_zones && zns.open_zone_count() < zns.max_open_zones {
+            for zone in &zns.zones {
+                if zone.is_empty() && zone.capacity_lbas >= lba_count {
+                    return Some(zone.zone_index);
+                }
+            }
+        }
+        None
+    }
+}
