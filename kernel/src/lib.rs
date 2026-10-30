@@ -511,6 +511,10 @@ pub extern "C" fn kmain() -> ! {
     if !drivers::sensor::test_als_and_brightness_subsystem() {
         serial_write_str("[KNT-PANIC] Handheld ALS and auto-brightness governor self-test failed!\r\n");
     }
+    // Initialize and verify Handheld PC Dual-IMU Dead Reckoning & Motion Drift Eliminator (TASK-KNT-113)
+    if !drivers::sensor::test_dual_imu_dead_reckoning_subsystem() {
+        serial_write_str("[KNT-PANIC] Dual-IMU dead reckoning subsystem self-test failed!\r\n");
+    }
 
     // Initialize and verify Handheld PC Backlight PWM Modulator & Flicker-Free DC Dimming Governor
     if !drivers::display::test_backlight_pwm_subsystem() {
