@@ -6,9 +6,11 @@
 
 pub mod hrtf;
 pub mod spatializer;
+pub mod eq;
 
 pub use hrtf::*;
 pub use spatializer::*;
+pub use eq::*;
 
 /// Verification self-test suite for Real-Time 3D Audio Spatializer & Binaural HRTF DSP Pipeline.
 pub fn test_audio_spatializer_subsystem() -> bool {
