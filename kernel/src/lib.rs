@@ -551,6 +551,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Peltier active cooler and thermocouple subsystem self-test failed!\r\n");
     }
 
+    // Initialize and verify Handheld PC USB4/Thunderbolt 4 Dynamic PCIe Tunneling & Hot-Plug eGPU Governor (TASK-KNT-122)
+    if !drivers::bus::test_usb4_egpu_governor_subsystem() {
+        serial_write_str("[KNT-PANIC] USB4 PCIe tunneling and eGPU governor self-test failed!\r\n");
+    }
+
     // Initialize and verify USB Mass Storage Class (MSC) Bulk-Only Transport (BOT) Driver
     if !drivers::usb::test_usb_msc_subsystem() {
         serial_write_str("[KNT-PANIC] USB MSC BOT storage subsystem self-test failed!\r\n");
