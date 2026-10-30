@@ -780,3 +780,161 @@ impl Default for ContrastSensitivityConfig {
     }
 }
 
+// -----------------------------------------------------------------------------
+// Contrast-Adaptive & Motion-Vector Shading Rate Image Generator
+// -----------------------------------------------------------------------------
+
+/// Direct3D 12 Contrast-Adaptive and Motion-Vector VRS Shading Rate Image Generator.
+///
+/// Implements dual-stream perceptual heuristics:
+/// 1. Luminance Michelson Contrast: Identifies high-frequency geometry/specular edges
+///    and pins them to `Rate1x1` to prevent aliasing.
+/// 2. Motion Velocity Analysis: Identifies fast camera or object movement and coarsens
+///    shading up to `Rate4x4` (or directional `Rate4x2`/`Rate2x4`) under motion blur.
+#[derive(Debug, Clone)]
+pub struct ContrastAdaptiveVrsGenerator {
+    /// Configuration thresholds.
+    pub config: ContrastSensitivityConfig,
+}
+
+impl ContrastAdaptiveVrsGenerator {
+    /// Creates a new generator with the provided sensitivity configuration.
+    pub const fn new(config: ContrastSensitivityConfig) -> Self {
+        Self { config }
+    }
+
+    /// Evaluates the coarse shading rate based solely on tile luminance contrast.
+    pub fn evaluate_contrast_rate(&self, luma: &LumaTile) -> (ShadingRate, bool) {
+        let contrast = luma.contrast();
+
+        if contrast >= self.config.edge_threshold {
+            // High-contrast edge: full shading rate required to prevent geometric aliasing
+            (ShadingRate::Rate1x1, true)
+        } else if contrast >= self.config.moderate_contrast_threshold {
+            // Moderate contrast: 2x2 coarse pixel shading
+            (ShadingRate::Rate2x2, false)
+        } else {
+            // Low-contrast smooth region: maximum coarse pixel shading (4x4)
+            (ShadingRate::Rate4x4, false)
+        }
+    }
+
+    /// Evaluates the coarse shading rate based on screen-space motion velocity.
+    pub fn evaluate_motion_rate(&self, motion: &MotionVector2D) -> ShadingRate {
+        let speed = motion.magnitude();
+        let thresh = self.config.motion_coarsening_threshold;
+
+        if speed < thresh {
+            // Low velocity: fine shading rate
+            ShadingRate::Rate1x1
+        } else if self.config.enable_directional_motion_shading {
+            let ax = motion.vx.abs();
+            let ay = motion.vy.abs();
+
+            if ax >= 2.0 * ay {
+                // Dominant horizontal motion: coarsen horizontally
+                if speed >= 2.0 * thresh {
+                    ShadingRate::Rate4x2
+                } else {
+                    ShadingRate::Rate2x1
+                }
+            } else if ay >= 2.0 * ax {
+                // Dominant vertical motion: coarsen vertically
+                if speed >= 2.0 * thresh {
+                    ShadingRate::Rate2x4
+                } else {
+                    ShadingRate::Rate1x2
+                }
+            } else {
+                // Isotropic motion
+                if speed >= 2.0 * thresh {
+                    ShadingRate::Rate4x4
+                } else {
+                    ShadingRate::Rate2x2
+                }
+            }
+        } else {
+            if speed >= 2.0 * thresh {
+                ShadingRate::Rate4x4
+            } else {
+                ShadingRate::Rate2x2
+            }
+        }
+    }
+
+    /// Evaluates combined shading rate for a single tile.
+    pub fn evaluate_tile(
+        &self,
+        tile_x: u32,
+        tile_y: u32,
+        luma: &LumaTile,
+        motion: &MotionVector2D,
+    ) -> SriTileDescriptor {
+        let (contrast_rate, is_edge) = self.evaluate_contrast_rate(luma);
+        let motion_rate = self.evaluate_motion_rate(motion);
+
+        let final_rate = if is_edge {
+            // Edge protection overrides motion coarsening unless motion is extremely rapid
+            if motion.magnitude() >= self.config.motion_coarsening_threshold * 3.0 {
+                combine_shading_rates(contrast_rate, motion_rate, ShadingRateCombiner::Min)
+            } else {
+                ShadingRate::Rate1x1
+            }
+        } else {
+            // Non-edge region: coarsen based on maximum coarseness between contrast and motion
+            combine_shading_rates(contrast_rate, motion_rate, ShadingRateCombiner::Max)
+        };
+
+        SriTileDescriptor {
+            tile_x,
+            tile_y,
+            rate: final_rate,
+            contrast_metric: luma.contrast(),
+            motion_magnitude: motion.magnitude(),
+            foveal_distance: 0.0,
+            is_edge_protected: is_edge,
+        }
+    }
+
+    /// Generates a full screen-space Shading Rate Image from input luma and motion vector grids.
+    pub fn generate_sri(
+        &self,
+        desc: ShadingRateImageDescriptor,
+        luma_grid: &[LumaTile],
+        motion_grid: &[MotionVector2D],
+    ) -> Result<(ShadingRateImage, Vec<SriTileDescriptor>), VrsError> {
+        let tile_size = desc.granularity.pixel_size();
+        let tiles_x = (desc.width_pixels + tile_size - 1) / tile_size;
+        let tiles_y = (desc.height_pixels + tile_size - 1) / tile_size;
+        let total_tiles = (tiles_x as usize) * (tiles_y as usize);
+
+        if luma_grid.len() != total_tiles || motion_grid.len() != total_tiles {
+            return Err(VrsError::TileBufferMismatch);
+        }
+
+        let mut descriptors = Vec::with_capacity(total_tiles);
+        let mut rates = Vec::with_capacity(total_tiles);
+
+        for y in 0..tiles_y {
+            for x in 0..tiles_x {
+                let idx = (y as usize) * (tiles_x as usize) + (x as usize);
+                let tile_desc = self.evaluate_tile(x, y, &luma_grid[idx], &motion_grid[idx]);
+
+                // Clamp to allowed range
+                let clamped_rate = combine_shading_rates(tile_desc.rate, desc.min_rate, ShadingRateCombiner::Max);
+                let clamped_rate = combine_shading_rates(clamped_rate, desc.max_rate, ShadingRateCombiner::Min);
+
+                rates.push(clamped_rate);
+                descriptors.push(SriTileDescriptor {
+                    rate: clamped_rate,
+                    ..tile_desc
+                });
+            }
+        }
+
+        let sri = ShadingRateImage::from_rates(desc.width_pixels, desc.height_pixels, desc.granularity, rates)?;
+        Ok((sri, descriptors))
+    }
+}
+
+
