@@ -733,3 +733,186 @@ pub fn test_work_graphs_subsystem() -> bool {
 
     true
 }
+
+/// Comprehensive verification self-test suite for Direct3D 12 Kernel-Direct GPU
+/// Sampler Feedback Streaming & Texture LOD Clamp Engine.
+///
+/// Emits sentinel [KNT-GPU-SAMPLER-FEEDBACK-PASS] upon successful validation.
+pub fn test_sampler_feedback_subsystem() -> bool {
+    crate::serial_write_str("[KNT-GFX] Testing Direct3D 12 Sampler Feedback & Texture LOD Clamp Engine...\r\n");
+
+    // 1. Verify Feedback Map Descriptors and Tile Region Mapping
+    let desc = match FeedbackMapDescriptor::new(
+        SamplerFeedbackType::MinMipMap,
+        2048,
+        2048,
+        12,
+        FeedbackTileGranularity::Tile128x128,
+    ) {
+        Ok(d) => d,
+        Err(_) => return false,
+    };
+
+    if desc.tiles_x != 16 || desc.tiles_y != 16 || desc.total_tiles() != 256 {
+        return false;
+    }
+    if desc.texel_to_tile(250, 500) != (1, 3) {
+        return false;
+    }
+
+    let region = FeedbackTileRegion::new(0, 0, 4, 4);
+    if !region.contains(2, 2) || region.contains(5, 5) {
+        return false;
+    }
+
+    // 2. Verify MinMipMap & TextureTranscoding storage
+    let mut min_mip_map = MinMipMapStorage::new(16, 16);
+    if min_mip_map.get(1, 1) != Some(SAMPLER_FEEDBACK_UNACCESSED_MIP) {
+        return false;
+    }
+    if !min_mip_map.record_sample(1, 1, 4) {
+        return false;
+    }
+    if min_mip_map.get(1, 1) != Some(4) {
+        return false;
+    }
+    if !min_mip_map.record_sample(1, 1, 2) {
+        return false;
+    }
+    if min_mip_map.get(1, 1) != Some(2) {
+        return false;
+    }
+    if !min_mip_map.record_sample(1, 1, 5) {
+        return false;
+    }
+    if min_mip_map.get(1, 1) != Some(2) {
+        return false;
+    }
+    if !min_mip_map.is_accessed(1, 1) || min_mip_map.is_accessed(0, 0) {
+        return false;
+    }
+
+    let mut transcode_map = TextureTranscodingStorage::new(16, 16);
+    if !transcode_map.mark_transcode_needed(1, 1) {
+        return false;
+    }
+    if !transcode_map.is_transcode_needed(1, 1) || transcode_map.is_transcode_ready(1, 1) {
+        return false;
+    }
+    if !transcode_map.mark_transcode_ready(1, 1) {
+        return false;
+    }
+    if transcode_map.is_transcode_needed(1, 1) || !transcode_map.is_transcode_ready(1, 1) {
+        return false;
+    }
+
+    // 3. Verify Texture Mip Residency & Tile Request Queue
+    let mut residency = TextureMipResidency::new(16, 16, 4);
+    if residency.finest_resident_mip() != 4 || residency.coarsest_resident_mip() != 4 {
+        return false;
+    }
+    if !residency.promote_tile_mip(1, 1, 1) {
+        return false;
+    }
+    if residency.get_resident_mip(1, 1) != 1 || residency.finest_resident_mip() != 1 {
+        return false;
+    }
+    if !residency.demote_tile_mip(1, 1, 3) {
+        return false;
+    }
+    if residency.get_resident_mip(1, 1) != 3 {
+        return false;
+    }
+
+    let mut queue = TileRequestQueue::new(16);
+    let req1 = TileStreamingRequest::new(100, 2, 2, 1, 200);
+    let req2 = TileStreamingRequest::new(100, 3, 3, 0, 500);
+    let req1_urgent = TileStreamingRequest::new(100, 2, 2, 1, 300);
+
+    if queue.push(req1) != Ok(true) {
+        return false;
+    }
+    if queue.push(req2) != Ok(true) {
+        return false;
+    }
+    if queue.push(req1_urgent) != Ok(false) {
+        return false;
+    }
+    if queue.len() != 2 {
+        return false;
+    }
+    let popped1 = queue.pop().unwrap();
+    if popped1.tile_x != 3 || popped1.priority != 500 {
+        return false;
+    }
+    let popped2 = queue.pop().unwrap();
+    if popped2.tile_x != 2 || popped2.priority != 300 {
+        return false;
+    }
+    if !queue.is_empty() {
+        return false;
+    }
+
+    // 4. End-to-End Sampler Feedback Engine & Dynamic LOD Clamp Governor
+    let engine_desc = FeedbackMapDescriptor::new(
+        SamplerFeedbackType::MinMipMap,
+        1024,
+        1024,
+        10,
+        FeedbackTileGranularity::Tile128x128,
+    ).unwrap();
+
+    let mut engine = SamplerFeedbackEngine::new(engine_desc, 3, 64);
+    if engine.lod_governor().active_min_lod_clamp() != 3.0 {
+        return false;
+    }
+
+    engine.record_sample(100, 100, 0);
+    engine.record_sample(500, 500, 1);
+
+    let requests_generated = match engine.evaluate_feedback(42) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    if requests_generated != 2 || engine.request_queue().len() != 2 {
+        return false;
+    }
+
+    let highest_req = engine.request_queue_mut().pop().unwrap();
+    if !engine.fulfill_tile_request(&highest_req) {
+        return false;
+    }
+    let second_req = engine.request_queue_mut().pop().unwrap();
+    if !engine.fulfill_tile_request(&second_req) {
+        return false;
+    }
+
+    if engine.residency().get_resident_mip(0, 0) != 0 {
+        return false;
+    }
+    if engine.residency().get_resident_mip(3, 3) != 1 {
+        return false;
+    }
+    if engine.lod_governor().active_min_lod_clamp() != 0.0 {
+        return false;
+    }
+
+    let stats = engine.stats();
+    if stats.total_samples_recorded != 2
+        || stats.evaluations_performed != 1
+        || stats.tile_requests_generated != 2
+        || stats.tile_requests_fulfilled != 2
+    {
+        return false;
+    }
+
+    engine.clear_feedback();
+    if engine.min_mip_map().is_accessed(0, 0) {
+        return false;
+    }
+
+    // 5. Emit deterministic boot sentinel
+    crate::serial_write_str("[KNT-GPU-SAMPLER-FEEDBACK-PASS] Direct3D 12 sampler feedback streaming and texture LOD clamp engine verified\r\n");
+
+    true
+}

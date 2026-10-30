@@ -351,6 +351,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Direct3D 12 work graphs subsystem self-test failed!\r\n");
     }
 
+    // Initialize and verify Direct3D 12 Sampler Feedback Streaming & Texture LOD Clamp Engine
+    if !gfx::test_sampler_feedback_subsystem() {
+        serial_write_str("[KNT-PANIC] Direct3D 12 sampler feedback streaming self-test failed!\r\n");
+    }
+
     // Initialize and verify AHCI SATA Persistent Storage Subsystem
     if !drivers::storage::test_ahci_sata_subsystem() {
         serial_write_str("[KNT-PANIC] AHCI SATA storage subsystem self-test failed!\r\n");
