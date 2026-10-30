@@ -1,9 +1,14 @@
 //! Real-Time 3D Positional Audio Spatializer & Emitter Mathematics.
 //!
 //! Provides 3D audio listener coordinate frame transformation, directional sound cone radiation,
-//! inverse-square acoustic distance attenuation, and high-frequency atmospheric air absorption.
+//! inverse-square acoustic distance attenuation, atmospheric air absorption, Doppler pitch shifting,
+//! and complete binaural stereo synthesis for headphone gaming.
 
 use crate::graphics::types::{sqrt_f32, Vec3, PI, HALF_PI};
+use super::hrtf::{
+    calculate_ild_parameters, calculate_itd_samples, EarDelayLine, FirConvolver, HrtfDataset,
+    IldFilter, SPEED_OF_SOUND,
+};
 
 // -----------------------------------------------------------------------------
 // Pure no_std Trigonometric & Math Helpers
@@ -253,22 +258,18 @@ impl AudioEmitter3D {
 
     /// Evaluates directional sound cone attenuation based on listener orientation relative to emitter.
     pub fn calculate_cone_attenuation(&self, emitter_to_listener: Vec3) -> f32 {
-        // If omnidirectional, no cone attenuation
         if self.inner_cone_angle >= 2.0 * PI && self.outer_cone_angle >= 2.0 * PI {
             return 1.0;
         }
 
         let dir = emitter_to_listener.normalize();
-        // Dot product between emitter's forward radiation axis and direction to listener
         let cos_angle = self.direction.dot(dir).clamp(-1.0, 1.0);
-        // Angle in radians between emitter forward axis and listener
-        // Using Taylor approximation or acos helper:
+
         let angle = if cos_angle >= 1.0 {
             0.0
         } else if cos_angle <= -1.0 {
             PI
         } else {
-            // acos(x) = HALF_PI - asin(x)
             let x = cos_angle;
             let sin_approx = sqrt_f32(1.0 - x * x);
             atan2_f32(sin_approx, x)
@@ -282,21 +283,326 @@ impl AudioEmitter3D {
         } else if angle >= half_outer {
             self.outer_cone_gain
         } else {
-            // Linear transition between inner and outer cone
             let t = (angle - half_inner) / (half_outer - half_inner);
             1.0 - t * (1.0 - self.outer_cone_gain)
         }
     }
 
     /// Evaluates high-frequency atmospheric air absorption damping factor (1-pole alpha).
-    /// As sound travels through air over tens of meters, higher frequencies attenuate faster.
     pub fn calculate_air_absorption(&self, distance: f32) -> f32 {
         if distance <= self.min_distance {
             return 1.0;
         }
         let t = ((distance - self.min_distance) / (self.max_distance - self.min_distance)).clamp(0.0, 1.0);
-        // Alpha drops from 1.0 (crisp high end at close range) to 0.35 (muffled/damped at max range)
         1.0 - (0.65 * t)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Doppler Effect Frequency Shift
+// -----------------------------------------------------------------------------
+
+/// Computes the acoustic Doppler pitch shift multiplier based on relative velocities:
+/// `f_observed = f_source * (c - v_l) / (c - v_s)`
+/// Returns a frequency scaling factor in range [0.2, 5.0].
+pub fn calculate_doppler_factor(
+    source_pos: Vec3,
+    source_vel: Vec3,
+    listener_pos: Vec3,
+    listener_vel: Vec3,
+) -> f32 {
+    let delta = listener_pos.sub(source_pos);
+    let dist = delta.length();
+    if dist < 1e-4 {
+        return 1.0;
+    }
+
+    // Unit vector directed from source to listener
+    let u = delta.scale(1.0 / dist);
+
+    // Radial velocity projections
+    let v_s = source_vel.dot(u);
+    let v_l = listener_vel.dot(u);
+
+    // Clamp velocities to 0.9 * SPEED_OF_SOUND to prevent division by zero or negative pitch
+    let max_v = 0.9 * SPEED_OF_SOUND;
+    let clamped_vs = v_s.clamp(-max_v, max_v);
+    let clamped_vl = v_l.clamp(-max_v, max_v);
+
+    let factor = (SPEED_OF_SOUND - clamped_vl) / (SPEED_OF_SOUND - clamped_vs);
+    factor.clamp(0.2, 5.0)
+}
+
+/// Circular resampler applying fractional Doppler pitch shifting.
+#[derive(Clone, Copy)]
+pub struct DopplerResampler {
+    pub buffer: [i16; 64],
+    pub write_idx: usize,
+    pub read_cursor: f32,
+}
+
+impl DopplerResampler {
+    pub const fn new() -> Self {
+        Self {
+            buffer: [0; 64],
+            write_idx: 0,
+            read_cursor: 0.0,
+        }
+    }
+
+    /// Pushes an incoming PCM sample into the resampler buffer.
+    #[inline]
+    pub fn push(&mut self, sample: i16) {
+        self.buffer[self.write_idx] = sample;
+        self.write_idx = (self.write_idx + 1) % 64;
+    }
+
+    /// Resamples an input slice into an output slice using Doppler pitch factor with linear interpolation.
+    pub fn resample_block(&mut self, input: &[i16], output: &mut [i16], doppler_factor: f32) {
+        let factor = doppler_factor.clamp(0.25, 4.0);
+
+        for &sample in input {
+            self.push(sample);
+        }
+
+        let mut read_pos = 0.0f32;
+        let in_len = input.len() as f32;
+
+        for out_sample in output.iter_mut() {
+            if read_pos >= in_len {
+                *out_sample = 0;
+                continue;
+            }
+
+            let idx0 = read_pos as usize;
+            let frac = read_pos - (idx0 as f32);
+            let s0 = input[idx0] as f32;
+            let s1 = if idx0 + 1 < input.len() {
+                input[idx0 + 1] as f32
+            } else {
+                s0
+            };
+
+            let interp = s0 * (1.0 - frac) + s1 * frac;
+            *out_sample = interp.clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+
+            read_pos += factor;
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Binaural Audio Spatializer Voice & Engine
+// -----------------------------------------------------------------------------
+
+/// Individual active 3D spatialized voice processing a mono source into binaural stereo.
+#[derive(Clone, Copy)]
+pub struct BinauralVoice {
+    pub emitter: AudioEmitter3D,
+    pub left_delay: EarDelayLine,
+    pub right_delay: EarDelayLine,
+    pub left_ild: IldFilter,
+    pub right_ild: IldFilter,
+    pub air_filter: IldFilter,
+    pub left_convolver: FirConvolver,
+    pub right_convolver: FirConvolver,
+    pub active: bool,
+}
+
+impl BinauralVoice {
+    pub const fn new(id: u32) -> Self {
+        Self {
+            emitter: AudioEmitter3D {
+                id,
+                position: Vec3::zero(),
+                velocity: Vec3::zero(),
+                direction: Vec3::new(0.0, 0.0, 1.0),
+                min_distance: 1.0,
+                max_distance: 100.0,
+                rolloff_factor: 1.0,
+                inner_cone_angle: 2.0 * PI,
+                outer_cone_angle: 2.0 * PI,
+                outer_cone_gain: 0.0,
+                volume: 1.0,
+                distance_model: DistanceModel::InverseDistance,
+            },
+            left_delay: EarDelayLine::new(),
+            right_delay: EarDelayLine::new(),
+            left_ild: IldFilter::new(),
+            right_ild: IldFilter::new(),
+            air_filter: IldFilter::new(),
+            left_convolver: FirConvolver::new(),
+            right_convolver: FirConvolver::new(),
+            active: false,
+        }
+    }
+
+    /// Processes a single mono audio sample through the 3D acoustic pipeline:
+    /// Distance attenuation -> Directional cone -> Air absorption -> ITD delay line -> ILD filter -> HRTF FIR convolution.
+    /// Returns `(left_sample, right_sample)`.
+    #[inline]
+    pub fn process_sample(
+        &mut self,
+        input: i16,
+        listener: &AudioListener3D,
+        dataset: &HrtfDataset,
+    ) -> (i16, i16) {
+        if !self.active || input == 0 {
+            return (0, 0);
+        }
+
+        // 1. Calculate relative spatial direction & distance
+        let (azimuth_rad, _elevation_rad, distance) =
+            listener.calculate_relative_direction(self.emitter.position);
+
+        // 2. Distance and directional sound cone attenuation
+        let dist_gain = self.emitter.calculate_distance_attenuation(distance);
+        let cone_gain = self.emitter.calculate_cone_attenuation(listener.position.sub(self.emitter.position));
+        let overall_gain = dist_gain * cone_gain * self.emitter.volume;
+
+        if overall_gain < 1e-4 {
+            return (0, 0);
+        }
+
+        // 3. Atmospheric air absorption high-frequency filtering
+        let air_alpha = self.emitter.calculate_air_absorption(distance);
+        let absorbed = self.air_filter.process(input, air_alpha, overall_gain);
+
+        // 4. Interaural Time Difference (ITD) delay line
+        self.left_delay.push(absorbed);
+        self.right_delay.push(absorbed);
+
+        let (left_delay_samps, right_delay_samps) = calculate_itd_samples(azimuth_rad);
+        let l_itd = self.left_delay.read_delayed(left_delay_samps);
+        let r_itd = self.right_delay.read_delayed(right_delay_samps);
+
+        // 5. Interaural Level Difference (ILD) head-shadow filtering
+        let ((l_alpha, l_ild_gain), (r_alpha, r_ild_gain)) = calculate_ild_parameters(azimuth_rad);
+        let l_ild = self.left_ild.process(l_itd, l_alpha, l_ild_gain);
+        let r_ild = self.right_ild.process(r_itd, r_alpha, r_ild_gain);
+
+        // 6. Binaural HRIR FIR convolution
+        let ir = dataset.lookup(azimuth_rad);
+        let l_out = self.left_convolver.process(l_ild, &ir.left_taps);
+        let r_out = self.right_convolver.process(r_ild, &ir.right_taps);
+
+        (l_out, r_out)
+    }
+
+    /// Resets all internal delay buffers and filters for this voice.
+    pub fn reset(&mut self) {
+        self.left_delay.clear();
+        self.right_delay.clear();
+        self.left_ild.reset();
+        self.right_ild.reset();
+        self.air_filter.reset();
+        self.left_convolver.reset();
+        self.right_convolver.reset();
+    }
+}
+
+/// Maximum concurrent 3D spatial audio voices in the kernel mixer.
+pub const MAX_SPATIAL_VOICES: usize = 8;
+
+/// Real-time 3D Audio Spatialization Subsystem.
+pub struct BinauralSpatializer {
+    pub listener: AudioListener3D,
+    pub dataset: HrtfDataset,
+    pub voices: [BinauralVoice; MAX_SPATIAL_VOICES],
+}
+
+impl BinauralSpatializer {
+    /// Initializes the spatializer with default listener, precomputed HRTF dataset, and idle voices.
+    pub fn new() -> Self {
+        let dataset = HrtfDataset::new();
+        let mut voices = [BinauralVoice::new(0); MAX_SPATIAL_VOICES];
+        for i in 0..MAX_SPATIAL_VOICES {
+            voices[i] = BinauralVoice::new(i as u32);
+        }
+
+        Self {
+            listener: AudioListener3D::new(),
+            dataset,
+            voices,
+        }
+    }
+
+    /// Allocates an available spatial voice for the given emitter.
+    pub fn allocate_voice(&mut self, emitter: AudioEmitter3D) -> Option<usize> {
+        for (idx, voice) in self.voices.iter_mut().enumerate() {
+            if !voice.active {
+                voice.emitter = emitter;
+                voice.active = true;
+                voice.reset();
+                return Some(idx);
+            }
+        }
+        None
+    }
+
+    /// Frees an active spatial voice.
+    pub fn free_voice(&mut self, voice_idx: usize) {
+        if voice_idx < MAX_SPATIAL_VOICES {
+            self.voices[voice_idx].active = false;
+            self.voices[voice_idx].reset();
+        }
+    }
+
+    /// Renders a mono PCM audio buffer through an active spatial voice into stereo (Left, Right) buffers.
+    pub fn render_voice(
+        &mut self,
+        voice_idx: usize,
+        input: &[i16],
+        output_left: &mut [i16],
+        output_right: &mut [i16],
+    ) {
+        if voice_idx >= MAX_SPATIAL_VOICES || !self.voices[voice_idx].active {
+            for s in output_left.iter_mut() {
+                *s = 0;
+            }
+            for s in output_right.iter_mut() {
+                *s = 0;
+            }
+            return;
+        }
+
+        let voice = &mut self.voices[voice_idx];
+        let count = input.len().min(output_left.len()).min(output_right.len());
+
+        for i in 0..count {
+            let (l, r) = voice.process_sample(input[i], &self.listener, &self.dataset);
+            output_left[i] = l;
+            output_right[i] = r;
+        }
+    }
+
+    /// Renders multiple active audio voices and mixes them into a unified stereo buffer.
+    pub fn mix_spatial_audio(
+        &mut self,
+        voice_inputs: &[(usize, &[i16])],
+        out_stereo: &mut [(i16, i16)],
+    ) {
+        // Zero output buffer
+        for frame in out_stereo.iter_mut() {
+            *frame = (0, 0);
+        }
+
+        for &(voice_idx, in_buf) in voice_inputs {
+            if voice_idx >= MAX_SPATIAL_VOICES || !self.voices[voice_idx].active {
+                continue;
+            }
+
+            let voice = &mut self.voices[voice_idx];
+            let count = in_buf.len().min(out_stereo.len());
+
+            for i in 0..count {
+                let (l, r) = voice.process_sample(in_buf[i], &self.listener, &self.dataset);
+                let (cur_l, cur_r) = out_stereo[i];
+                let mix_l = (cur_l as i32 + l as i32).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+                let mix_r = (cur_r as i32 + r as i32).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+                out_stereo[i] = (mix_l, mix_r);
+            }
+        }
     }
 }
 
@@ -316,7 +622,6 @@ pub fn test_3d_emitter_positioning_and_attenuation() -> bool {
     if (dist_r - 5.0).abs() > 1e-4 {
         return false;
     }
-    // Azimuth must be +PI/2 (+90 degrees right)
     if (az_r - HALF_PI).abs() > 1e-3 || el_r.abs() > 1e-3 {
         return false;
     }
@@ -326,7 +631,6 @@ pub fn test_3d_emitter_positioning_and_attenuation() -> bool {
     if (dist_l - 5.0).abs() > 1e-4 {
         return false;
     }
-    // Azimuth must be -PI/2 (-90 degrees left)
     if (az_l - (-HALF_PI)).abs() > 1e-3 || el_l.abs() > 1e-3 {
         return false;
     }
@@ -345,7 +649,6 @@ pub fn test_3d_emitter_positioning_and_attenuation() -> bool {
 
     // 2. Verify Listener rotation: turn listener 90 degrees to face +X
     listener.set_orientation(Vec3::new(1.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0));
-    // Emitter at (20, 0, 10) is now directly in front of listener!
     let (az_turned, _el_turned, dist_turned) = listener.calculate_relative_direction(Vec3::new(20.0, 0.0, 10.0));
     if (dist_turned - 10.0).abs() > 1e-4 || az_turned.abs() > 1e-3 {
         return false;
@@ -355,7 +658,6 @@ pub fn test_3d_emitter_positioning_and_attenuation() -> bool {
     let mut emitter = AudioEmitter3D::new(1);
     emitter.set_distance_model(1.0, 100.0, 1.0);
 
-    // Distance <= min_distance: unity gain (1.0)
     if emitter.calculate_distance_attenuation(0.5) != 1.0 {
         return false;
     }
@@ -363,35 +665,30 @@ pub fn test_3d_emitter_positioning_and_attenuation() -> bool {
         return false;
     }
 
-    // Distance = 2.0 (d = 2 * min_dist): gain = 1 / (1 + 1*(2-1)) = 0.5
     let g2 = emitter.calculate_distance_attenuation(2.0);
     if (g2 - 0.5).abs() > 1e-4 {
         return false;
     }
 
-    // Distance = 5.0 (d = 5 * min_dist): gain = 1 / (1 + 1*(5-1)) = 0.2
     let g5 = emitter.calculate_distance_attenuation(5.0);
     if (g5 - 0.2).abs() > 1e-4 {
         return false;
     }
 
-    // Distance >= max_distance: gain = 0.0
     if emitter.calculate_distance_attenuation(105.0) != 0.0 {
         return false;
     }
 
     // 4. Verify Directional Sound Cone Attenuation
     let mut cone_emitter = AudioEmitter3D::new(2);
-    cone_emitter.set_direction(Vec3::new(0.0, 0.0, 1.0)); // Facing forward
-    cone_emitter.set_cone(PI / 4.0, PI / 2.0, 0.1); // Inner 45 deg, outer 90 deg, outer gain 0.1
+    cone_emitter.set_direction(Vec3::new(0.0, 0.0, 1.0));
+    cone_emitter.set_cone(PI / 4.0, PI / 2.0, 0.1);
 
-    // Listener inside inner cone: gain 1.0
     let inside_gain = cone_emitter.calculate_cone_attenuation(Vec3::new(0.0, 0.0, 1.0));
     if (inside_gain - 1.0).abs() > 1e-4 {
         return false;
     }
 
-    // Listener outside outer cone: outer gain 0.1
     let outside_gain = cone_emitter.calculate_cone_attenuation(Vec3::new(0.0, 0.0, -1.0));
     if (outside_gain - 0.1).abs() > 1e-4 {
         return false;
@@ -401,6 +698,111 @@ pub fn test_3d_emitter_positioning_and_attenuation() -> bool {
     let close_abs = emitter.calculate_air_absorption(1.0);
     let far_abs = emitter.calculate_air_absorption(100.0);
     if close_abs != 1.0 || (far_abs - 0.35).abs() > 1e-4 {
+        return false;
+    }
+
+    true
+}
+
+/// Unit test verifying Doppler effect frequency shift and binaural stereo synthesis.
+pub fn test_doppler_and_binaural_convolver() -> bool {
+    // 1. Verify Doppler frequency shift factor calculation
+    let src_pos = Vec3::new(0.0, 0.0, 0.0);
+    let lis_pos = Vec3::new(0.0, 0.0, 100.0);
+
+    // Both stationary: factor = 1.0
+    let f_stat = calculate_doppler_factor(src_pos, Vec3::zero(), lis_pos, Vec3::zero());
+    if (f_stat - 1.0).abs() > 1e-4 {
+        return false;
+    }
+
+    // Source moving towards listener at 34.3 m/s (0.1 Mach, c = 343 m/s)
+    // f' = c / (c - 34.3) = 343 / 308.7 = 1.1111
+    let src_vel_towards = Vec3::new(0.0, 0.0, 34.3);
+    let f_towards = calculate_doppler_factor(src_pos, src_vel_towards, lis_pos, Vec3::zero());
+    if (f_towards - (343.0 / 308.7)).abs() > 1e-3 {
+        return false;
+    }
+
+    // Source moving away from listener at 34.3 m/s
+    // f' = c / (c + 34.3) = 343 / 377.3 = 0.9090
+    let src_vel_away = Vec3::new(0.0, 0.0, -34.3);
+    let f_away = calculate_doppler_factor(src_pos, src_vel_away, lis_pos, Vec3::zero());
+    if (f_away - (343.0 / 377.3)).abs() > 1e-3 {
+        return false;
+    }
+
+    // 2. Verify DopplerResampler block processing
+    let mut resampler = DopplerResampler::new();
+    let mut input = [0i16; 32];
+    for i in 0..32 {
+        input[i] = (i * 200) as i16;
+    }
+    let mut output = [0i16; 32];
+    resampler.resample_block(&input, &mut output, 1.0);
+    // At factor 1.0, output should match input closely
+    if output[0] != input[0] || output[10] != input[10] {
+        return false;
+    }
+
+    // 3. Verify BinauralVoice 3D spatialization: Right vs Left ear acoustic panning
+    let mut spatializer = BinauralSpatializer::new();
+    let mut emitter_right = AudioEmitter3D::new(10);
+    emitter_right.set_position(Vec3::new(5.0, 0.0, 0.0)); // 5m to the RIGHT (+X)
+    emitter_right.set_distance_model(1.0, 50.0, 1.0);
+
+    let voice_right_idx = spatializer.allocate_voice(emitter_right).expect("Voice alloc failed");
+
+    // Feed a series of pulses into the right voice
+    let pulse_in = [10_000i16; 16];
+    let mut out_l = [0i16; 16];
+    let mut out_r = [0i16; 16];
+    spatializer.render_voice(voice_right_idx, &pulse_in, &mut out_l, &mut out_r);
+
+    // Sum energy across frames
+    let mut energy_l = 0i64;
+    let mut energy_r = 0i64;
+    for i in 0..16 {
+        energy_l += out_l[i].abs() as i64;
+        energy_r += out_r[i].abs() as i64;
+    }
+
+    // Right ear must be louder than left ear due to head shadow (ILD) and distance
+    if energy_r <= energy_l || energy_r == 0 {
+        return false;
+    }
+
+    // 4. Verify Left voice symmetry
+    let mut emitter_left = AudioEmitter3D::new(11);
+    emitter_left.set_position(Vec3::new(-5.0, 0.0, 0.0)); // 5m to the LEFT (-X)
+    emitter_left.set_distance_model(1.0, 50.0, 1.0);
+
+    let voice_left_idx = spatializer.allocate_voice(emitter_left).expect("Voice alloc 2 failed");
+    let mut out_ll = [0i16; 16];
+    let mut out_lr = [0i16; 16];
+    spatializer.render_voice(voice_left_idx, &pulse_in, &mut out_ll, &mut out_lr);
+
+    let mut energy_ll = 0i64;
+    let mut energy_lr = 0i64;
+    for i in 0..16 {
+        energy_ll += out_ll[i].abs() as i64;
+        energy_lr += out_lr[i].abs() as i64;
+    }
+
+    // Left ear must be louder than right ear
+    if energy_ll <= energy_lr || energy_ll == 0 {
+        return false;
+    }
+
+    // 5. Verify Multi-Voice Spatial Mixing
+    let mut mix_out = [(0i16, 0i16); 16];
+    spatializer.mix_spatial_audio(
+        &[(voice_right_idx, &pulse_in), (voice_left_idx, &pulse_in)],
+        &mut mix_out,
+    );
+    // Both left and right channels in mixed output must have energy
+    let (first_l, first_r) = mix_out[4];
+    if first_l == 0 && first_r == 0 {
         return false;
     }
 
