@@ -14,6 +14,7 @@ pub mod taskbar;
 pub mod launcher;
 pub mod wayland;
 pub mod overlay;
+pub mod hud;
 
 use crate::display::color::Color;
 use crate::display::framebuffer::{FramebufferInfo, LinearFramebuffer};
