@@ -19,6 +19,7 @@ pub mod work_graphs;
 pub mod sampler_feedback;
 pub mod barriers;
 pub mod ser;
+pub mod depth_bounds;
 
 pub use cmdbuf::*;
 pub use compute::*;
@@ -36,6 +37,7 @@ pub use work_graphs::*;
 pub use sampler_feedback::*;
 pub use barriers::*;
 pub use ser::*;
+pub use depth_bounds::*;
 
 /// Comprehensive verification self-test suite for Direct3D / Vulkan-Style Command Buffer
 /// Recording and Hardware Queue Submission Engine.
