@@ -17,6 +17,7 @@ pub mod shell;
 pub mod ipc;
 pub mod loader;
 pub mod graphics;
+pub mod gfx;
 pub mod terminal;
 pub mod power;
 pub mod mm;
@@ -263,6 +264,11 @@ pub extern "C" fn kmain() -> ! {
     // Initialize and verify PCIe Function-Level Reset (FLR) & GPU Timeout Detection and Recovery (TDR)
     if !drivers::gpu::test_pcie_flr_and_gpu_tdr_subsystem() {
         serial_write_str("[KNT-PANIC] PCIe FLR and GPU TDR subsystem self-test failed!\r\n");
+    }
+
+    // Initialize and verify Direct3D / Vulkan-Style Command Buffer Recording & Hardware Queue Submission Engine
+    if !gfx::test_gpu_command_buffer_and_queue_subsystem() {
+        serial_write_str("[KNT-PANIC] GPU command buffer and queue submission self-test failed!\r\n");
     }
 
     // Initialize and verify AHCI SATA Persistent Storage Subsystem
