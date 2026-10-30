@@ -312,6 +312,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] NVMe overlapped async I/O completion engine self-test failed!\r\n");
     }
 
+    // Initialize and verify Zero-Copy DirectStorage NVMe-to-GPU Streaming & Compressed Texture Pipeline
+    if !drivers::storage::test_direct_storage_subsystem() {
+        serial_write_str("[KNT-PANIC] DirectStorage NVMe-to-GPU streaming self-test failed!\r\n");
+    }
+
     // Initialize Embedded Network Protocol Stack (ARP, IPv4, ICMP, UDP, TCP)
     net::init();
     if !net::test_network_stack() {
