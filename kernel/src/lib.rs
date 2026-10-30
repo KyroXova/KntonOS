@@ -18,6 +18,7 @@ pub mod ipc;
 pub mod loader;
 pub mod graphics;
 pub mod terminal;
+pub mod power;
 
 pub use memory::ALLOCATOR;
 
@@ -139,6 +140,11 @@ pub extern "C" fn kmain() -> ! {
     // Initialize and verify HPET & Real-Time Monotonic Nanosecond Clock Subsystem
     if !arch::test_hpet_subsystem() {
         serial_write_str("[KNT-PANIC] HPET and monotonic clock self-test failed!\r\n");
+    }
+
+    // Initialize and verify Dynamic Power Governor & Thermal Energy Meter
+    if !power::test_power_governor_subsystem() {
+        serial_write_str("[KNT-PANIC] Dynamic power governor self-test failed!\r\n");
     }
 
     // Initialize Virtual File System & mount demo initramfs
