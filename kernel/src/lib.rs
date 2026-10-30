@@ -26,6 +26,7 @@ pub mod trace;
 pub mod bpf;
 pub mod audio;
 pub mod time;
+pub mod video;
 
 pub use memory::ALLOCATOR;
 
