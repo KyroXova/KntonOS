@@ -592,3 +592,191 @@ impl VariableRateShadingManager {
         self.metrics = VrsMetrics::default();
     }
 }
+
+// -----------------------------------------------------------------------------
+// Direct3D 12 VRS Tier 2 Screen-Space Shading Rate Image (SRI) Descriptors
+// -----------------------------------------------------------------------------
+
+/// Raw D3D12 8-bit Shading Rate tile encoding constants.
+pub const D3D12_VRS_SHADING_RATE_1X1: u8 = 0x0;
+pub const D3D12_VRS_SHADING_RATE_1X2: u8 = 0x1;
+pub const D3D12_VRS_SHADING_RATE_2X1: u8 = 0x4;
+pub const D3D12_VRS_SHADING_RATE_2X2: u8 = 0x5;
+pub const D3D12_VRS_SHADING_RATE_2X4: u8 = 0x6;
+pub const D3D12_VRS_SHADING_RATE_4X2: u8 = 0x9;
+pub const D3D12_VRS_SHADING_RATE_4X4: u8 = 0xa;
+
+/// Screen-space 2D motion velocity vector for motion-adaptive shading rate calculation.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct MotionVector2D {
+    /// Horizontal velocity in pixels per frame.
+    pub vx: f32,
+    /// Vertical velocity in pixels per frame.
+    pub vy: f32,
+}
+
+impl MotionVector2D {
+    /// Creates a new 2D motion vector.
+    pub const fn new(vx: f32, vy: f32) -> Self {
+        Self { vx, vy }
+    }
+
+    /// Squared magnitude of the motion vector.
+    #[inline(always)]
+    pub fn magnitude_sq(&self) -> f32 {
+        self.vx * self.vx + self.vy * self.vy
+    }
+
+    /// Euclidean magnitude (speed in pixels per frame).
+    #[inline(always)]
+    pub fn magnitude(&self) -> f32 {
+        let sq = self.magnitude_sq();
+        if sq <= 0.0 {
+            0.0
+        } else {
+            // Fast square root approximation
+            let i = sq.to_bits();
+            let i = 0x1fbd1df5 + (i >> 1);
+            let mut x = f32::from_bits(i);
+            x = 0.5 * (x + sq / x);
+            x = 0.5 * (x + sq / x);
+            x
+        }
+    }
+}
+
+/// Luminance statistics for a single screen-space tile used in contrast-adaptive VRS.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct LumaTile {
+    /// Minimum luma value in `[0.0, 1.0]` across the tile.
+    pub min_luma: f32,
+    /// Maximum luma value in `[0.0, 1.0]` across the tile.
+    pub max_luma: f32,
+    /// Average luma value in `[0.0, 1.0]` across the tile.
+    pub avg_luma: f32,
+}
+
+impl LumaTile {
+    /// Creates a new luma tile descriptor.
+    pub const fn new(min_luma: f32, max_luma: f32, avg_luma: f32) -> Self {
+        Self { min_luma, max_luma, avg_luma }
+    }
+
+    /// Calculates normalized Michelson contrast: `(max - min) / (max + min + eps)`.
+    pub fn contrast(&self) -> f32 {
+        let diff = self.max_luma - self.min_luma;
+        let sum = self.max_luma + self.min_luma;
+        if sum < 1e-4 {
+            0.0
+        } else {
+            diff / (sum + 1e-4)
+        }
+    }
+}
+
+/// Metadata and analysis record for an individual Shading Rate Image (SRI) tile.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SriTileDescriptor {
+    /// Horizontal tile coordinate (column index).
+    pub tile_x: u32,
+    /// Vertical tile coordinate (row index).
+    pub tile_y: u32,
+    /// Coarse shading rate assigned to this tile.
+    pub rate: ShadingRate,
+    /// Local Michelson contrast metric `[0.0, 1.0]`.
+    pub contrast_metric: f32,
+    /// Local screen-space motion velocity magnitude in pixels/frame.
+    pub motion_magnitude: f32,
+    /// Radial distance from view center or gaze point in normalized screen units.
+    pub foveal_distance: f32,
+    /// Whether this tile contains high-frequency geometry/luma edges protected with 1x1.
+    pub is_edge_protected: bool,
+}
+
+/// Configuration descriptor for generating a Shading Rate Image surface.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShadingRateImageDescriptor {
+    /// Viewport width in pixels.
+    pub width_pixels: u32,
+    /// Viewport height in pixels.
+    pub height_pixels: u32,
+    /// Tile granularity (8x8, 16x16, or 32x32 pixels).
+    pub granularity: TileGranularity,
+    /// Default shading rate applied to neutral tiles.
+    pub default_rate: ShadingRate,
+    /// Minimum allowed shading rate floor (e.g. Rate1x1).
+    pub min_rate: ShadingRate,
+    /// Maximum allowed coarse shading rate ceiling (e.g. Rate4x4).
+    pub max_rate: ShadingRate,
+}
+
+/// Multi-source shading rate combiner configuration descriptor according to D3D12 Tier 2 specs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MultiSourceCombinerDescriptor {
+    /// Stage 0: Combines per-draw pipeline base rate with screen-space SRI tile map.
+    pub draw_vs_image: ShadingRateCombiner,
+    /// Stage 1: Combines Stage 0 result with per-primitive SV_ShadingRate.
+    pub image_vs_primitive: ShadingRateCombiner,
+}
+
+impl Default for MultiSourceCombinerDescriptor {
+    fn default() -> Self {
+        Self {
+            draw_vs_image: ShadingRateCombiner::Passthrough,
+            image_vs_primitive: ShadingRateCombiner::Passthrough,
+        }
+    }
+}
+
+impl MultiSourceCombinerDescriptor {
+    /// Creates a new combiner descriptor with specified Stage 0 and Stage 1 rules.
+    pub const fn new(
+        draw_vs_image: ShadingRateCombiner,
+        image_vs_primitive: ShadingRateCombiner,
+    ) -> Self {
+        Self {
+            draw_vs_image,
+            image_vs_primitive,
+        }
+    }
+
+    /// Evaluates multi-source shading rates across both combiner stages.
+    pub fn combine(
+        &self,
+        base_rate: ShadingRate,
+        image_rate: ShadingRate,
+        primitive_rate: Option<ShadingRate>,
+    ) -> ShadingRate {
+        let stage0 = combine_shading_rates(base_rate, image_rate, self.draw_vs_image);
+        if let Some(prim) = primitive_rate {
+            combine_shading_rates(stage0, prim, self.image_vs_primitive)
+        } else {
+            stage0
+        }
+    }
+}
+
+/// Tuning parameters for contrast-adaptive and motion-vector VRS tile evaluation.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ContrastSensitivityConfig {
+    /// Contrast threshold above which full 1x1 shading is strictly enforced to protect geometry edges.
+    pub edge_threshold: f32,
+    /// Moderate contrast threshold below which 2x2 or 2x1/1x2 coarse shading is permitted.
+    pub moderate_contrast_threshold: f32,
+    /// Screen-space velocity magnitude (pixels/frame) above which motion blur allows 4x4 or 2x4/4x2 coarsening.
+    pub motion_coarsening_threshold: f32,
+    /// Whether directional motion stretching (e.g. 4x2 vs 2x4) is aligned to velocity axis.
+    pub enable_directional_motion_shading: bool,
+}
+
+impl Default for ContrastSensitivityConfig {
+    fn default() -> Self {
+        Self {
+            edge_threshold: 0.18,
+            moderate_contrast_threshold: 0.08,
+            motion_coarsening_threshold: 2.5,
+            enable_directional_motion_shading: true,
+        }
+    }
+}
+
