@@ -12,6 +12,8 @@ pub mod ring_alloc;
 pub mod cbv_pool;
 pub mod dxr_as;
 pub mod dispatch_rays;
+pub mod vrs;
+pub mod foveated;
 
 pub use cmdbuf::*;
 pub use compute::*;
@@ -22,6 +24,8 @@ pub use ring_alloc::*;
 pub use cbv_pool::*;
 pub use dxr_as::*;
 pub use dispatch_rays::*;
+pub use vrs::*;
+pub use foveated::*;
 
 /// Comprehensive verification self-test suite for Direct3D / Vulkan-Style Command Buffer
 /// Recording and Hardware Queue Submission Engine.
@@ -208,6 +212,161 @@ pub fn test_dxr_acceleration_structure_subsystem() -> bool {
 
     // 5. Emit deterministic boot sentinel
     crate::serial_write_str("[KNT-GPU-DXR-PASS] Direct3D 12 raytracing acceleration structure manager and DispatchRays engine verified\r\n");
+
+    true
+}
+
+/// Comprehensive verification self-test suite for Direct3D 12 Variable Rate Shading (VRS Tier 2)
+/// and Eye-Tracked Foveated Rasterizer Engine.
+///
+/// Emits sentinel [KNT-GPU-VRS-PASS] upon successful validation.
+pub fn test_vrs_foveated_subsystem() -> bool {
+    crate::serial_write_str("[KNT-GFX] Testing Direct3D 12 Variable Rate Shading (Tier 2) & Foveated Rasterizer...\r\n");
+
+    // 1. Verify discrete shading rates, dimensions, and D3D12 byte conversions
+    let rates = [
+        (ShadingRate::Rate1x1, 1, 1, 1, 0x0),
+        (ShadingRate::Rate1x2, 1, 2, 2, 0x1),
+        (ShadingRate::Rate2x1, 2, 1, 2, 0x4),
+        (ShadingRate::Rate2x2, 2, 2, 4, 0x5),
+        (ShadingRate::Rate2x4, 2, 4, 8, 0x6),
+        (ShadingRate::Rate4x2, 4, 2, 8, 0x9),
+        (ShadingRate::Rate4x4, 4, 4, 16, 0xa),
+    ];
+    for (rate, w, h, area, d3d_val) in rates {
+        if rate.width() != w || rate.height() != h || rate.pixel_area() != area {
+            return false;
+        }
+        if rate.to_d3d12() != d3d_val {
+            return false;
+        }
+        if ShadingRate::from_d3d12(d3d_val) != Some(rate) {
+            return false;
+        }
+        if ShadingRate::from_dimensions(w, h) != Some(rate) {
+            return false;
+        }
+    }
+
+    // 2. Verify coarse pixel shading rate combiners (Passthrough, Override, Min, Max, Sum)
+    if combine_shading_rates(ShadingRate::Rate1x1, ShadingRate::Rate4x4, ShadingRateCombiner::Passthrough) != ShadingRate::Rate1x1 {
+        return false;
+    }
+    if combine_shading_rates(ShadingRate::Rate1x1, ShadingRate::Rate4x4, ShadingRateCombiner::Override) != ShadingRate::Rate4x4 {
+        return false;
+    }
+    if combine_shading_rates(ShadingRate::Rate2x4, ShadingRate::Rate4x2, ShadingRateCombiner::Min) != ShadingRate::Rate2x2 {
+        return false;
+    }
+    if combine_shading_rates(ShadingRate::Rate2x1, ShadingRate::Rate1x2, ShadingRateCombiner::Max) != ShadingRate::Rate2x2 {
+        return false;
+    }
+    if combine_shading_rates(ShadingRate::Rate2x1, ShadingRate::Rate1x2, ShadingRateCombiner::Sum) != ShadingRate::Rate2x2 {
+        return false;
+    }
+    if combine_shading_rates(ShadingRate::Rate2x2, ShadingRate::Rate2x2, ShadingRateCombiner::Sum) != ShadingRate::Rate4x4 {
+        return false;
+    }
+
+    // 3. Verify screen-space Shading Rate Image (SRI) tile map generation and sampling (8x8, 16x16, 32x32)
+    for gran in [TileGranularity::Tile8x8, TileGranularity::Tile16x16, TileGranularity::Tile32x32] {
+        let mut sri = match ShadingRateImage::new(1280, 800, gran, ShadingRate::Rate1x1) {
+            Ok(img) => img,
+            Err(_) => return false,
+        };
+        let expected_tx = (1280 + gran.pixel_size() - 1) / gran.pixel_size();
+        let expected_ty = (800 + gran.pixel_size() - 1) / gran.pixel_size();
+        if sri.tiles_x() != expected_tx || sri.tiles_y() != expected_ty {
+            return false;
+        }
+        if !sri.set_tile_rate(2, 3, ShadingRate::Rate4x4) {
+            return false;
+        }
+        if sri.get_tile_rate(2, 3) != Some(ShadingRate::Rate4x4) {
+            return false;
+        }
+        let sample_x = 2 * gran.pixel_size() + 2;
+        let sample_y = 3 * gran.pixel_size() + 2;
+        if sri.sample_pixel(sample_x, sample_y) != ShadingRate::Rate4x4 {
+            return false;
+        }
+    }
+
+    // 4. Verify VariableRateShadingManager pipeline and multi-source rate resolution
+    let mut vrs_mgr = VariableRateShadingManager::new(VrsTier::Tier2, TileGranularity::Tile16x16);
+    vrs_mgr.set_shading_rate(
+        ShadingRate::Rate2x1,
+        [ShadingRateCombiner::Override, ShadingRateCombiner::Min],
+    );
+    let mut sri = match ShadingRateImage::new(1920, 1080, TileGranularity::Tile16x16, ShadingRate::Rate2x4) {
+        Ok(img) => img,
+        Err(_) => return false,
+    };
+    sri.set_tile_rate(0, 0, ShadingRate::Rate4x2);
+    if vrs_mgr.bind_shading_rate_image(sri).is_err() {
+        return false;
+    }
+    let resolved = vrs_mgr.resolve_shading_rate(8, 8, Some(ShadingRate::Rate2x4));
+    if resolved != ShadingRate::Rate2x2 {
+        return false;
+    }
+    vrs_mgr.record_rasterization(ShadingRate::Rate2x2);
+    vrs_mgr.record_rasterization(ShadingRate::Rate4x4);
+    if vrs_mgr.metrics().total_pixels_rasterized != 4 + 16 {
+        return false;
+    }
+    if vrs_mgr.metrics().effective_shader_invocations != 2 {
+        return false;
+    }
+    if vrs_mgr.metrics().invocation_reduction_percentage() != 90 {
+        return false;
+    }
+
+    // 5. Verify Eye-Tracked Foveated Rasterizer & Handheld Power Governor
+    let config = FoveatedConfig::handheld_preset();
+    let mut foveated = FoveatedRasterizer::new(config);
+    if foveated.current_gaze() != (640, 400) {
+        return false;
+    }
+
+    if foveated.classify_pixel(640, 400) != FoveatedZone::Foveal {
+        return false;
+    }
+    if foveated.classify_pixel(640 + 400, 400) != FoveatedZone::Parafoveal {
+        return false;
+    }
+    if foveated.classify_pixel(640 + 630, 400) != FoveatedZone::Peripheral {
+        return false;
+    }
+
+    foveated.update_gaze(850, 450);
+    if foveated.saccade_count() != 1 {
+        return false;
+    }
+    foveated.center_gaze();
+    if foveated.current_gaze() != (640, 400) {
+        return false;
+    }
+
+    let (tot_pix, _invoc, red_pct) = match foveated.simulate_frame_rasterization() {
+        Ok(res) => res,
+        Err(_) => return false,
+    };
+    if tot_pix != 1280 * 800 {
+        return false;
+    }
+    if red_pct < 40 || red_pct > 60 {
+        return false;
+    }
+
+    let power_saved_mw = foveated.estimate_power_savings_mw(5000, red_pct);
+    let bw_saved_mbs = foveated.estimate_bandwidth_savings_mbs(25000, red_pct);
+    if power_saved_mw == 0 || bw_saved_mbs == 0 {
+        return false;
+    }
+
+    // 6. Emit deterministic boot sentinel
+    crate::serial_write_str("[KNT-GPU-VRS-PASS] Direct3D 12 Variable Rate Shading Tier 2 and eye-tracked foveated rasterizer verified\r\n");
 
     true
 }
