@@ -286,6 +286,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] eBPF packet and event filter self-test failed!\r\n");
     }
 
+    // Initialize and verify Multi-Queue Network Packet Transmission & Zero-Copy DMA RX/TX Ring Engine
+    if !net::test_net_multiqueue_subsystem() {
+        serial_write_str("[KNT-PANIC] Multi-queue network packet engine self-test failed!\r\n");
+    }
+
     // Verify Unix Domain Sockets (AF_UNIX) & Local IPC Engine
     if !net::test_unix_domain_sockets() {
         serial_write_str("[KNT-PANIC] Unix domain sockets self-test failed!\r\n");

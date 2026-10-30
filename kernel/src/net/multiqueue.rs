@@ -146,7 +146,7 @@ impl RssSteeringEngine {
 /// Multi-Queue RX Steering Manager distributing packets across per-core rings.
 pub struct MultiQueueRxManager {
     pub steering: RssSteeringEngine,
-    pub rx_queues: [super::ring::DmaRingBuffer<64>; MAX_QUEUES],
+    pub rx_queues: [super::ring::DmaRingBuffer<4>; MAX_QUEUES],
     pub per_queue_packets: [u64; MAX_QUEUES],
 }
 
@@ -371,7 +371,7 @@ impl<const QUEUE_DEPTH: usize> PerCoreTxQueue<QUEUE_DEPTH> {
 
 /// Multi-Queue TX Scheduler managing dedicated per-core submission channels.
 pub struct MultiQueueTxScheduler {
-    pub core_queues: [PerCoreTxQueue<32>; MAX_QUEUES],
+    pub core_queues: [PerCoreTxQueue<4>; MAX_QUEUES],
     pub core_count: usize,
     pub total_dma_dispatched: u64,
 }

@@ -191,21 +191,19 @@ impl<const N: usize> DmaRingBuffer<N> {
 
     /// Simulates hardware completing a DMA transfer (for self-tests and virtual loopback).
     pub fn simulate_hw_completion(&mut self, actual_length: u16) -> bool {
-        if self.head == self.tail {
-            return false;
+        let mut curr = self.head;
+        while curr != self.tail {
+            let idx = (curr & self.mask) as usize;
+            if self.descriptors[idx].is_hw_owned() {
+                self.descriptors[idx].set_hw_owned(false);
+                if actual_length > 0 {
+                    self.descriptors[idx].length = actual_length;
+                }
+                return true;
+            }
+            curr = curr.wrapping_add(1);
         }
-
-        let idx = (self.head & self.mask) as usize;
-        let desc = &mut self.descriptors[idx];
-        if !desc.is_hw_owned() {
-            return false;
-        }
-
-        desc.set_hw_owned(false);
-        if actual_length > 0 {
-            desc.length = actual_length;
-        }
-        true
+        false
     }
 }
 
@@ -254,15 +252,23 @@ pub fn verify_dma_ring_buffers() -> bool {
     if !tx_ring.simulate_hw_completion(128) {
         return false;
     }
-    let p0 = tx_ring.reap_completed().expect("p0 reap failed");
+    let p0 = match tx_ring.reap_completed() {
+        Some(p) => p,
+        None => return false,
+    };
     if p0.phys_addr != 0x1000_0000 || p0.length != 128 || !p0.checksum_valid {
         return false;
     }
 
     // Simulate completion for remaining 3 packets
     for i in 1..4 {
-        tx_ring.simulate_hw_completion(128 + i as u16);
-        let p = tx_ring.reap_completed().expect("reap failed");
+        if !tx_ring.simulate_hw_completion(128 + i as u16) {
+            return false;
+        }
+        let p = match tx_ring.reap_completed() {
+            Some(val) => val,
+            None => return false,
+        };
         if p.length != 128 + i as u16 {
             return false;
         }
@@ -273,13 +279,27 @@ pub fn verify_dma_ring_buffers() -> bool {
     }
 
     // 4. Test ring wraparound with 2 more packets
-    tx_ring.submit_tx(0x2000_0000, 256, false);
-    tx_ring.submit_tx(0x2000_1000, 512, false);
-    tx_ring.simulate_hw_completion(256);
-    tx_ring.simulate_hw_completion(512);
+    if !tx_ring.submit_tx(0x2000_0000, 256, false) {
+        return false;
+    }
+    if !tx_ring.submit_tx(0x2000_1000, 512, false) {
+        return false;
+    }
+    if !tx_ring.simulate_hw_completion(256) {
+        return false;
+    }
+    if !tx_ring.simulate_hw_completion(512) {
+        return false;
+    }
 
-    let wrap0 = tx_ring.reap_completed().expect("wrap0 failed");
-    let wrap1 = tx_ring.reap_completed().expect("wrap1 failed");
+    let wrap0 = match tx_ring.reap_completed() {
+        Some(w) => w,
+        None => return false,
+    };
+    let wrap1 = match tx_ring.reap_completed() {
+        Some(w) => w,
+        None => return false,
+    };
     if wrap0.length != 256 || wrap1.length != 512 {
         return false;
     }
