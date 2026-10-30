@@ -153,6 +153,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] MMIO watchpoint and debug trap self-test failed!\r\n");
     }
 
+    // Initialize and verify Zero-Overhead Kernel Trace Ring Buffer & Performance Profiling
+    if !trace::test_trace_subsystem() {
+        serial_write_str("[KNT-PANIC] Kernel trace ring buffer self-test failed!\r\n");
+    }
+
     // Initialize and verify Dynamic Power Governor & Thermal Energy Meter
     if !power::test_power_governor_subsystem() {
         serial_write_str("[KNT-PANIC] Dynamic power governor self-test failed!\r\n");
