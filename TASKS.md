@@ -65,8 +65,15 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-038 | VFS Unified Inode Cache, Lock Manager, & ACL Access Controls | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-038-vfs-acl.md) |
 | TASK-KNT-039 | Hardware RNG (RDRAND/RDSEED) & ChaCha20 Cryptographic Entropy Pool | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-039-csprng.md) |
 | TASK-KNT-040 | Software 3D Graphics Pipeline & Barycentric Triangle Rasterizer | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-040-rasterizer.md) |
-| TASK-KNT-041 | AHCI SATA Persistent Storage Controller Driver & Port Command Queue Engine | Claimed | TASK-KNT-031 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-041-ahci-sata.md) |
+| TASK-KNT-041 | AHCI SATA Persistent Storage Controller Driver & Port Command Queue Engine | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-041-ahci-sata.md) |
+| TASK-KNT-042 | Virtual Memory Demand Paging, Copy-on-Write (COW) Fork Engine, & Page Fault Handler | Claimed | TASK-KNT-007 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-042-cow-paging.md) |
+| TASK-KNT-043 | Unix Domain Sockets (AF_UNIX) & Local IPC Streaming / Datagram Engine | Claimed | TASK-KNT-027 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-043-unix-sockets.md) |
+| TASK-KNT-044 | USB Mass Storage Class (MSC) Bulk-Only Transport (BOT) Protocol Driver | Claimed | TASK-KNT-023 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-044-usb-msc.md) |
+| TASK-KNT-045 | kpkg Native Package Manifest Parser, Merkle Tree Content-Addressed Storage (CAS), & Zstandard Archive Decompressor | Claimed | TASK-KNT-038 | ArdenKestrel / dev | [Card](docs/tasks/TASK-KNT-045-kpkg-cas.md) |
 
 ## Active reservations
 
-- `kernel/src/drivers/storage/ahci.rs`: reserved by Ada Chen for TASK-KNT-041.
+- `kernel/src/memory/demand_paging.rs`, `kernel/src/memory/cow.rs`: reserved by Jules Martin for TASK-KNT-042.
+- `kernel/src/net/af_unix.rs`: reserved by Priya Nair for TASK-KNT-043.
+- `kernel/src/drivers/usb/msc.rs`, `kernel/src/drivers/usb/bot.rs`: reserved by Ada Chen for TASK-KNT-044.
+- `kernel/src/pkg/`: reserved by ArdenKestrel for TASK-KNT-045.
