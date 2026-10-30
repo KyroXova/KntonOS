@@ -1,10 +1,5 @@
 //! Direct3D 12 Kernel-Direct GPU Sampler Feedback Streaming & Texture LOD Clamp Engine.
-//!
 //! Implements hardware-accelerated Direct3D 12 Sampler Feedback specifications:
-//! - MinMipMap and Texture Transcoding feedback maps.
-//! - Tile region mapping (e.g. 64x64, 128x128, 256x256 texels).
-//! - Sub-millisecond texture tile streaming for massive game worlds without CPU readback stalls.
-//! - Dynamic LOD Clamp governor to prevent visual texture popping and page fault crashes.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -98,9 +93,7 @@ impl FeedbackTileRegion {
 }
 
 /// Sampler Feedback Map Descriptor.
-///
 /// Configures the association between a source texture resource and its paired
-/// feedback map surface, calculating tile grids and memory footprints.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FeedbackMapDescriptor {
     /// Feedback map archetype (MinMipMap or TextureTranscoding).
@@ -166,9 +159,7 @@ impl FeedbackMapDescriptor {
 }
 
 /// Underlying storage for a MinMipMap sampler feedback surface.
-///
 /// Each tile is represented by 1 byte storing the minimum (highest resolution) mip level
-/// sampled during GPU shader execution. Unaccessed tiles contain `SAMPLER_FEEDBACK_UNACCESSED_MIP` (0xFF).
 #[derive(Debug, Clone)]
 pub struct MinMipMapStorage {
     tiles_x: u32,
@@ -253,9 +244,7 @@ pub const TRANSCODE_FLAG_REQUIRED: u8 = 0x01;
 pub const TRANSCODE_FLAG_READY: u8 = 0x02;
 
 /// Underlying storage for a Texture Transcoding sampler feedback surface.
-///
 /// Records which texture tiles were accessed by shaders to drive asynchronous
-/// texture decompression (e.g. Basis Universal / BCn / ASTC transcoding).
 #[derive(Debug, Clone)]
 pub struct TextureTranscodingStorage {
     tiles_x: u32,
@@ -463,7 +452,6 @@ impl TileRequestQueue {
     }
 
     /// Pushes a tile streaming request into the queue with deduplication and priority ordering.
-    ///
     /// Returns `Ok(true)` if newly added, `Ok(false)` if merged/deduplicated, or `Err(QueueFull)`.
     pub fn push(&mut self, request: TileStreamingRequest) -> Result<bool, SamplerFeedbackError> {
         // Check for duplicate request targeting the same tile
@@ -548,9 +536,7 @@ pub struct SamplerFeedbackStats {
 }
 
 /// Dynamic Texture LOD Clamp Governor.
-///
 /// Dynamically calculates hardware sampler MinLOD clamps to prevent GPU shaders from
-/// accessing non-resident mip levels while asynchronous tile streaming is in flight.
 #[derive(Debug, Clone)]
 pub struct TextureLodClampGovernor {
     /// Active hardware sampler minimum LOD clamp (finest allowed mip index).
@@ -602,10 +588,7 @@ impl TextureLodClampGovernor {
 }
 
 /// Kernel-Direct GPU Sampler Feedback Streaming & Texture LOD Clamp Engine.
-///
 /// Orchestrates paired sampler feedback maps (MinMipMap and TextureTranscoding),
-/// monitors GPU texture access patterns without CPU readback stalls, prioritizes
-/// tile streaming I/O requests, and governs hardware sampler LOD clamping.
 #[derive(Debug)]
 pub struct SamplerFeedbackEngine {
     /// Paired texture and feedback map descriptor.
@@ -714,9 +697,7 @@ impl SamplerFeedbackEngine {
     }
 
     /// Evaluates the feedback map against current VRAM residency.
-    ///
     /// Identifies all tiles where `sampled_mip < resident_mip` (missing higher-resolution detail),
-    /// generates prioritized streaming requests into the queue, and updates the LOD clamp governor.
     pub fn evaluate_feedback(&mut self, texture_id: u32) -> Result<usize, SamplerFeedbackError> {
         let mut new_requests_count = 0;
 

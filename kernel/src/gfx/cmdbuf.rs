@@ -1,20 +1,11 @@
 //! Direct3D / Vulkan-Style GPU Command Buffer Recording Infrastructure.
-//!
 //! Provides high-throughput, low-latency command stream encoding for GPU hardware queues:
-//! - 64-bit compact command packet headers with opcode, payload size, and stream routing
-//! - Variable-length inline typed payloads (DrawIndexed, SetPipelineState, SetRenderTargets, CopyBufferRegion)
-//! - Direct3D 12 / Vulkan style resource synchronization barriers (Transition, Aliasing, UAV)
-//! - Descriptor heap binding and root descriptor table setting
-//! - Linear memory recording buffer for fast cache-friendly append operations
-//! - Stream reader and packet decoding iterator for hardware submission dispatch
 
 extern crate alloc;
 use alloc::vec::Vec;
 use core::mem::size_of;
 
-// -----------------------------------------------------------------------------
 // Command Opcodes & 64-bit Header
-// -----------------------------------------------------------------------------
 
 /// GPU command opcodes mimicking modern Direct3D 12 and Vulkan command streams.
 #[repr(u16)]
@@ -55,12 +46,7 @@ impl GpuCommandOpcode {
 }
 
 /// Compact 64-bit command packet header formatted for direct GPU DMA fetch.
-///
 /// Bit Layout:
-/// - Bits [15:0]:  Opcode (`u16`)
-/// - Bits [31:16]: Payload byte length (`u16`)
-/// - Bits [47:32]: Flags / Execution options (`u16`)
-/// - Bits [63:48]: Stream identifier / Hardware Queue tag (`u16`)
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CommandPacketHeader(pub u64);
@@ -105,9 +91,7 @@ impl CommandPacketHeader {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Resource Barriers & Pipeline Stages
-// -----------------------------------------------------------------------------
 
 /// GPU resource usage states for synchronization barriers (bitflags).
 #[repr(transparent)]
@@ -229,9 +213,7 @@ impl ResourceBarrierPayload {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Descriptor Heaps & Tables
-// -----------------------------------------------------------------------------
 
 /// Modern GPU descriptor heap types.
 #[repr(u32)]
@@ -310,9 +292,7 @@ impl SetDescriptorTablePayload {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Command Payloads
-// -----------------------------------------------------------------------------
 
 /// Payload for indexed primitive drawing (`DrawIndexed`).
 #[repr(C, align(8))]
@@ -480,9 +460,7 @@ impl ScissorRect {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Linear Command Buffer Recorder & Stream
-// -----------------------------------------------------------------------------
 
 /// An immutable, finalized command buffer ready for hardware queue submission.
 #[derive(Debug, Clone)]
@@ -515,7 +493,6 @@ impl GpuCommandBuffer {
 }
 
 /// High-performance linear command buffer recorder.
-///
 /// Encodes typed command packets into contiguous aligned memory with minimal overhead.
 #[derive(Debug)]
 pub struct CommandBufferRecorder {
@@ -714,9 +691,7 @@ impl CommandBufferRecorder {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Command Stream Decoder & Packet Iterator
-// -----------------------------------------------------------------------------
 
 /// View of an individual decoded command packet.
 #[derive(Debug, Clone, Copy)]
@@ -789,9 +764,7 @@ impl<'a> Iterator for CommandStreamReader<'a> {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Unit Tests & Verification
-// -----------------------------------------------------------------------------
 
 /// Verifies command packet encoding, 64-bit headers, linear recording, and stream decoding.
 pub fn verify_command_packet_encoding_and_recorder() -> bool {

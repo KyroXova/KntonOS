@@ -1,11 +1,5 @@
 //! Direct3D 12 Raytracing DispatchRays Engine & Shader Binding Table (SBT) Generator.
-//!
 //! Implements DXR 1.1 / Vulkan KHR ray dispatching infrastructure:
-//! - Shader Binding Table (SBT) generator with 32-byte shader identifier size
-//! - 64-byte table alignment (D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT)
-//! - RayGeneration, Miss, HitGroup, and Callable shader record formatting
-//! - D3D12_DISPATCH_RAYS_DESC layout and grid dimension tracking
-//! - Resource barrier transition enforcement between BVH builds and DispatchRays shader execution
 
 #![allow(dead_code)]
 
@@ -21,9 +15,7 @@ pub const D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT: u64 = 64;
 /// Required byte alignment for individual shader records within a shader table.
 pub const D3D12_RAYTRACING_SHADER_RECORD_BYTE_ALIGNMENT: u64 = 32;
 
-// -----------------------------------------------------------------------------
 // Shader Record & Address Range Descriptors
-// -----------------------------------------------------------------------------
 
 /// Single shader record containing a 32-byte shader identifier and optional local root arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -175,9 +167,7 @@ impl D3D12_DISPATCH_RAYS_DESC {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Shader Binding Table (SBT) Generator
-// -----------------------------------------------------------------------------
 
 /// Generator packing shader records into a contiguous, 64-byte aligned Shader Binding Table.
 #[derive(Debug, Default)]
@@ -286,9 +276,7 @@ impl ShaderBindingTableGenerator {
     }
 }
 
-// -----------------------------------------------------------------------------
 // DispatchRays Engine & Pipeline Barrier Synchronization
-// -----------------------------------------------------------------------------
 
 /// Ray dispatch execution engine with pipeline barrier synchronization.
 #[derive(Debug, Default)]

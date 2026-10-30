@@ -1,8 +1,5 @@
 //! Hardware Dumb-Buffer Video Streamer Engine & Planar Color Formatter.
-//!
 //! Provides color space conversion from ARGB8888 to hardware video encoder planar layouts
-//! (NV12 bi-planar and YUV420p / I420 tri-planar), monotonic nanosecond frame pacing at
-//! configurable target refresh rates (30, 60, 120 Hz), and packet streaming pipeline.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -270,7 +267,6 @@ impl DumbBufferStreamer {
 
     /// Processes a captured frame through the streamer pipeline.
     /// If pacing dictates emitting, converts to the target planar format and returns `Ok(Some(packet))`.
-    /// If pacer throttles this frame, returns `Ok(None)`.
     pub fn process_frame(&mut self, frame: &CapturedFrame) -> Result<Option<EncodedVideoPacket>, StreamError> {
         if !self.pacer.should_emit_frame(frame.timestamp_ns) {
             return Ok(None);

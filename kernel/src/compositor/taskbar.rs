@@ -1,9 +1,5 @@
 //! Desktop Taskbar and Window Task Item Renderer for KntonOS Compositor.
-//!
 //! Provides a 32px bottom taskbar layout, acrylic frosted glass background,
-//! top border highlight (0x33FFFFFF), dynamic window task buttons with
-//! active/minimized visual indicators, RTC digital clock widget (HH:MM:SS),
-//! and system tray status icons (Network, Volume, Battery/Power).
 
 use alloc::format;
 use alloc::string::String;

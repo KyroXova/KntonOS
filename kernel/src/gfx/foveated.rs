@@ -1,12 +1,5 @@
 //! Eye-Tracked and Center-Weighted Foveated Rasterizer.
-//!
 //! Generates high-density screen-space Shading Rate Images (SRI) dynamically based on
-//! eye-tracking gaze vectors or center-weighted focus heuristics.
-//!
-//! Preserves full 1x1 shading in the central foveal zone, steps down to 2x2 in the
-//! parafoveal zone, and drops to 4x4 in the peripheral zone. This drastically reduces
-//! pixel shader invocations (typically 40–60% or more), saving substantial memory
-//! bandwidth, battery power, and thermal headroom on handheld gaming consoles.
 
 use crate::gfx::vrs::{ShadingRate, ShadingRateImage, TileGranularity, VrsError};
 
@@ -269,7 +262,6 @@ impl FoveatedRasterizer {
     }
 
     /// Simulates a full-frame rasterization pass across the viewport using the generated SRI.
-    ///
     /// Returns a tuple: `(total_pixels, shader_invocations, reduction_percentage)`.
     pub fn simulate_frame_rasterization(&self) -> Result<(u64, u64, u32), VrsError> {
         let sri = self.generate_shading_rate_image()?;
@@ -310,9 +302,7 @@ impl FoveatedRasterizer {
     }
 
     /// Estimates battery power reduction in milliwatts based on shader invocation savings.
-    ///
     /// Given a baseline GPU dynamic shader power in mW (e.g. 6000 mW on a 15W handheld APU),
-    /// estimates active power savings assuming dynamic shader power scales linearly with invocations.
     pub fn estimate_power_savings_mw(&self, baseline_gpu_power_mw: u32, reduction_pct: u32) -> u32 {
         (baseline_gpu_power_mw as u64 * reduction_pct as u64 / 100) as u32
     }

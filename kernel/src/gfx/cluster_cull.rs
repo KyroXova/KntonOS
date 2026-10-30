@@ -1,10 +1,5 @@
 //! Direct3D 12 Dynamic Primitive Culling & Mesh-Cluster LOD Streamer Engine.
-//!
 //! Implements virtualized geometry primitive streaming (Nanite-style hierarchical clusters):
-//! - Mesh cluster descriptors with bounding spheres, normal cones, and hierarchical parent/child error bounds
-//! - GPU sub-pixel cluster culling, front-facing cone testing, and hierarchical occlusion bit-grid
-//! - Continuous LOD selection with screen-space error metric ($\le \tau < E_{\text{parent}}$)
-//! - Crack-free cluster boundary stitching across LOD transition seams
 
 #![allow(dead_code)]
 
@@ -216,9 +211,7 @@ impl ViewFrustumDesc {
 }
 
 
-// -----------------------------------------------------------------------------
 // GPU Sub-Pixel Cluster Culling, Normal Cone & Hierarchical Occlusion Bit-Grid
-// -----------------------------------------------------------------------------
 
 /// 2D Screen-space axis-aligned bounding box [min_x, min_y, max_x, max_y].
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -357,10 +350,6 @@ impl GpuClusterCuller {
 
     /// Evaluates all GPU cluster culling stages:
     /// 1. Distance & Sub-pixel bounding sphere projection test
-    /// 2. Front-facing normal cone test (backface cluster culling)
-    /// 3. Hierarchical occlusion bit-grid test
-    ///
-    /// Returns true if the cluster passes all culling tests and must be rendered.
     pub fn evaluate_cluster(
         &mut self,
         cluster: &MeshClusterDesc,
@@ -407,9 +396,7 @@ impl GpuClusterCuller {
 }
 
 
-// -----------------------------------------------------------------------------
 // Continuous Mesh-Cluster LOD Streamer & Crack-Free Boundary Stitcher
-// -----------------------------------------------------------------------------
 
 /// Seam edge record tracking boundary connectivity across adjacent clusters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -507,7 +494,6 @@ impl MeshClusterStreamer {
 
         // Selection condition:
         // 1. Current cluster geometric error <= tau (detail is sufficient)
-        // 2. Parent geometric error > tau (parent is too coarse, cannot use parent instead)
         let satisfies_refinement = cluster_screen_error <= tau && parent_screen_error > tau;
 
         // If at finest LOD (LOD 0) and even finest error > tau, we still must render finest detail
@@ -518,10 +504,6 @@ impl MeshClusterStreamer {
 
     /// Executes the complete virtualized geometry streaming pipeline:
     /// 1. Hierarchical LOD evaluation
-    /// 2. GPU cluster culling (subpixel, cone, occlusion)
-    /// 3. Crack-free boundary stitching
-    ///
-    /// Returns the slice of visible cluster IDs to be dispatched to Mesh Shaders.
     pub fn stream_visible_clusters(
         &mut self,
         frustum: &ViewFrustumDesc,
@@ -557,12 +539,9 @@ impl MeshClusterStreamer {
 }
 
 
-// -----------------------------------------------------------------------------
 // Verification Self-Test Suite
-// -----------------------------------------------------------------------------
 
 /// Comprehensive verification self-test for D3D12 Mesh-Cluster Primitive Culling & LOD Streamer.
-///
 /// Emits sentinel [KNT-GPU-CLUSTER-CULL-PASS] upon successful verification.
 pub fn test_cluster_cull_subsystem() -> bool {
     let frustum = ViewFrustumDesc {

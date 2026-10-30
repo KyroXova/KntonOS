@@ -1,10 +1,5 @@
 //! Direct3D 12 Raytracing Acceleration Structure (BVH) Memory Manager.
-//!
 //! Implements DXR 1.1 / Vulkan KHR Raytracing Bounding Volume Hierarchy (BVH) structures:
-//! - Bottom-Level Acceleration Structure (BLAS) for triangle meshes and procedural AABBs
-//! - 64-byte D3D12_RAYTRACING_INSTANCE_DESC formatting for Top-Level Acceleration Structure (TLAS)
-//! - 64-byte BVH memory alignment (D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT)
-//! - Pre-build and post-build memory size estimation and descriptor layout
 
 #![allow(dead_code)]
 
@@ -17,9 +12,7 @@ pub const D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT: u64 = 64;
 /// Required byte alignment for instance descriptors in GPU memory.
 pub const D3D12_RAYTRACING_INSTANCE_DESCS_BYTE_ALIGNMENT: u64 = 16;
 
-// -----------------------------------------------------------------------------
 // Raytracing Geometry Descriptors (BLAS Input)
-// -----------------------------------------------------------------------------
 
 /// Geometry type within a Bottom-Level Acceleration Structure.
 #[repr(u32)]
@@ -152,9 +145,7 @@ impl BottomLevelAsDesc {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Top-Level Acceleration Structure (TLAS) & Instance Descriptors
-// -----------------------------------------------------------------------------
 
 /// Exact 64-byte hardware instance descriptor (D3D12_RAYTRACING_INSTANCE_DESC / VkAccelerationStructureInstanceKHR).
 #[repr(C, align(16))]
@@ -261,9 +252,7 @@ impl TopLevelAsDesc {
 }
 
 
-// -----------------------------------------------------------------------------
 // DXR 256-Byte Aligned Scratch Buffer Allocator
-// -----------------------------------------------------------------------------
 
 /// Required byte alignment for GPU virtual addresses of raytracing scratch buffers.
 pub const D3D12_RAYTRACING_ACCELERATION_STRUCTURE_SCRATCH_BYTE_ALIGNMENT: u64 = 256;
@@ -313,9 +302,7 @@ impl RaytracingScratchAllocator {
     }
 }
 
-// -----------------------------------------------------------------------------
 // BVH Compaction Manager & Post-Build Optimizer
-// -----------------------------------------------------------------------------
 
 /// Metadata tracking post-build compaction for a Bottom-Level Acceleration Structure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

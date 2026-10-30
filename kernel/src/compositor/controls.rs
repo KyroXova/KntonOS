@@ -1,7 +1,5 @@
 //! UI Widget Hierarchy and GUI Controls for KntonOS Compositor.
-//!
 //! Provides interactive GUI widgets (Buttons, Labels, TitleBarButtons) with state feedback
-//! (Normal, Hovered, Pressed, Disabled), text centering, border transitions, and click event handling.
 
 use alloc::string::String;
 use crate::display::color::Color;

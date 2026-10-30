@@ -1,10 +1,5 @@
 //! Direct3D 12 Dynamic Micro-Mesh Displacement & Sub-Triangle Geometry LOD Compressor.
-//!
 //! Implements hardware-accelerated displaced micro-mesh geometry pipeline:
-//! - Barycentric sub-triangle recursive subdivision (levels 0 to 5, generating up to 1024 micro-triangles).
-//! - Compressed displacement encodings (UncompressedVec3, quantized 11-11-10 UNORM vectors, QuantizedScalar8/16).
-//! - Continuous distance-based sub-triangle LOD evaluation and crack-free edge stitching.
-//! - Tight Axis-Aligned Bounding Box (AABB) hierarchy generation for early view frustum and backface culling.
 
 extern crate alloc;
 
@@ -319,9 +314,7 @@ pub struct BarycentricSubdivisionTable;
 
 impl BarycentricSubdivisionTable {
     /// Resolves grid coordinate `(row i, col j)` to its linear micro-vertex index.
-    ///
     /// Row $i \in [0, N]$ and col $j \in [0, N - i]$.
-    /// Row offset = $i \cdot (N + 1) - \frac{i(i - 1)}{2}$.
     #[inline(always)]
     pub fn linear_vertex_index(n: u32, i: u32, j: u32) -> usize {
         let row_offset = (i as usize) * (n as usize + 1) - ((i as usize) * (i.saturating_sub(1) as usize)) / 2;
@@ -373,9 +366,7 @@ impl BarycentricSubdivisionTable {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Compressed Displacement Payload & Decompression Engine
-// -----------------------------------------------------------------------------
 
 /// Compressed displacement binary buffer storing micro-vertex displacements.
 #[derive(Debug, Clone)]
@@ -402,7 +393,6 @@ impl DisplacementPayload {
     }
 
     /// Packs a 3D unit/normalized displacement vector into a 32-bit 11-11-10 word.
-    ///
     /// Components in `[-1.0, 1.0]` are mapped into 11-bit X (0..2047), 11-bit Y (0..2047), and 10-bit Z (0..1023).
     pub fn pack_11_11_10(v: &MicroMeshVec3) -> u32 {
         let clamp_x = if v.x < -1.0 { -1.0 } else if v.x > 1.0 { 1.0 } else { v.x };
@@ -522,9 +512,7 @@ impl DisplacementPayload {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Displaced Micro-Mesh Container & Surface Normal Synthesis
-// -----------------------------------------------------------------------------
 
 /// Concrete displaced micro-mesh geometry container holding subdivided micro-vertices
 /// and micro-triangles.
@@ -637,9 +625,6 @@ impl DisplacedMicroMesh {
     }
 
     /// Resolves linear vertex indices along one of the three base triangle boundary edges:
-    /// - Edge 0: $V_0 \to V_1$ ($v = 0$, row $i = 0$, $j = 0..N$)
-    /// - Edge 1: $V_1 \to V_2$ ($w = 0$, $i + j = N$, $i = 0..N$, $j = N - i$)
-    /// - Edge 2: $V_0 \to V_2$ ($u = 0$, col $j = 0$, $i = 0..N$)
     pub fn get_edge_vertex_indices(&self, edge_idx: usize) -> Vec<usize> {
         let n = self.desc.subdivision_level.segments_per_edge();
         let mut indices = Vec::with_capacity((n + 1) as usize);
@@ -672,10 +657,6 @@ impl DisplacedMicroMesh {
 
     /// Performs crack-free edge stitching against an adjoining neighbor base triangle
     /// evaluated at `neighbor_level`.
-    ///
-    /// If `neighbor_level < self.desc.subdivision_level`, intermediate micro-vertices along
-    /// the shared boundary edge are linearly snapped to the coarser edge segments of the neighbor,
-    /// guaranteeing bit-exact geometric coincidence and eliminating cracks/tearing.
     pub fn stitch_edge(&mut self, edge_idx: usize, neighbor_level: SubdivisionLevel) -> usize {
         let self_level = self.desc.subdivision_level.to_u8();
         let neigh_level = neighbor_level.to_u8();
@@ -717,21 +698,13 @@ impl DisplacedMicroMesh {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Continuous Sub-Triangle LOD Governor & Distance Evaluator
-// -----------------------------------------------------------------------------
 
 /// Continuous LOD Governor that determines the optimal micro-mesh subdivision level
 /// based on camera distance and screen-space geometric fidelity thresholds.
 #[derive(Debug, Clone)]
 pub struct MicroMeshLodGovernor {
     /// Distance thresholds `[d0, d1, d2, d3, d4]` for transitions:
-    /// - `dist < d0`: Level 5 (1024 micro-triangles)
-    /// - `dist < d1`: Level 4 (256 micro-triangles)
-    /// - `dist < d2`: Level 3 (64 micro-triangles)
-    /// - `dist < d3`: Level 2 (16 micro-triangles)
-    /// - `dist < d4`: Level 1 (4 micro-triangles)
-    /// - `dist >= d4`: Level 0 (1 base triangle)
     pub distance_thresholds: [f32; 5],
 }
 
@@ -770,9 +743,7 @@ impl MicroMeshLodGovernor {
     }
 }
 
-// -----------------------------------------------------------------------------
 // 3D Axis-Aligned Bounding Box (AABB) & Micro-Mesh Bounding Hierarchy
-// -----------------------------------------------------------------------------
 
 /// 3D Axis-Aligned Bounding Box for spatial culling and BVH acceleration.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -902,14 +873,10 @@ impl MicroMeshBoundingHierarchy {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Verification Self-Test Suite
-// -----------------------------------------------------------------------------
 
 /// Comprehensive verification self-test for Direct3D 12 Dynamic Micro-Mesh
 /// Displacement & Sub-Triangle Geometry LOD Compressor.
-///
-/// Emits sentinel [KNT-GPU-MICROMESH-PASS] upon successful validation.
 pub fn test_micromesh_subsystem() -> bool {
     // 1. Verify recursive base triangle subdivision levels and micro-triangle counts
     if SubdivisionLevel::Level0.num_micro_triangles() != 1 || SubdivisionLevel::Level0.num_micro_vertices() != 3 {

@@ -1,17 +1,10 @@
 //! Direct3D 12 Constant Buffer Ring Allocator Engine.
-//!
 //! Provides lock-free bump-pointer suballocation for transient shader constants:
-//! - Strict 256-byte alignment (`D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT`)
-//! - Zero-heap-allocation per-draw constant staging
-//! - Ring buffer wrap-around with padding and capacity management
-//! - Frame retirement tracking linked to GPU timeline fence progression
 
 extern crate alloc;
 use alloc::vec::Vec;
 
-// -----------------------------------------------------------------------------
 // Constants and Errors
-// -----------------------------------------------------------------------------
 
 /// D3D12 constant buffer data placement alignment requirement (256 bytes).
 pub const D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT: usize = 256;
@@ -34,9 +27,7 @@ pub const fn align_up(value: usize, alignment: usize) -> usize {
     (value + (alignment - 1)) & !(alignment - 1)
 }
 
-// -----------------------------------------------------------------------------
 // Suballocation Slices
-// -----------------------------------------------------------------------------
 
 /// Memory slice allocated from the transient constant buffer ring.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,9 +42,7 @@ pub struct ConstantBufferSlice {
     pub aligned_size_bytes: usize,
 }
 
-// -----------------------------------------------------------------------------
 // Constant Buffer Ring Allocator
-// -----------------------------------------------------------------------------
 
 /// High-performance bump-pointer ring buffer allocator for GPU shader constants.
 pub struct ConstantBufferRingAllocator {
@@ -199,9 +188,7 @@ impl ConstantBufferRingAllocator {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Unit Tests & Verification
-// -----------------------------------------------------------------------------
 
 /// Unit test verifying 256-byte aligned constant buffer ring allocator and transient suballocation.
 pub fn verify_ring_suballocation_and_alignment() -> bool {
@@ -294,9 +281,7 @@ pub fn verify_ring_suballocation_and_alignment() -> bool {
 }
 
 
-// -----------------------------------------------------------------------------
 // Multi-Frame Ring Chunk Retirement
-// -----------------------------------------------------------------------------
 
 /// Metadata for a recorded frame's constant buffer allocations in the ring.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -390,9 +375,7 @@ impl FrameRetirementTracker {
     }
 
     /// Retires all completed frame chunks whose fence values are <= `completed_fence_value`.
-    ///
     /// Reclaims memory by advancing the ring allocator's `tail` pointer to the newest
-    /// retired frame's end offset, freeing space for subsequent frames without stalls.
     pub fn retire_completed_frames(
         &mut self,
         ring: &mut ConstantBufferRingAllocator,
@@ -476,7 +459,6 @@ pub fn verify_frame_retirement_and_fence_sync() -> bool {
 
     // 4. Test Fence Progression:
     // Signal GPU completed fence value = 5 (less than Frame 1's fence 10)
-    // Nothing should retire
     let reclaimed_0 = tracker.retire_completed_frames(&mut ring, 5);
     if reclaimed_0 != 0 || ring.tail != 0 || tracker.in_flight_frame_count() != 3 {
         return false;

@@ -1,10 +1,5 @@
 //! Direct3D 12 Variable Rate Shading (VRS Tier 2) Subsystem.
-//!
 //! Implements hardware-accelerated Variable Rate Shading (VRS) Tier 2 specifications:
-//! - Discrete shading rates (1x1, 1x2, 2x1, 2x2, 2x4, 4x2, 4x4)
-//! - Combiner modes (Passthrough, Override, Min, Max, Sum)
-//! - Screen-space Shading Rate Image (SRI) tile map generation and sampling (8x8, 16x16, 32x32)
-//! - Per-draw command list shading rate configuration and multi-source rate resolution.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -23,9 +18,7 @@ pub enum VrsError {
 }
 
 /// Direct3D 12 discrete coarse pixel shading rates.
-///
 /// Follows D3D12_SHADING_RATE enumeration bitmasks where the lower 2 bits represent
-/// vertical coarse sizing and bits [3:2] represent horizontal coarse sizing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
 pub enum ShadingRate {
@@ -246,9 +239,7 @@ impl PerDrawShadingState {
 }
 
 /// Screen-space Shading Rate Image (SRI) tile map surface.
-///
 /// Divides the screen into tiles of `TileGranularity` (e.g. 8x8, 16x16, 32x32 pixels),
-/// each specifying the coarse shading rate for rasterization in that tile.
 #[derive(Debug, Clone)]
 pub struct ShadingRateImage {
     /// Viewport width in pixels.
@@ -433,9 +424,7 @@ pub struct VrsMetrics {
 
 impl VrsMetrics {
     /// Calculates shader invocation reduction percentage (0 to 99%).
-    ///
     /// For example, if total_pixels is 1,000,000 and effective_invocations is 450,000,
-    /// the reduction is 55%.
     pub fn invocation_reduction_percentage(&self) -> u32 {
         if self.total_pixels_rasterized == 0 {
             return 0;
@@ -452,9 +441,7 @@ impl VrsMetrics {
 }
 
 /// Direct3D 12 Variable Rate Shading Tier 2 Engine.
-///
 /// Orchestrates per-draw command list shading rates, screen-space Shading Rate Image (SRI)
-/// tile maps, multi-stage combiner state resolution, and rasterizer shader invocation metrics.
 #[derive(Debug)]
 pub struct VariableRateShadingManager {
     /// Supported VRS hardware tier.
@@ -529,7 +516,6 @@ impl VariableRateShadingManager {
 
     /// Resolves the final effective coarse shading rate for a given screen pixel coordinate `(x, y)`,
     /// taking into account the per-draw base rate, the screen-space SRI, combiners, and optional
-    /// per-primitive SV_ShadingRate.
     pub fn resolve_shading_rate(
         &self,
         screen_x: u32,
@@ -593,9 +579,7 @@ impl VariableRateShadingManager {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Direct3D 12 VRS Tier 2 Screen-Space Shading Rate Image (SRI) Descriptors
-// -----------------------------------------------------------------------------
 
 /// Raw D3D12 8-bit Shading Rate tile encoding constants.
 pub const D3D12_VRS_SHADING_RATE_1X1: u8 = 0x0;
@@ -780,17 +764,10 @@ impl Default for ContrastSensitivityConfig {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Contrast-Adaptive & Motion-Vector Shading Rate Image Generator
-// -----------------------------------------------------------------------------
 
 /// Direct3D 12 Contrast-Adaptive and Motion-Vector VRS Shading Rate Image Generator.
-///
 /// Implements dual-stream perceptual heuristics:
-/// 1. Luminance Michelson Contrast: Identifies high-frequency geometry/specular edges
-///    and pins them to `Rate1x1` to prevent aliasing.
-/// 2. Motion Velocity Analysis: Identifies fast camera or object movement and coarsens
-///    shading up to `Rate4x4` (or directional `Rate4x2`/`Rate2x4`) under motion blur.
 #[derive(Debug, Clone)]
 pub struct ContrastAdaptiveVrsGenerator {
     /// Configuration thresholds.
@@ -937,9 +914,7 @@ impl ContrastAdaptiveVrsGenerator {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Foveated Peripheral Shading Rate Generator & Multi-Source Combiner Engine
-// -----------------------------------------------------------------------------
 
 /// Configuration for concentric radial foveated peripheral shading.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1138,14 +1113,10 @@ impl UnifiedVrsEngine {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Verification Self-Test Suite
-// -----------------------------------------------------------------------------
 
 /// Comprehensive verification self-test for Direct3D 12 Variable-Rate Shading (VRS)
 /// Tier 2 Screen-Space Shading Rate Image Generator.
-///
-/// Emits sentinel [KNT-GPU-VRS-TIER2-PASS] upon successful validation.
 pub fn test_vrs_tier2_shading_rate_image_subsystem() -> bool {
     // 1. Verify D3D12 VRS Tier 2 shading rates and tile encodings
     let rates = [

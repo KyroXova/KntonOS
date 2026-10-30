@@ -1,11 +1,5 @@
 //! Direct3D 12 Dynamic Depth Bounds Testing & Conservative Rasterization Engine.
-//!
 //! Provides hardware-accelerated early-Z cull optimization and gap-free conservative
-//! rasterization for deferred shading light volumes, voxelization, and ray-traced shadows:
-//! - Dynamic Depth Bounds Testing (`OMSetDepthBounds` / DBT) within $[z_{min}, z_{max}]$
-//! - Conservative Rasterization (Tiers 1, 2, 3) with sub-pixel uncertainty dilation
-//! - Sub-pixel sample coverage masks & `SV_InnerCoverage` detection
-//! - Early-Z rejection pipeline & rasterizer stats tracking
 
 #![allow(dead_code)]
 
@@ -193,9 +187,7 @@ impl PixelAabb {
 }
 
 
-// -----------------------------------------------------------------------------
 // Depth Buffer & Early-Z Rejection Pipeline
-// -----------------------------------------------------------------------------
 
 /// Depth test comparison function (`D3D12_COMPARISON_FUNC`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -325,12 +317,7 @@ impl DepthBoundsEvaluator {
     }
 
     /// Evaluates a candidate fragment against Depth Bounds Testing and Early-Z.
-    ///
     /// Pipeline Flow:
-    /// 1. Reads current buffer depth $z_{buf}$.
-    /// 2. Tests $z_{buf}$ against $[z_{min}, z_{max}]$. If outside, culled immediately without shading!
-    /// 3. Tests $z_{frag}$ against $z_{buf}$ via `depth_func`. If failed, culled.
-    /// 4. If passed and `depth_write_enable`, writes $z_{frag}$ into buffer.
     pub fn evaluate_fragment(
         &mut self,
         depth_buffer: &mut DepthBuffer,
@@ -368,9 +355,7 @@ impl DepthBoundsEvaluator {
 }
 
 
-// -----------------------------------------------------------------------------
 // Conservative Rasterization Boundary Expander & Inner Coverage Engine
-// -----------------------------------------------------------------------------
 
 /// 2D Triangle representation in screen space.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -460,7 +445,6 @@ impl Triangle2D {
 
         // Test 3: Separating Axis Theorem (SAT) between pixel AABB and triangle
         // Pixel intersects triangle if corners are inside, or triangle vertices are inside pixel box,
-        // or triangle edges intersect pixel box edges.
         let mut is_covered = center_covered || (corners_inside > 0);
 
         if !is_covered {
@@ -631,12 +615,9 @@ impl ConservativeRasterEngine {
 }
 
 
-// -----------------------------------------------------------------------------
 // Verification Self-Test Suite
-// -----------------------------------------------------------------------------
 
 /// Comprehensive verification self-test for D3D12 Depth Bounds Testing & Conservative Rasterization.
-///
 /// Emits sentinel [KNT-GPU-DEPTH-BOUNDS-PASS] upon successful verification.
 pub fn test_depth_bounds_subsystem() -> bool {
     // 1. Verify Depth Bounds State validation and range testing

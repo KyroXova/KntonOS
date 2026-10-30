@@ -1,8 +1,5 @@
 //! Desktop Shell Compositor & Window Manager for KntonOS.
-//!
 //! Provides hardware-accelerated linear framebuffer abstractions, dirty rectangle damage
-//! tracking, mouse cursor sprite overlay, Fluent window frame styling, and double-buffered
-//! multi-window scene composition.
 
 pub mod acrylic;
 pub mod controls;

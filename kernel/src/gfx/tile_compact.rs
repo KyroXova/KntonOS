@@ -1,11 +1,5 @@
 //! Direct3D 12 Dynamic Tile Pool Memory Compactor & Sparse Virtual Texture Eviction Engine.
-//!
 //! Implements Direct3D 12 Tier 2/3 Tiled Resources specification:
-//! - Standard 64KB physical tile pool allocations (`D3D12_TILED_RESOURCE_TILE_SIZE_IN_BYTES`).
-//! - Sparse virtual texture address spaces, multi-resolution mip tiling, and sub-resource coordinate mapping.
-//! - Priority-driven and LRU-ordered tile residency tracking and zero-overhead NULL tile unmapping.
-//! - Dynamic physical tile pool compaction and transparent page-table remapping.
-//! - Memory pressure governor with automated unreferenced/low-LOD tile eviction and Min-LOD clamping.
 
 extern crate alloc;
 
@@ -356,7 +350,6 @@ impl SparseVirtualTextureDescriptor {
 }
 
 /// Sparse Virtual Texture Page-Table Mapping.
-///
 /// Maps virtual tile indices to their residency state (`Unmapped`, `Resident`, or `Aliased`).
 #[derive(Debug, Clone)]
 pub struct SparseTileMappingTable {
@@ -401,9 +394,7 @@ impl SparseTileMappingTable {
 }
 
 /// Direct3D 12 Sparse Virtual Texture Object.
-///
 /// Manages virtual tile address space, subresource tiling descriptors,
-/// and residency mappings to 64KB physical tile pool allocations.
 #[derive(Debug, Clone)]
 pub struct SparseVirtualTexture {
     /// Resource configuration descriptor.
@@ -544,8 +535,6 @@ impl SparseVirtualTexture {
 
     /// Transparently remaps any virtual references pointing to `old_physical_id`
     /// to point to `new_physical_id`.
-    ///
-    /// Returns the number of virtual tile entries updated.
     pub fn remap_physical_tile(&mut self, old_physical_id: u32, new_physical_id: u32) -> usize {
         let mut count = 0;
         for entry in self.mapping_table.mappings.iter_mut() {
@@ -565,9 +554,7 @@ impl SparseVirtualTexture {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Tile Pool Dynamic Memory Compactor & Physical Page Relocation
-// -----------------------------------------------------------------------------
 
 /// Report on fragmentation and contiguous allocation headroom in the physical tile pool.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -619,10 +606,7 @@ pub struct CompactionResult {
 }
 
 /// Direct3D 12 Tile Pool Dynamic Memory Compactor.
-///
 /// Implements two-pointer zero-fragmentation compaction:
-/// Relocates allocated 64KB physical tiles from high addresses into low unallocated holes,
-/// transparently remapping all virtual texture page tables without coordinate disruption.
 pub struct TilePoolCompactor;
 
 impl TilePoolCompactor {
@@ -774,9 +758,7 @@ impl TilePoolCompactor {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Sparse Virtual Texture LRU Eviction Governor & Memory Pressure Responder
-// -----------------------------------------------------------------------------
 
 /// Candidate physical tile evaluated for eviction during memory pressure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -826,13 +808,7 @@ pub struct EvictionResult {
 }
 
 /// Sparse Virtual Texture LRU Eviction Governor & Memory Pressure Responder.
-///
 /// Implements D3D12 Tier 2/3 compliant texture residency management:
-/// - Monitors tile pool memory pressure against high-watermark thresholds.
-/// - Evicts unreferenced, low-priority, or high-index (fine LOD) tiles in strict LRU order.
-/// - Protects pinned tiles and critical coarse mips / mip tails from eviction.
-/// - Performs zero-overhead NULL tile unmapping on evicted coordinates.
-/// - Dynamically recalculates Min-LOD clamping to prevent shader sampling artifacts.
 #[derive(Debug, Clone)]
 pub struct SparseVirtualTextureEvictionGovernor {
     /// Pool utilization threshold (e.g., 0.85 for 85%) that triggers automated eviction.
@@ -874,7 +850,6 @@ impl SparseVirtualTextureEvictionGovernor {
     }
 
     /// Dynamically recalculates the minimum resident LOD clamp for a sparse virtual texture.
-    ///
     /// If fine mips have unmapped tiles, the GPU sampler clamps sampling to coarser resident mips.
     pub fn recalculate_min_lod(texture: &mut SparseVirtualTexture) -> f32 {
         let mut min_lod: f32 = 0.0;
@@ -901,9 +876,7 @@ impl SparseVirtualTextureEvictionGovernor {
     }
 
     /// Gathers and sorts all candidate tiles eligible for eviction.
-    ///
     /// Excludes pinned tiles and Critical priority tiles.
-    /// Sorts candidates primarily by `priority` ascending (Low first), then by `lru_timestamp` ascending (oldest first).
     pub fn collect_candidates(pool: &PhysicalTilePool) -> Vec<EvictionCandidate> {
         let mut candidates = Vec::new();
 
@@ -1022,14 +995,10 @@ impl SparseVirtualTextureEvictionGovernor {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Verification Self-Test Suite
-// -----------------------------------------------------------------------------
 
 /// Comprehensive verification self-test for Direct3D 12 Dynamic Tile Pool
 /// Memory Compactor & Sparse Virtual Texture Eviction Engine.
-///
-/// Emits sentinel [KNT-GPU-TILE-COMPACT-PASS] upon successful validation.
 pub fn test_tile_pool_compactor_and_eviction_subsystem() -> bool {
     // 1. Verify standard 64KB physical tile pool allocations and sparse virtual texture address spaces
     let mut pool = PhysicalTilePool::new(16);

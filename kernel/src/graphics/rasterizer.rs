@@ -1,8 +1,5 @@
 //! Sub-pixel Barycentric Triangle Rasterizer with 16-bit Depth Buffering and Flat/Gouraud Shading.
-//!
 //! Implements fixed-point 28.4 sub-pixel edge functions, edge equation setup,
-//! 16-bit Z-buffer depth testing, perspective-correct depth testing, and
-//! vertex color attribute interpolation (Flat and Gouraud shading modes).
 
 use alloc::vec::Vec;
 use super::types::{Color4, Triangle3D, Vec3};

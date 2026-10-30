@@ -1,7 +1,5 @@
 //! Wayland Protocol Wire Encoding/Decoding & Core Interface Objects.
-//!
 //! Provides binary serialization for Wayland IPC wire format (object ID, opcode, size,
-//! and strongly-typed arguments) and core Wayland interface object tables.
 
 use alloc::vec::Vec;
 
@@ -12,9 +10,6 @@ pub mod surface;
 pub use surface::*;
 
 /// Standard Wayland wire protocol message header:
-/// - 32-bit sender object ID
-/// - 16-bit opcode
-/// - 16-bit message size in bytes (header + payload, 4-byte aligned)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WlMessageHeader {
     pub object_id: u32,

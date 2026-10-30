@@ -1,23 +1,12 @@
 //! Unified Game State Overlay Compositor & Zero-Copy Hardware Cursor Plane Subsystem.
-//!
 //! Provides an ultra-low-overhead in-game Quick-Access overlay compositor (triggered via
-//! dedicated handheld buttons like Steam Deck '...' or ROG Ally Armoury Crate), hardware cursor
-//! plane with zero-copy scanout composition, and quick settings management.
-//!
-//! Architecture:
-//! - Hardware Display Plane Descriptors (Primary, Overlay, Cursor) with DRM FourCC formats
-//! - Sub-pixel Zero-Copy Hardware Cursor Plane & SIMD Fixed-Point Alpha Blending Pipeline
-//! - Quick Settings Engine (TDP 5W-30W, Framerate limiter 30/40/60/120Hz, Fan acoustic modes)
-//! - Handheld QAM Button Trigger & Smooth Slide Transition Physics
 
 extern crate alloc;
 
 use alloc::vec::Vec;
 use alloc::string::String;
 
-// =============================================================================
 // 1. DRM Pixel Formats & Plane Constants
-// =============================================================================
 
 pub const DRM_FORMAT_XRGB8888: u32 = 0x34325258; // FourCC XR24
 pub const DRM_FORMAT_ARGB8888: u32 = 0x34325241; // FourCC AR24
@@ -32,9 +21,7 @@ pub const PLANE_ZPOS_CURSOR: u32  = 2;
 pub const DEFAULT_QAM_WIDTH: u32 = 340;
 pub const DEFAULT_CURSOR_SIZE: u32 = 64;
 
-// -----------------------------------------------------------------------------
 // Plane Geometry
-// -----------------------------------------------------------------------------
 
 /// 2D Integer Rectangle for display plane source and destination coordinates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -67,9 +54,7 @@ impl PlaneRect {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Hardware Plane Types & Descriptors
-// -----------------------------------------------------------------------------
 
 /// Hardware display plane classification in DRM/KMS scanout pipe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,9 +122,7 @@ impl OverlayPlaneDescriptor {
     }
 }
 
-// =============================================================================
 // 2. Handheld Quick-Access Menu (QAM) Trigger & Layout
-// =============================================================================
 
 /// Dedicated handheld physical quick-access buttons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -223,7 +206,6 @@ impl QuickAccessMenuLayout {
     }
 
     /// Advances the smooth cubic ease-out slide animation.
-    ///
     /// Returns the current on-screen X offset for the overlay plane.
     pub fn tick_animation(&mut self, delta_seconds: f32) -> i32 {
         const ANIMATION_DURATION: f32 = 0.15; // 150ms smooth transition
@@ -310,9 +292,7 @@ impl QuickAccessMenuLayout {
     }
 }
 
-// =============================================================================
 // 3. Hardware Cursor Plane & Sub-Pixel Scanout Composition
-// =============================================================================
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CursorType {
@@ -444,9 +424,7 @@ impl HardwareCursorPlane {
     }
 }
 
-// =============================================================================
 // 4. Alpha Blending Pipeline (Porter-Duff Over Fixed-Point Engine)
-// =============================================================================
 
 pub struct AlphaBlendPipeline;
 
@@ -558,9 +536,7 @@ impl AlphaBlendPipeline {
     }
 }
 
-// =============================================================================
 // 5. Quick Settings Manager (TDP, Framerate, Fan, Brightness, Audio, Opacity)
-// =============================================================================
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FpsLimit {
@@ -778,9 +754,7 @@ impl QuickSettingsManager {
 }
 
 
-// =============================================================================
 // 6. Subsystem Verification Suite & Boot Sentinel
-// =============================================================================
 
 /// Verification test suite for Unified Game State Overlay Compositor & Zero-Copy Hardware Cursor Plane Subsystem (TASK-KNT-109).
 pub fn test_game_overlay_and_cursor_subsystem() -> bool {
@@ -928,9 +902,7 @@ pub fn test_game_overlay_and_cursor_subsystem() -> bool {
     true
 }
 
-// -----------------------------------------------------------------------------
 // Unit Tests for Commit 1
-// -----------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

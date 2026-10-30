@@ -1,18 +1,11 @@
 //! Kernel Hardware Queue Submission Manager & GPU Fence Engine.
-//!
 //! Implements modern low-level multi-queue submission (Direct3D 12 / Vulkan model):
-//! - Independent hardware queues: Graphics (Universal), Compute, and DMA Copy
-//! - Monotonic 64-bit GPU fences for cross-queue synchronization and CPU polling
-//! - Hardware queue command validation and submission rings
-//! - GPU Hang Watchdog Timer with timeout detection and recovery state handling
 
 extern crate alloc;
 use alloc::vec::Vec;
 use crate::gfx::cmdbuf::{CommandStreamReader, GpuCommandBuffer, GpuCommandOpcode};
 
-// -----------------------------------------------------------------------------
 // Hardware Queue Types & Submission Status
-// -----------------------------------------------------------------------------
 
 /// Hardware execution queue types.
 #[repr(u32)]
@@ -35,9 +28,7 @@ pub enum SubmissionStatus {
     TimedOut,
 }
 
-// -----------------------------------------------------------------------------
 // Monotonic 64-bit GPU Fence
-// -----------------------------------------------------------------------------
 
 /// Monotonic 64-bit hardware synchronization fence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,9 +80,7 @@ impl GpuFence {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Hardware Queue Submissions
-// -----------------------------------------------------------------------------
 
 /// A single submission batch submitted to a hardware queue.
 #[derive(Debug, Clone)]
@@ -195,9 +184,7 @@ impl HardwareQueue {
     }
 }
 
-// -----------------------------------------------------------------------------
 // GPU Watchdog & Hang Detection
-// -----------------------------------------------------------------------------
 
 /// Hardware queue watchdog monitor to detect and recover from GPU hangs.
 #[derive(Debug, Clone, Copy)]
@@ -240,9 +227,7 @@ impl GpuWatchdog {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Kernel Hardware Queue Submission Engine
-// -----------------------------------------------------------------------------
 
 /// Central GPU submission engine managing queues, fences, and the watchdog.
 #[derive(Debug)]
@@ -364,9 +349,7 @@ impl KernelGpuSubmissionEngine {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Unit Tests & Verification
-// -----------------------------------------------------------------------------
 
 /// Unit test verifying multi-queue hardware submission, fence ordering, and watchdog hang detection.
 pub fn verify_hardware_queue_and_fence_engine() -> bool {
@@ -469,8 +452,6 @@ pub fn verify_hardware_queue_and_fence_engine() -> bool {
 
     // 8. Progress queues through timeline:
     // At t = 150ms: Copy queue executes and completes, signaling Fence 0 @ 1.
-    // Compute queue now sees Fence 0 @ 1 completed, executes and signals Fence 1 @ 1.
-    // Graphics queue sees Fence 1 @ 1 completed, executes and signals Fence 2 @ 1.
     if !engine.progress_queues(150) {
         return false;
     }

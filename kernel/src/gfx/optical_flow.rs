@@ -1,8 +1,5 @@
 //! Direct3D 12 Hardware Optical Flow Vector Accelerator & Frame Interpolation Motion Engine.
-//!
 //! Provides hardware-accelerated optical flow vector estimation, hierarchical block matching
-//! with sub-pixel 1/4th-pel accuracy, cost surface evaluation, dynamic disocclusion mask detection,
-//! and bidirectional temporal motion warping for driver-level frame generation (DLSS 3 / FSR 3 style).
 
 use alloc::vec::Vec;
 
@@ -339,9 +336,7 @@ impl OpticalFlowDescriptor {
 }
 
 
-// -----------------------------------------------------------------------------
 // Frame Buffers, Pyramids & Hierarchical Block Matching (HBM)
-// -----------------------------------------------------------------------------
 
 /// Grayscale / luminance frame buffer used for hardware motion estimation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -715,15 +710,10 @@ impl OpticalFlowAccelerator {
 }
 
 
-// -----------------------------------------------------------------------------
 // Disocclusion Mask Detection & Bidirectional Temporal Motion Warping
-// -----------------------------------------------------------------------------
 
 /// Dynamic disocclusion mask identifying regions uncovered by motion.
-///
 /// In regions where foreground objects translate, previously occluded background
-/// is exposed (disocclusion). Motion warping into these regions cannot rely on standard
-/// temporal reprojection and must blend or smoothly fill from alternate sources.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DisocclusionMask {
     pub width: u32,
@@ -785,9 +775,7 @@ impl DisocclusionMask {
     }
 
     /// Detects disocclusions using a Forward-Backward Vector Consistency Check.
-    ///
     /// For each pixel (x, y), evaluates whether $V_{\text{forward}}(x, y) + V_{\text{backward}}(x + V_F) \approx 0$.
-    /// Inconsistent vectors exceeding `consistency_threshold_px` are marked as disocclusions.
     pub fn detect(
         forward: &OpticalFlowVectorField,
         backward: &OpticalFlowVectorField,
@@ -849,9 +837,7 @@ impl MotionWarpEngine {
     }
 
     /// Synthesizes an intermediate frame at normalized time $t \in [0.0, 1.0]$.
-    ///
     /// Warps Frame 0 forward by $+t \cdot V_F$ and Frame 1 backward by $-(1-t) \cdot V_B$.
-    /// Uses disocclusion mask to eliminate tearing and ghosting in newly uncovered regions.
     pub fn warp_bidirectional(
         &mut self,
         frame_0: &FrameBuffer,
@@ -976,14 +962,10 @@ impl FrameInterpolator {
 }
 
 
-// -----------------------------------------------------------------------------
 // Verification Self-Test Suite
-// -----------------------------------------------------------------------------
 
 /// Comprehensive verification self-test for Direct3D 12 Hardware Optical Flow
 /// Vector Accelerator and Frame Interpolation Motion Engine.
-///
-/// Emits sentinel [KNT-GPU-OPTICAL-FLOW-PASS] upon successful verification.
 pub fn test_optical_flow_subsystem() -> bool {
     // 1. Verify MotionVector 16.16 fixed-point arithmetic and quarter-pel conversion
     let mv = MotionVector::from_quarter_pel(4, -8);

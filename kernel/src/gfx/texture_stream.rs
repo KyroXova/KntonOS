@@ -1,11 +1,5 @@
 //! Direct3D 12 Block-Compressed GPU Texture Streaming Pipeline.
-//!
 //! Provides esports-grade zero-copy texture streaming:
-//! - Direct3D 12 BC1/BC3/BC7 block-compressed texture descriptors
-//! - Mip-level pyramid resolution calculation and pitch alignment
-//! - Priority-based mip residency management (near-field / camera viewport visible mips streamed first)
-//! - DirectStorage NVMe DMA request generation directly into GPU BAR1 VRAM
-//! - Memory-pressure driven mip eviction keeping base coarse mips resident
 
 extern crate alloc;
 
@@ -192,9 +186,7 @@ impl StreamingTexture {
 }
 
 /// GPU Texture Streaming Manager.
-///
 /// Coordinates on-demand mip streaming, priority calculation based on camera distance,
-/// DirectStorage request dispatch, and resident texture memory paging.
 pub struct TextureStreamManager {
     pub textures: Vec<StreamingTexture>,
     pub gpu_aperture: GpuBarAperture,

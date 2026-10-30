@@ -1,19 +1,12 @@
 //! Kernel-Direct Real-Time In-Game Frame Capture HDR Tonemapper & Ultra-Low-Latency
 //! Display Mirroring Streamer Subsystem.
-//!
-//! Provides zero-copy frame capture ring buffer taps interfacing directly with the
-//! display compositor scanout engine, real-time fixed-point integer Reinhard and ACES
-//! filmic tonemapping for HDR10 (BT.2020) and scRGB linear surfaces, low-latency
-//! scanline slicing and packetization, and an adaptive network/USB congestion governor.
 
 #![allow(dead_code)]
 
 extern crate alloc;
 use alloc::vec::Vec;
 
-// -----------------------------------------------------------------------------
 // Magic Constants & Protocol Definitions
-// -----------------------------------------------------------------------------
 
 /// Magic identifier for KntonOS display mirroring network/USB streaming packets ('KNTH').
 pub const STREAM_MAGIC: u32 = 0x4B4E5448;
@@ -33,9 +26,7 @@ pub const FP_ONE_Q16: i32 = 65536;
 /// Fixed-point scale factor for 8.8 fixed-point arithmetic ($1.0 = 256$).
 pub const FP_ONE_Q8: i32 = 256;
 
-// -----------------------------------------------------------------------------
 // Pixel Formats & Color Spaces
-// -----------------------------------------------------------------------------
 
 /// Frame capture source and destination pixel formats.
 #[repr(u8)]
@@ -80,9 +71,7 @@ impl HdrPixelFormat {
     }
 }
 
-// -----------------------------------------------------------------------------
 // HDR Tonemapping Curves & Configuration
-// -----------------------------------------------------------------------------
 
 /// Mathematical tone mapping curve operator.
 #[repr(u8)]
@@ -141,9 +130,7 @@ impl TonemapParameters {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Zero-Copy Frame Capture Ring Buffer
-// -----------------------------------------------------------------------------
 
 /// State transitions of a zero-copy frame capture ring slot.
 #[repr(u8)]
@@ -303,9 +290,7 @@ impl FrameCaptureRing {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Ultra-Low-Latency Display Mirroring Streaming Packet Protocol
-// -----------------------------------------------------------------------------
 
 /// Packet types dispatched over network or USB streaming transport.
 #[repr(u8)]
@@ -467,9 +452,7 @@ impl MirrorStreamPacketHeader {
 }
 
 
-// -----------------------------------------------------------------------------
 // Real-Time Fixed-Point HDR Tonemapper & Gamut Compressor Implementation
-// -----------------------------------------------------------------------------
 
 /// Unpack 32-bit packed HDR10 R10G10B10A2 pixel into 10-bit components and 2-bit alpha.
 #[inline(always)]
@@ -492,7 +475,6 @@ pub fn pack_r10g10b10a2(r: u16, g: u16, b: u16, a: u8) -> u32 {
 
 /// Convert 10-bit HDR10 PQ sample value into normalized linear luminance in 16.16 fixed point.
 /// Calibrated so that 512 (reference SDR paper-white) maps to 1.0 (65536),
-/// and 1023 (maximum HDR peak) maps to 4.0x (262144).
 #[inline]
 pub fn hdr10_to_linear_q16(val_10bit: u16) -> u32 {
     let v = val_10bit.min(1023) as u32;
@@ -516,7 +498,6 @@ pub fn scrgb_to_linear_q16(val_16bit: u16) -> u32 {
 
 /// Apply extended Reinhard tonemapping curve:
 /// $L_{out} = L_{in} (1 + L_{in} / L_{w}^2) / (1 + L_{in})$.
-/// Computed entirely in 64-bit integer arithmetic without floating-point instructions.
 pub fn apply_tonemap_reinhard(x_q16: u32, white_point_q16: u32) -> u32 {
     if x_q16 == 0 {
         return 0;
@@ -536,7 +517,6 @@ pub fn apply_tonemap_reinhard(x_q16: u32, white_point_q16: u32) -> u32 {
 
 /// Apply Academy Color Encoding System (ACES) filmic S-curve approximation:
 /// $f(x) = x(2.51x + 0.03) / (x(2.43x + 0.59) + 0.14)$.
-/// Computed entirely with fixed-point integer arithmetic in Q16.16.
 pub fn apply_tonemap_aces(x_q16: u32) -> u32 {
     if x_q16 == 0 {
         return 0;
@@ -545,10 +525,6 @@ pub fn apply_tonemap_aces(x_q16: u32) -> u32 {
 
     // ACES coefficients scaled to Q16.16:
     // a = 2.51 * 65536 = 164495
-    // b = 0.03 * 65536 = 1966
-    // c = 2.43 * 65536 = 159252
-    // d = 0.59 * 65536 = 38666
-    // e = 0.14 * 65536 = 9175
     let a: u64 = 164495;
     let b: u64 = 1966;
     let c: u64 = 159252;
@@ -571,8 +547,6 @@ pub fn apply_tonemap_aces(x_q16: u32) -> u32 {
 
 /// Convert BT.2020 wide color gamut primaries to BT.709 (sRGB) primaries using 16.16 fixed-point matrix:
 /// [R_709]   [ 1.6605  -0.5876  -0.0728 ] [R_2020]
-/// [G_709] = [ -0.1246  1.1329  -0.0083 ] [G_2020]
-/// [B_709]   [ -0.0182  -0.1006  1.1187 ] [B_2020]
 pub fn apply_bt2020_to_bt709_gamut(r_q16: i32, g_q16: i32, b_q16: i32) -> (i32, i32, i32) {
     let r = r_q16 as i64;
     let g = g_q16 as i64;
@@ -852,9 +826,7 @@ impl HdrTonemapper {
 }
 
 
-// -----------------------------------------------------------------------------
 // Display Mirroring Network Packet Streamer & Scanline Chunker
-// -----------------------------------------------------------------------------
 
 /// Individual packet slice containing binary header and network payload.
 #[derive(Debug, Clone)]
@@ -1268,9 +1240,7 @@ impl DisplayMirrorStreamer {
 }
 
 
-// -----------------------------------------------------------------------------
 // In-Kernel Verification Self-Test Suite
-// -----------------------------------------------------------------------------
 
 /// Verify zero-copy frame capture ring slot allocation, state transitions, and backlog handling.
 pub fn test_frame_capture_ring() -> bool {
@@ -1622,8 +1592,6 @@ pub fn test_end_to_end_hdr_streaming_pipeline() -> bool {
 
 /// Comprehensive verification self-test suite for Kernel-Direct Real-Time In-Game
 /// Frame Capture HDR Tonemapper & Ultra-Low-Latency Display Mirroring Streamer.
-///
-/// Emits sentinel [KNT-VIDEO-HDR-STREAM-PASS] upon successful validation.
 pub fn test_video_hdr_stream_subsystem() -> bool {
     crate::serial_write_str("[KNT-VIDEO-HDR-STREAM-TEST] Running frame capture HDR tonemapper & display mirroring verification suite...\r\n");
 

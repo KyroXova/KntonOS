@@ -1,7 +1,5 @@
 //! Direct3D / Vulkan-Style Command Buffer Recording & Hardware Queue Submission Engine.
-//!
 //! Provides low-overhead command packet encoding, linear memory command buffer recording,
-//! multi-queue hardware submission (Graphics, Compute, Copy), monotonic GPU fences, and watchdog timers.
 
 pub mod cmdbuf;
 pub mod compute;
@@ -51,8 +49,6 @@ pub use micromesh::*;
 
 /// Comprehensive verification self-test suite for Direct3D / Vulkan-Style Command Buffer
 /// Recording and Hardware Queue Submission Engine.
-///
-/// Emits sentinel [KNT-GPU-CMDBUF-PASS] upon successful validation.
 pub fn test_gpu_command_buffer_and_queue_subsystem() -> bool {
     // 1. Verify 64-bit compact command packet encoding, linear recording, and stream decoding
     if !verify_command_packet_encoding_and_recorder() {
@@ -78,8 +74,6 @@ pub fn test_gpu_command_buffer_and_queue_subsystem() -> bool {
 
 /// Comprehensive verification self-test suite for Direct3D 12 Dynamic Constant Buffer Pool
 /// and Ring Allocator Engine.
-///
-/// Emits sentinel [KNT-GPU-CBV-PASS] upon successful validation.
 pub fn test_constant_buffer_pool_subsystem() -> bool {
     crate::serial_write_str("[KNT-GFX] Testing Direct3D 12 dynamic constant buffer pool & ring allocator...\r\n");
 
@@ -110,8 +104,6 @@ pub fn test_constant_buffer_pool_subsystem() -> bool {
 
 /// Comprehensive verification self-test suite for Direct3D 12 Raytracing Acceleration Structure (BVH)
 /// Memory Manager & DispatchRays Engine.
-///
-/// Emits sentinel [KNT-GPU-DXR-PASS] upon successful validation.
 pub fn test_dxr_acceleration_structure_subsystem() -> bool {
     crate::serial_write_str("[KNT-GFX] Testing Direct3D 12 raytracing acceleration structures & DispatchRays...\r\n");
 
@@ -240,8 +232,6 @@ pub fn test_dxr_acceleration_structure_subsystem() -> bool {
 
 /// Comprehensive verification self-test suite for Direct3D 12 Variable Rate Shading (VRS Tier 2)
 /// and Eye-Tracked Foveated Rasterizer Engine.
-///
-/// Emits sentinel [KNT-GPU-VRS-PASS] upon successful validation.
 pub fn test_vrs_foveated_subsystem() -> bool {
     crate::serial_write_str("[KNT-GFX] Testing Direct3D 12 Variable Rate Shading (Tier 2) & Foveated Rasterizer...\r\n");
 
@@ -395,8 +385,6 @@ pub fn test_vrs_foveated_subsystem() -> bool {
 
 /// Comprehensive verification self-test suite for Direct3D 12 Mesh Shader and
 /// Amplification Shader Primitive Pipeline Engine.
-///
-/// Emits sentinel [KNT-GPU-MESH-PASS] upon successful validation.
 pub fn test_mesh_shader_subsystem() -> bool {
     crate::serial_write_str("[KNT-GFX] Testing Direct3D 12 Mesh Shader & Amplification Shader Primitive Pipeline...\r\n");
 
@@ -564,8 +552,6 @@ pub fn test_mesh_shader_subsystem() -> bool {
 
 /// Comprehensive verification self-test suite for Direct3D 12 Work Graphs and
 /// Autonomous GPU Shader Execution Engine.
-///
-/// Emits sentinel [KNT-GPU-WORKGRAPHS-PASS] upon successful validation.
 pub fn test_work_graphs_subsystem() -> bool {
     crate::serial_write_str("[KNT-GFX] Testing Direct3D 12 Work Graphs & Autonomous GPU Shader Engine...\r\n");
 
@@ -752,8 +738,6 @@ pub fn test_work_graphs_subsystem() -> bool {
 
 /// Comprehensive verification self-test suite for Direct3D 12 Kernel-Direct GPU
 /// Sampler Feedback Streaming & Texture LOD Clamp Engine.
-///
-/// Emits sentinel [KNT-GPU-SAMPLER-FEEDBACK-PASS] upon successful validation.
 pub fn test_sampler_feedback_subsystem() -> bool {
     crate::serial_write_str("[KNT-GFX] Testing Direct3D 12 Sampler Feedback & Texture LOD Clamp Engine...\r\n");
 

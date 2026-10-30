@@ -1,13 +1,5 @@
 //! Direct3D 12 Mesh Shader & Amplification Shader Primitive Pipeline Engine.
-//!
 //! Replaces legacy fixed-function Input Assembler and VS/HS/DS/GS geometry stages
-//! with compute-like Amplification (Task) Shaders and Mesh Shaders (AS/MS).
-//!
-//! Features:
-//! - Meshlet primitive clustering (up to 64 vertices, 126 triangles per meshlet).
-//! - Meshlet spatial bounding spheres and normal cones for early frustum and backface culling.
-//! - Amplification Shader threadgroup dispatch and payload passing.
-//! - Mesh Shader primitive expansion and output vertex/topology streaming directly to the rasterizer.
 
 use alloc::vec::Vec;
 
@@ -122,9 +114,7 @@ impl MeshletBoundingCone {
     }
 
     /// Tests if the entire meshlet is backfacing relative to a camera/view position.
-    ///
     /// If true, every triangle in the meshlet faces away from the camera and can be
-    /// culled before invoking the Mesh Shader.
     pub fn is_backfacing(&self, camera_pos: Vec3) -> bool {
         let view_dir = self.apex.sub(camera_pos);
         let len_sq = view_dir.length_squared();
@@ -284,7 +274,6 @@ impl MeshShaderPipelineState {
 pub const MAX_PAYLOAD_MESHLETS: usize = 32;
 
 /// Direct3D 12 Amplification Shader to Mesh Shader payload structure.
-///
 /// Passed via `DispatchMesh` from the amplification stage down to child mesh shader threadgroups.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(C)]
@@ -343,7 +332,6 @@ impl Frustum {
     }
 
     /// Evaluates whether a meshlet bounding sphere intersects or is inside the frustum.
-    ///
     /// If the sphere is completely behind any plane, it is culled.
     pub fn is_sphere_visible(&self, sphere: &MeshletBoundingSphere) -> bool {
         for plane in &self.planes {
@@ -356,7 +344,6 @@ impl Frustum {
 }
 
 /// Direct3D 12 `DispatchMesh` command parameters.
-///
 /// Generated either by CPU command submission or emitted dynamically from an Amplification Shader.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DispatchMeshDesc {
@@ -403,9 +390,7 @@ impl AmplificationStats {
 }
 
 /// Amplification Shader Execution Engine & Task Dispatcher.
-///
 /// Processes meshlet batches, performs parallel frustum and backface culling, selects
-/// dynamic LOD levels based on camera distance, packs payloads, and invokes `DispatchMesh`.
 #[derive(Debug)]
 pub struct AmplificationShaderDispatcher {
     /// Active camera view frustum.
@@ -456,10 +441,7 @@ impl AmplificationShaderDispatcher {
     }
 
     /// Executes the Amplification Shader stage across a slice of meshlets.
-    ///
     /// Evaluates frustum visibility and cluster backfacing for each meshlet.
-    /// Packs surviving meshlets into `AmplificationPayload` records and generates
-    /// `DispatchMeshDesc` commands to spawn child Mesh Shader threadgroups.
     pub fn dispatch_meshlets(
         &mut self,
         meshlets: &[MeshletDescriptor],
@@ -651,10 +633,7 @@ pub struct MeshShaderStats {
 }
 
 /// Mesh Shader Primitive Pipeline Execution Engine.
-///
 /// Executes Mesh Shader threadgroups dispatched by the Amplification Shader or CPU,
-/// reads meshlet cluster descriptors, expands vertices and indexed triangle topology,
-/// and streams primitives directly into the GPU rasterizer pipeline.
 #[derive(Debug)]
 pub struct MeshShaderEngine {
     /// Active Mesh Shader PSO.
