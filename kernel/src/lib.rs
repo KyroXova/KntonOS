@@ -370,6 +370,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Gamepad haptic and rumble self-test failed!\r\n");
     }
 
+    // Initialize and verify Zero-Latency Fast Input Polling Ring & Micro-Jitter Smoothing Filter
+    if !drivers::input::test_fast_input_ring_and_jitter_subsystem() {
+        serial_write_str("[KNT-PANIC] Fast input ring and micro-jitter smoothing self-test failed!\r\n");
+    }
+
     // Initialize and verify Handheld Ambient Light Sensor (ALS) & HDR Auto-Brightness Governor
     if !drivers::sensor::test_als_and_brightness_subsystem() {
         serial_write_str("[KNT-PANIC] Handheld ALS and auto-brightness governor self-test failed!\r\n");
