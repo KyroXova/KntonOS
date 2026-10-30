@@ -408,3 +408,193 @@ pub fn verify_pid_and_dew_point_prevention() -> bool {
 
     true
 }
+/// Dynamic Turbo Cooling Burst Governor configuration.
+pub const TURBO_BURST_MAX_TICKS: u32 = 100; // 10 seconds at 10 Hz
+pub const TURBO_BURST_COOLDOWN_TICKS: u32 = 50; // 5 seconds cooldown
+pub const TURBO_GRADIENT_TRIGGER_C_PER_SEC: f32 = 2.0;
+pub const TURBO_TEMP_THRESHOLD_C: f32 = 75.0;
+
+/// Computes the synchronized heatsink exhaust fan duty cycle.
+///
+/// Ensures heatsink airflow is sufficient to dissipate combined APU and Peltier hot-plate thermal wattage.
+pub fn calculate_synchronized_fan_duty(
+    apu_temp_c: f32,
+    tec_duty_pct: u8,
+    hot_plate_temp_c: f32,
+) -> u8 {
+    // 1. Base fan curve from APU junction temperature
+    let base_fan = if apu_temp_c < 45.0 {
+        20
+    } else if apu_temp_c < 60.0 {
+        40
+    } else if apu_temp_c < 70.0 {
+        65
+    } else if apu_temp_c < 80.0 {
+        85
+    } else {
+        100
+    };
+
+    // 2. TEC lead synchronization: Fan must lead or track TEC duty + 10%
+    let tec_lead_fan = if tec_duty_pct > 0 {
+        (tec_duty_pct as u16 + 10).min(100) as u8
+    } else {
+        0
+    };
+
+    let mut final_fan = base_fan.max(tec_lead_fan);
+
+    // 3. Hot plate safety override: If hot plate exceeds warning threshold (75°C), force 100% fan
+    if hot_plate_temp_c >= HOT_PLATE_WARNING_TEMP_C {
+        final_fan = 100;
+    }
+
+    final_fan
+}
+
+/// Unified Peltier Active Cooler Manager coordinating telemetry, PID, burst governor, and fan curve.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PeltierCoolerManager {
+    /// Active TEC operational state.
+    pub tec: TecState,
+    /// Closed-loop PID controller.
+    pub pid: TecPidController,
+    /// Dynamic turbo burst active flag.
+    pub turbo_active: bool,
+    /// Remaining ticks for active burst.
+    pub burst_ticks: u32,
+    /// Remaining cooldown ticks before next burst allowed.
+    pub cooldown_ticks: u32,
+    /// Previous APU junction temperature for gradient calculation.
+    pub prev_apu_temp_c: f32,
+    /// Current synchronized exhaust fan PWM duty (0..100%).
+    pub fan_duty_pct: u8,
+}
+
+impl PeltierCoolerManager {
+    /// Creates a new cooler manager instance with default tuning.
+    pub const fn new() -> Self {
+        Self {
+            tec: TecState::new(),
+            pid: TecPidController::new(2.5, 0.2, 1.0, 30.0),
+            turbo_active: false,
+            burst_ticks: 0,
+            cooldown_ticks: 0,
+            prev_apu_temp_c: 45.0,
+            fan_duty_pct: 20,
+        }
+    }
+
+    /// Primary thermal management loop iteration.
+    ///
+    /// Evaluates multi-zone telemetry, checks condensation and hot-plate boundaries,
+    /// runs the PID / turbo burst governor, and outputs (tec_duty_pct, fan_duty_pct).
+    pub fn update(
+        &mut self,
+        telemetry: &MultiZoneThermalTelemetry,
+        dt_seconds: f32,
+    ) -> (u8, u8) {
+        let dt = if dt_seconds <= 0.001 { 0.1 } else { dt_seconds };
+
+        // 1. Critical safety check: Hot plate over-temperature shutdown
+        if telemetry.tec_hot_plate_c >= HOT_PLATE_CRITICAL_TEMP_C {
+            self.tec.emergency_shutdown();
+            self.turbo_active = false;
+            self.fan_duty_pct = 100;
+            return (0, 100);
+        } else if self.tec.failsafe_tripped && telemetry.tec_hot_plate_c < HOT_PLATE_WARNING_TEMP_C {
+            self.tec.reset_failsafe();
+        }
+
+        // 2. Dew point condensation prevention
+        let (condensation_risk, min_safe_temp_c) = evaluate_condensation_risk(telemetry);
+
+        // 3. APU temperature gradient
+        let apu_gradient = (telemetry.apu_junction_c - self.prev_apu_temp_c) / dt;
+        self.prev_apu_temp_c = telemetry.apu_junction_c;
+
+        // Decrement cooldown if running
+        if self.cooldown_ticks > 0 {
+            self.cooldown_ticks -= 1;
+        }
+
+        // 4. Turbo burst state machine
+        if self.turbo_active {
+            self.burst_ticks += 1;
+            // Terminate burst on timeout or hot plate approaching warning
+            if self.burst_ticks >= TURBO_BURST_MAX_TICKS || telemetry.tec_hot_plate_c >= HOT_PLATE_WARNING_TEMP_C {
+                self.turbo_active = false;
+                self.burst_ticks = 0;
+                self.cooldown_ticks = TURBO_BURST_COOLDOWN_TICKS;
+            }
+        } else if self.cooldown_ticks == 0 && telemetry.tec_hot_plate_c < HOT_PLATE_WARNING_TEMP_C {
+            // Check trigger conditions
+            if (apu_gradient >= TURBO_GRADIENT_TRIGGER_C_PER_SEC || telemetry.apu_junction_c >= TURBO_TEMP_THRESHOLD_C)
+                && !condensation_risk
+            {
+                self.turbo_active = true;
+                self.burst_ticks = 0;
+            }
+        }
+
+        // 5. Compute TEC duty
+        let tec_duty = if self.turbo_active {
+            self.tec.mode = TecMode::DynamicTurbo;
+            MAX_TEC_DUTY_PCT
+        } else if condensation_risk {
+            self.tec.mode = TecMode::Eco;
+            // Back off duty to allow cold plate to warm up above dew point
+            (self.tec.duty_pct / 2).min(20)
+        } else {
+            self.tec.mode = TecMode::TargetTempPID;
+            self.pid.update(telemetry.tec_cold_plate_c, dt, min_safe_temp_c)
+        };
+
+        self.tec.set_duty(tec_duty);
+
+        // 6. Compute synchronized fan duty
+        self.fan_duty_pct = calculate_synchronized_fan_duty(
+            telemetry.apu_junction_c,
+            self.tec.duty_pct,
+            telemetry.tec_hot_plate_c,
+        );
+
+        (self.tec.duty_pct, self.fan_duty_pct)
+    }
+}
+
+/// Verification helper for Commit 3 turbo burst governor and synchronized fan curve.
+pub fn verify_turbo_burst_and_synchronized_fan_curve() -> bool {
+    // 1. Verify Synchronized Fan Curve
+    // APU at 50°C (base fan 40%), but TEC at 70% -> Fan must lead at 70 + 10 = 80%
+    let fan_lead = calculate_synchronized_fan_duty(50.0, 70, 55.0);
+    if fan_lead != 80 {
+        return false;
+    }
+
+    // Hot plate at 78°C (>= warning 75°C) -> Fan must force 100%
+    let fan_hot = calculate_synchronized_fan_duty(50.0, 30, 78.0);
+    if fan_hot != 100 {
+        return false;
+    }
+
+    // 2. Verify Critical Overtemp Shutdown
+    let mut manager = PeltierCoolerManager::new();
+    let crit_telem = MultiZoneThermalTelemetry::new(70.0, 60.0, 35.0, 25.0, 86.5, 25.0, 40.0);
+    let (tec_d, fan_d) = manager.update(&crit_telem, 0.1);
+    if tec_d != 0 || fan_d != 100 || !manager.tec.failsafe_tripped {
+        return false;
+    }
+
+    // 3. Verify Turbo Cooling Burst Activation
+    let mut burst_manager = PeltierCoolerManager::new();
+    // Simulate sudden APU spike from 45°C to 55°C in 0.1s (gradient = 100°C/s >= 2.0°C/s)
+    burst_manager.prev_apu_temp_c = 45.0;
+    let spike_telem = MultiZoneThermalTelemetry::new(55.0, 48.0, 30.0, 28.0, 50.0, 24.0, 45.0);
+    let (tec_burst, fan_burst) = burst_manager.update(&spike_telem, 0.1);
+    if !burst_manager.turbo_active || tec_burst != 100 || fan_burst != 100 {
+        return false;
+    }
+
+    true
+}
