@@ -742,3 +742,264 @@ impl OpticalFlowAccelerator {
         Ok((forward, backward))
     }
 }
+
+
+// -----------------------------------------------------------------------------
+// Disocclusion Mask Detection & Bidirectional Temporal Motion Warping
+// -----------------------------------------------------------------------------
+
+/// Dynamic disocclusion mask identifying regions uncovered by motion.
+///
+/// In regions where foreground objects translate, previously occluded background
+/// is exposed (disocclusion). Motion warping into these regions cannot rely on standard
+/// temporal reprojection and must blend or smoothly fill from alternate sources.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DisocclusionMask {
+    pub width: u32,
+    pub height: u32,
+    /// Mask values: 0 = fully continuous/consistent, 255 = completely disoccluded.
+    pub mask: Vec<u8>,
+}
+
+impl DisocclusionMask {
+    /// Creates a new zero-initialized disocclusion mask.
+    pub fn new(width: u32, height: u32) -> Self {
+        let total = (width * height) as usize;
+        Self {
+            width,
+            height,
+            mask: alloc::vec![0u8; total],
+        }
+    }
+
+    /// Returns the disocclusion intensity at pixel (x, y).
+    #[inline(always)]
+    pub fn get(&self, x: u32, y: u32) -> u8 {
+        if x < self.width && y < self.height {
+            let idx = (y * self.width + x) as usize;
+            self.mask[idx]
+        } else {
+            255
+        }
+    }
+
+    /// Sets the disocclusion intensity at pixel (x, y).
+    #[inline(always)]
+    pub fn set(&mut self, x: u32, y: u32, val: u8) {
+        if x < self.width && y < self.height {
+            let idx = (y * self.width + x) as usize;
+            self.mask[idx] = val;
+        }
+    }
+
+    /// Returns true if the pixel is classified as disoccluded.
+    #[inline(always)]
+    pub fn is_disoccluded(&self, x: u32, y: u32) -> bool {
+        self.get(x, y) > 128
+    }
+
+    /// Computes the total number of disoccluded pixels.
+    pub fn disoccluded_count(&self) -> usize {
+        self.mask.iter().filter(|&&v| v > 128).count()
+    }
+
+    /// Computes the ratio of disoccluded pixels relative to total frame resolution.
+    pub fn disocclusion_ratio(&self) -> f32 {
+        let total = self.width * self.height;
+        if total == 0 {
+            0.0
+        } else {
+            (self.disoccluded_count() as f32) / (total as f32)
+        }
+    }
+
+    /// Detects disocclusions using a Forward-Backward Vector Consistency Check.
+    ///
+    /// For each pixel (x, y), evaluates whether $V_{\text{forward}}(x, y) + V_{\text{backward}}(x + V_F) \approx 0$.
+    /// Inconsistent vectors exceeding `consistency_threshold_px` are marked as disocclusions.
+    pub fn detect(
+        forward: &OpticalFlowVectorField,
+        backward: &OpticalFlowVectorField,
+        consistency_threshold_px: f32,
+    ) -> Self {
+        let w = forward.frame_width;
+        let h = forward.frame_height;
+        let mut mask = Self::new(w, h);
+        let thresh_sq = consistency_threshold_px * consistency_threshold_px;
+
+        for y in 0..h {
+            for x in 0..w {
+                let fx = x as f32;
+                let fy = y as f32;
+
+                let vf = forward.sample_at_pixel(fx, fy);
+                let (vfx, vfy) = vf.to_f32();
+
+                let pred_x = fx + vfx;
+                let pred_y = fy + vfy;
+
+                if pred_x < 0.0 || pred_x >= (w as f32) || pred_y < 0.0 || pred_y >= (h as f32) {
+                    mask.set(x, y, 255);
+                    continue;
+                }
+
+                let vb = backward.sample_at_pixel(pred_x, pred_y);
+                let (vbx, vby) = vb.to_f32();
+
+                // Residual displacement
+                let rx = vfx + vbx;
+                let ry = vfy + vby;
+                let err_sq = rx * rx + ry * ry;
+
+                if err_sq > thresh_sq {
+                    // Normalize error into 128..255 range
+                    let excess = (err_sq - thresh_sq).min(16.0) / 16.0;
+                    let intensity = 128 + (excess * 127.0) as u8;
+                    mask.set(x, y, intensity);
+                } else {
+                    mask.set(x, y, 0);
+                }
+            }
+        }
+
+        mask
+    }
+}
+
+/// Bidirectional temporal motion warping engine for frame generation.
+#[derive(Debug, Clone, Default)]
+pub struct MotionWarpEngine {
+    pub total_warps: u64,
+}
+
+impl MotionWarpEngine {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Synthesizes an intermediate frame at normalized time $t \in [0.0, 1.0]$.
+    ///
+    /// Warps Frame 0 forward by $+t \cdot V_F$ and Frame 1 backward by $-(1-t) \cdot V_B$.
+    /// Uses disocclusion mask to eliminate tearing and ghosting in newly uncovered regions.
+    pub fn warp_bidirectional(
+        &mut self,
+        frame_0: &FrameBuffer,
+        frame_1: &FrameBuffer,
+        forward: &OpticalFlowVectorField,
+        backward: &OpticalFlowVectorField,
+        disocclusion: &DisocclusionMask,
+        t: f32,
+    ) -> Result<FrameBuffer, OpticalFlowError> {
+        let w = frame_0.width;
+        let h = frame_0.height;
+        if frame_1.width != w || frame_1.height != h {
+            return Err(OpticalFlowError::InvalidDimensions);
+        }
+
+        let clamped_t = t.clamp(0.0, 1.0);
+        let mut output = FrameBuffer::zero(w, h);
+
+        let t_fixed = (clamped_t * 256.0) as i32;
+        let inv_t_fixed = 256 - t_fixed;
+
+        for y in 0..h {
+            for x in 0..w {
+                let fx = x as f32;
+                let fy = y as f32;
+
+                // Motion vector at target coordinate
+                let vf = forward.sample_at_pixel(fx, fy);
+                let vb = backward.sample_at_pixel(fx, fy);
+                let (vfx, vfy) = vf.to_f32();
+                let (vbx, vby) = vb.to_f32();
+
+                // Forward warp coordinate from Frame 0: x - t * V_F
+                let s0x = fx - clamped_t * vfx;
+                let s0y = fy - clamped_t * vfy;
+                let s0x_q = (s0x * 4.0) as i32;
+                let s0y_q = (s0y * 4.0) as i32;
+                let p0 = frame_0.sample_subpixel_quarter_pel(s0x_q, s0y_q) as i32;
+
+                // Backward warp coordinate from Frame 1: x + (1 - t) * V_B
+                let s1x = fx + (1.0 - clamped_t) * vbx;
+                let s1y = fy + (1.0 - clamped_t) * vby;
+                let s1x_q = (s1x * 4.0) as i32;
+                let s1y_q = (s1y * 4.0) as i32;
+                let p1 = frame_1.sample_subpixel_quarter_pel(s1x_q, s1y_q) as i32;
+
+                let disocc_val = disocclusion.get(x, y);
+
+                let pixel_val = if disocc_val > 192 {
+                    // Severe disocclusion: pick the frame where target is closer in time
+                    if clamped_t < 0.5 {
+                        p0 as u8
+                    } else {
+                        p1 as u8
+                    }
+                } else if disocc_val > 64 {
+                    // Moderate disocclusion: blend weighted by consistency confidence
+                    let confidence = (255 - disocc_val as i32) * 256 / 191;
+                    let consistent_blend = (p0 * inv_t_fixed + p1 * t_fixed + 128) >> 8;
+                    let fallback_blend = if clamped_t < 0.5 { p0 } else { p1 };
+                    let blended = (consistent_blend * confidence + fallback_blend * (256 - confidence) + 128) >> 8;
+                    blended.clamp(0, 255) as u8
+                } else {
+                    // Fully consistent region: temporal weighted blend
+                    let blended = (p0 * inv_t_fixed + p1 * t_fixed + 128) >> 8;
+                    blended.clamp(0, 255) as u8
+                };
+
+                output.set_pixel(x, y, pixel_val);
+            }
+        }
+
+        self.total_warps += 1;
+        Ok(output)
+    }
+}
+
+/// Unified Frame Interpolation & Motion Generation Subsystem.
+#[derive(Debug, Clone)]
+pub struct FrameInterpolator {
+    pub accelerator: OpticalFlowAccelerator,
+    pub warp_engine: MotionWarpEngine,
+    pub total_interpolated_frames: u64,
+    pub last_disocclusion_ratio: f32,
+}
+
+impl FrameInterpolator {
+    /// Creates a new frame interpolator with the given optical flow accelerator descriptor.
+    pub fn new(desc: OpticalFlowDescriptor) -> Result<Self, OpticalFlowError> {
+        let accelerator = OpticalFlowAccelerator::new(desc)?;
+        Ok(Self {
+            accelerator,
+            warp_engine: MotionWarpEngine::new(),
+            total_interpolated_frames: 0,
+            last_disocclusion_ratio: 0.0,
+        })
+    }
+
+    /// Synthesizes an intermediate interpolated frame between `frame_0` and `frame_1` at normalized time `t`.
+    pub fn interpolate(
+        &mut self,
+        frame_0: &FrameBuffer,
+        frame_1: &FrameBuffer,
+        t: f32,
+    ) -> Result<FrameBuffer, OpticalFlowError> {
+        let (forward, backward) = self.accelerator.estimate_bidirectional(frame_0, frame_1)?;
+        let mask = DisocclusionMask::detect(&forward, &backward, 1.5);
+        self.last_disocclusion_ratio = mask.disocclusion_ratio();
+
+        let interpolated = self.warp_engine.warp_bidirectional(
+            frame_0,
+            frame_1,
+            &forward,
+            &backward,
+            &mask,
+            t,
+        )?;
+
+        self.total_interpolated_frames += 1;
+        Ok(interpolated)
+    }
+}
