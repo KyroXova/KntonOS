@@ -1,7 +1,4 @@
 //! Extended PCI Class/Subclass Database and Vendor Identification.
-//!
-//! Provides human-readable descriptions, classifications, and interface helpers for standard
-//! PCI devices, including Mass Storage, Network, Display, Bridge, and Serial Bus (USB xHCI).
 
 pub const PCI_CLASS_UNCLASSIFIED: u8 = 0x00;
 pub const PCI_CLASS_MASS_STORAGE: u8 = 0x01;
