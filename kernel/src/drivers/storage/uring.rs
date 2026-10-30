@@ -574,3 +574,139 @@ pub fn verify_async_dispatcher() -> bool {
 
     true
 }
+
+impl AsyncIoDispatcher {
+    /// Completes an in-flight request by matching the hardware NVMe command identifier (CID),
+    /// generates an io_uring CQE with user_data and result code, and frees the in-flight slot.
+    pub fn complete_request(&mut self, nvme_cqe: &crate::drivers::storage::nvme::NvmeCompletionEntry) -> Option<IoUringCqe> {
+        let cid = nvme_cqe.cid;
+        for slot in self.inflight_slots.iter_mut() {
+            if slot.active && slot.nvme_cid == cid {
+                let user_data = slot.user_data;
+                let res = if nvme_cqe.is_success() {
+                    match slot.sqe_opcode {
+                        IORING_OP_READ | IORING_OP_WRITE => slot.byte_count as i32,
+                        _ => 0, // NOP, FSYNC success = 0
+                    }
+                } else {
+                    -5 // -EIO
+                };
+
+                // Free the tracking slot
+                slot.active = false;
+                self.inflight_count = self.inflight_count.saturating_sub(1);
+
+                return Some(IoUringCqe::new(user_data, res, 0));
+            }
+        }
+        None
+    }
+
+    /// Harvests completions from an NVMe QueuePair and inserts corresponding CQEs into a CompletionQueueRing.
+    /// Handles out-of-order completions and non-contiguous CIDs.
+    pub fn harvest_completions<const N: usize>(
+        &mut self,
+        nvme_qp: &mut crate::drivers::storage::nvme::NvmeQueuePair,
+        cq: &mut CompletionQueueRing<N>,
+        max_reap: usize,
+    ) -> usize {
+        let mut reaped = 0;
+
+        while reaped < max_reap {
+            let entry = nvme_qp.cq_entries[nvme_qp.cq_head as usize];
+            if entry.phase() != nvme_qp.cq_phase {
+                // No more completed entries ready in NVMe CQ
+                break;
+            }
+
+            // Advance hardware CQ head cursor
+            nvme_qp.cq_head = (nvme_qp.cq_head + 1) % nvme_qp.size;
+            if nvme_qp.cq_head == 0 {
+                nvme_qp.cq_phase = !nvme_qp.cq_phase;
+            }
+            nvme_qp.ring_cq_doorbell();
+
+            // Match to in-flight request and generate CQE
+            if let Some(cqe) = self.complete_request(&entry) {
+                if cq.push(cqe) {
+                    reaped += 1;
+                } else {
+                    // CQ ring full, cqe overflowed in ring
+                    reaped += 1;
+                    break;
+                }
+            } else {
+                // Unknown CID or already completed
+                reaped += 1;
+            }
+        }
+
+        reaped
+    }
+}
+
+/// Unit test verifying out-of-order completion harvesting, token correlation, and CQE generation.
+pub fn verify_completion_harvesting() -> bool {
+    let mut dispatcher = AsyncIoDispatcher::new();
+    let mut sq = SubmissionQueueRing::<8>::new();
+    let mut cq = CompletionQueueRing::<8>::new();
+    let mut nvme_qp = crate::drivers::storage::nvme::NvmeQueuePair::new(1, 16, 0, 0);
+
+    // 1. Submit 3 requests
+    let sqe0 = IoUringSqe::new_read(1, 0x1000, 512, 0, 0x1111);
+    let sqe1 = IoUringSqe::new_write(1, 0x2000, 1024, 512, 0x2222);
+    let sqe2 = IoUringSqe::new_fsync(1, 0x3333);
+
+    assert!(sq.push(sqe0));
+    assert!(sq.push(sqe1));
+    assert!(sq.push(sqe2));
+
+    let dispatched = dispatcher.dispatch_sq_ring(&mut sq, &mut nvme_qp, 1);
+    if dispatched != 3 || dispatcher.inflight_count != 3 {
+        return false;
+    }
+
+    let cid0 = dispatcher.inflight_slots[0].nvme_cid;
+    let cid1 = dispatcher.inflight_slots[1].nvme_cid;
+    let cid2 = dispatcher.inflight_slots[2].nvme_cid;
+
+    // 2. Simulate OUT-OF-ORDER hardware completions in NVMe CQ:
+    // Order of completion: cid1 (Write 1024), cid2 (Fsync), cid0 (Read 512)
+    nvme_qp.simulate_completion(cid1, 0, 0); // slot 0 in nvme cq
+    nvme_qp.cq_head = (nvme_qp.cq_head + 1) % nvme_qp.size;
+    nvme_qp.simulate_completion(cid2, 0, 0); // slot 1 in nvme cq
+    nvme_qp.cq_head = (nvme_qp.cq_head + 1) % nvme_qp.size;
+    nvme_qp.simulate_completion(cid0, 0, 0); // slot 2 in nvme cq
+    nvme_qp.cq_head = 0; // reset head back to start of completions
+
+    // 3. Harvest completions into io_uring CQ
+    let harvested = dispatcher.harvest_completions(&mut nvme_qp, &mut cq, 10);
+    if harvested != 3 || dispatcher.inflight_count != 0 {
+        return false;
+    }
+    if cq.count() != 3 {
+        return false;
+    }
+
+    // 4. Reap CQEs and verify user_data token matching and byte counts
+    let cqe0 = cq.pop().expect("pop 0 failed");
+    if cqe0.user_data != 0x2222 || cqe0.res != 1024 {
+        return false;
+    }
+
+    let cqe1 = cq.pop().expect("pop 1 failed");
+    if cqe1.user_data != 0x3333 || cqe1.res != 0 {
+        return false;
+    }
+
+    let cqe2 = cq.pop().expect("pop 2 failed");
+    if cqe2.user_data != 0x1111 || cqe2.res != 512 {
+        return false;
+    }
+
+    if cq.count() != 0 {
+        return false;
+    }
+
+    true
+}
