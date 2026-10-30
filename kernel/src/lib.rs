@@ -142,6 +142,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] HPET and monotonic clock self-test failed!\r\n");
     }
 
+    // Initialize and verify Dynamic Power Governor & Thermal Energy Meter
+    if !power::test_power_governor_subsystem() {
+        serial_write_str("[KNT-PANIC] Dynamic power governor self-test failed!\r\n");
+    }
+
     // Initialize Virtual File System & mount demo initramfs
     fs::init();
     if !fs::test_vfs_subsystem() {

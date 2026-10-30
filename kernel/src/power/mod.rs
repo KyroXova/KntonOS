@@ -26,3 +26,65 @@ pub use rapl::{
     MSR_DRAM_ENERGY_STATUS, MSR_DRAM_POWER_LIMIT, MSR_PKG_ENERGY_STATUS, MSR_PKG_PERF_STATUS,
     MSR_PKG_POWER_LIMIT, MSR_PP0_ENERGY_STATUS, MSR_RAPL_POWER_UNIT,
 };
+
+/// Comprehensive verification self-test suite for Dynamic Power Governor & Thermal Energy Meter.
+pub fn test_power_governor_subsystem() -> bool {
+    // 1. Verify Intel RAPL MSR structures, energy units, and AMD SMU mailbox
+    if !verify_rapl_and_smu_structures() {
+        return false;
+    }
+
+    // 2. Verify Digital Thermal Sensor (DTS) monitoring and thermal throttle flags
+    if !verify_thermal_monitoring() {
+        return false;
+    }
+
+    // 3. Verify closed-loop PID power governor and TDP limits (5W-30W)
+    if !verify_pid_power_governor() {
+        return false;
+    }
+
+    // 4. Integrated loopback test across steady, high-load, and thermal throttling regimes
+    let units = RaplUnits::default_intel();
+    let mut energy_counter = EnergyCounter::new();
+    let mut thermal_engine = ThermalSensorEngine::new(true);
+    let mut governor = PidPowerGovernor::new(GovernorProfile::Balanced);
+
+    // Initial energy reading at boot
+    energy_counter.update(0x1000_0000, &units);
+
+    // Step 1: Steady 15W load (15,000 mW) at 65°C over 100ms
+    let ticks_15w = 98_304u32;
+    let delta_uj = energy_counter.update(0x1000_0000 + ticks_15w, &units);
+    if delta_uj == 0 {
+        return false;
+    }
+
+    thermal_engine.update_simulated_temp(0, 65);
+    let action_steady = governor.step(15_000, thermal_engine.max_temperature(), 100);
+    if action_steady.emergency_thermal_throttle || action_steady.throttle_duty_percent != 0 {
+        return false;
+    }
+
+    // Step 2: High load excursion (26,000 mW measured @ 88°C)
+    thermal_engine.update_simulated_temp(0, 88);
+    let action_high = governor.step(26_000, thermal_engine.max_temperature(), 100);
+    if action_high.target_pl1_mw >= 15_000 || action_high.throttle_duty_percent == 0 {
+        return false;
+    }
+
+    // Step 3: Critical thermal surge (98°C) -> emergency override
+    thermal_engine.update_simulated_temp(0, 98);
+    let action_trip = governor.step(22_000, thermal_engine.max_temperature(), 100);
+    if !action_trip.emergency_thermal_throttle {
+        return false;
+    }
+    if action_trip.target_pl1_mw != MIN_TDP_LIMIT_MW || action_trip.throttle_duty_percent != 75 {
+        return false;
+    }
+
+    // 5. Emit boot sentinel
+    crate::serial_write_str("[KNT-POWER-GOV-PASS] Dynamic power governor, RAPL energy meter, and thermal monitor operational\r\n");
+
+    true
+}
