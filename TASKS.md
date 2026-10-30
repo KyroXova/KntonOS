@@ -17,9 +17,9 @@ These branches are managed by their respective developers with granular commit l
 
 | Contributor identity | Branch | Local workspace | Status |
 | --- | --- | --- | --- |
-| Ada Chen | `workspace/ada-chen` | `E:\Git Lab's\kntonOS-ada-chen` | Idle (TASK-KNT-112 complete) |
-| Jules Martin | `workspace/jules-martin` | `E:\Git Lab's\kntonOS-jules-martin` | Idle (TASK-KNT-110 complete) |
-| Priya Nair | `workspace/priya-nair` | `E:\Git Lab's\kntonOS-priya-nair` | Idle (TASK-KNT-111 complete) |
+| Ada Chen | `workspace/ada-chen` | `E:\Git Lab's\kntonOS-ada-chen` | Active (TASK-KNT-115) |
+| Jules Martin | `workspace/jules-martin` | `E:\Git Lab's\kntonOS-jules-martin` | Active (TASK-KNT-113) |
+| Priya Nair | `workspace/priya-nair` | `E:\Git Lab's\kntonOS-priya-nair` | Active (TASK-KNT-114) |
 
 ## Task index
 
@@ -137,7 +137,13 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-110 | Unified Handheld PC Wi-Fi 6E/7 Latency-Optimized Packet Scheduler & Roaming Daemon | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-110-wifi-scheduler.md) |
 | TASK-KNT-111 | Direct3D 12 Shader Execution Reordering (SER) & Raytracing Hit-Sort Accelerator Engine | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-111-d3d12-ser.md) |
 | TASK-KNT-112 | Unified Handheld PC Virtual Keyboard & Predictive Swipe IME Gesture Engine | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-112-virtual-keyboard.md) |
+| TASK-KNT-113 | Unified Handheld PC Dual-IMU Dead Reckoning & Motion Drift Eliminator | Claimed | TASK-KNT-051 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-113-imu-fusion.md) |
+| TASK-KNT-114 | Direct3D 12 Dynamic Depth Bounds Testing & Conservative Rasterization Engine | Claimed | TASK-KNT-071 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-114-depth-bounds.md) |
+| TASK-KNT-115 | Kernel-Direct Crash Telemetry Core Dump & Instant Mini-Dump Restorer Engine | Claimed | TASK-KNT-057 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-115-crash-dump.md) |
 
 ## Active reservations
 
 - `kernel/src/pkg/`: reserved by ArdenKestrel for TASK-KNT-045.
+- `kernel/src/drivers/sensor/imu_fusion.rs`: reserved by Jules Martin for TASK-KNT-113.
+- `kernel/src/gfx/depth_bounds.rs`: reserved by Priya Nair for TASK-KNT-114.
+- `kernel/src/sys/minidump.rs`: reserved by Ada Chen for TASK-KNT-115.
