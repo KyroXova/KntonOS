@@ -1,7 +1,4 @@
-//! Pipeline Command Parser, Redirection Tokens, and Execution Stage Descriptors.
-//!
-//! Parses shell command lines containing pipelines (`|`), input redirection (`<`),
-//! output redirection (`>`, `>>`), and background execution (`&`).
+//! Pipeline command parser, redirection tokens, and execution stage descriptors.
 
 use alloc::string::String;
 use alloc::vec::Vec;
