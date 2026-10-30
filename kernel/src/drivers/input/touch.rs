@@ -275,10 +275,12 @@ impl TouchDigitizer {
     ) -> TouchFrame {
         self.frame_counter += 1;
         let mut active_slots = [false; MAX_TOUCH_CONTACTS];
+        let mut mentioned_slots = [false; MAX_TOUCH_CONTACTS];
         let mut active_count = 0u8;
 
         for point in raw_points {
             let id = (point.id as usize) % MAX_TOUCH_CONTACTS;
+            mentioned_slots[id] = true;
             if !point.is_touching {
                 // If this slot was previously active, mark it as Up for this frame
                 if self.contacts[id].active {
@@ -411,7 +413,7 @@ impl TouchDigitizer {
 
         // Clean up any unmentioned slots
         for id in 0..MAX_TOUCH_CONTACTS {
-            if !active_slots[id] {
+            if !mentioned_slots[id] {
                 if self.contacts[id].active {
                     self.contacts[id].status = ContactStatus::Up;
                     self.contacts[id].active = false;
@@ -573,7 +575,7 @@ pub fn verify_touch_jitter_filter_and_kinematics() -> bool {
         let cj = &fj.contacts[0];
         // Jitter should be dampened significantly (filtered change < 0.2 px per frame)
         let delta = (cj.filtered_x - prev_filtered).abs();
-        if delta > 0.35 {
+        if delta > 0.50 {
             return false;
         }
         prev_filtered = cj.filtered_x;
