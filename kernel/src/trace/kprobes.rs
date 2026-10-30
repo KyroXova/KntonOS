@@ -8,6 +8,9 @@ use core::sync::atomic::{fence, Ordering};
 /// INT3 software breakpoint opcode in x86-64.
 pub const INT3_OPCODE: u8 = 0xCC;
 
+/// CPU EFLAGS Trap Flag (TF, bit 8).
+pub const EFLAGS_TF: u64 = 1 << 8;
+
 /// Maximum number of active kprobes supported in the registry.
 pub const MAX_KPROBES: usize = 32;
 
@@ -29,12 +32,12 @@ pub enum KprobeError {
     MemoryFault,
 }
 
-/// Outcome status from the INT3 breakpoint exception handler.
+/// Outcome status from the INT3 breakpoint or debug exception handler.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum KprobeBreakStatus {
-    /// Breakpoint was recognized and handled by an active kprobe.
+    /// Breakpoint or single-step trap was recognized and handled by an active kprobe.
     Handled,
-    /// Breakpoint was not registered in the kprobe subsystem (forward to kernel debugger/panic).
+    /// Event was not registered in the kprobe subsystem (forward to kernel debugger/panic).
     NotOurs,
 }
 
@@ -97,6 +100,16 @@ pub type KprobePreHandler = fn(&Kprobe, &mut PtRegs) -> bool;
 
 /// Post-execution callback invoked after the probed instruction has completed.
 pub type KprobePostHandler = fn(&Kprobe, &mut PtRegs, flags: u64);
+
+/// Per-core single-step state during out-of-line execution.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct KprobeSingleStepState {
+    pub active_probe_id: u64,
+    pub original_rip: u64,
+    pub next_rip: u64,
+    pub original_rflags: u64,
+    pub in_progress: bool,
+}
 
 /// Dynamic kernel instrumentation probe descriptor.
 #[derive(Copy, Clone, Debug)]
@@ -162,6 +175,7 @@ pub struct KprobeRegistry {
     probes: [Option<Kprobe>; MAX_KPROBES],
     next_id: u64,
     count: usize,
+    pub step_state: KprobeSingleStepState,
 }
 
 impl KprobeRegistry {
@@ -170,6 +184,13 @@ impl KprobeRegistry {
             probes: [None; MAX_KPROBES],
             next_id: 1,
             count: 0,
+            step_state: KprobeSingleStepState {
+                active_probe_id: 0,
+                original_rip: 0,
+                next_rip: 0,
+                original_rflags: 0,
+                in_progress: false,
+            },
         }
     }
 
@@ -249,9 +270,10 @@ impl KprobeRegistry {
         }
 
         probe.original_byte = code_mem[0];
-        // Populate single step buffer with original byte
-        probe.single_step_buffer[0] = code_mem[0];
-        probe.single_step_len = 1;
+        // Populate single step buffer with instruction bytes (up to 16 bytes)
+        let copy_len = code_mem.len().min(SINGLE_STEP_BUF_SIZE);
+        probe.single_step_buffer[..copy_len].copy_from_slice(&code_mem[..copy_len]);
+        probe.single_step_len = copy_len;
 
         // Atomically replace first byte with INT3 (0xCC)
         code_mem[0] = INT3_OPCODE;
@@ -322,38 +344,82 @@ impl KprobeRegistry {
 
     /// Handles an INT3 (#BP) breakpoint exception.
     /// In x86-64, CPU pushes `saved_rip = probe_addr + 1`.
-    pub fn handle_int3(&mut self, regs: &mut PtRegs) -> KprobeBreakStatus {
+    /// `insn_len` is the length of the original instruction being probed.
+    pub fn handle_int3(&mut self, regs: &mut PtRegs, insn_len: usize) -> KprobeBreakStatus {
         if regs.rip == 0 {
             return KprobeBreakStatus::NotOurs;
         }
 
         let fault_addr = (regs.rip as usize).saturating_sub(1);
-        if let Some(probe) = self.find_by_addr_mut(fault_addr) {
-            if !probe.enabled || !probe.armed {
-                return KprobeBreakStatus::NotOurs;
-            }
+        let (id, pre_fn) = match self.find_by_addr(fault_addr) {
+            Some(probe) if probe.enabled && probe.armed => (probe.id, probe.pre_handler),
+            _ => return KprobeBreakStatus::NotOurs,
+        };
 
-            probe.hit_count = probe.hit_count.saturating_add(1);
-
-            // Execute pre-handler if defined
-            let proceed = if let Some(pre) = probe.pre_handler {
-                pre(probe, regs)
-            } else {
-                true
-            };
-
-            // Rewind RIP back to the original instruction address
-            regs.rip = fault_addr as u64;
-
-            if !proceed {
-                // Pre-handler signaled skip
-                return KprobeBreakStatus::Handled;
-            }
-
-            KprobeBreakStatus::Handled
-        } else {
-            KprobeBreakStatus::NotOurs
+        // Increment hit count
+        if let Some(p) = self.find_by_id_mut(id) {
+            p.hit_count = p.hit_count.saturating_add(1);
         }
+
+        // 1. Invoke pre-handler callback with register snapshot
+        let should_continue = if let Some(pre) = pre_fn {
+            let p_ref = self.find_by_id(id).unwrap();
+            pre(p_ref, regs)
+        } else {
+            true
+        };
+
+        if !should_continue {
+            // Pre-handler requested skip: advance RIP past instruction
+            regs.rip = (fault_addr + insn_len) as u64;
+            return KprobeBreakStatus::Handled;
+        }
+
+        // 2. Prepare single-step execution off-trampoline
+        let orig_rflags = regs.rflags;
+        regs.rflags |= EFLAGS_TF; // Set Trap Flag
+
+        let probe = self.find_by_id(id).unwrap();
+        let ss_buf_addr = probe.single_step_buffer.as_ptr() as usize as u64;
+        regs.rip = ss_buf_addr;
+
+        self.step_state = KprobeSingleStepState {
+            active_probe_id: id,
+            original_rip: fault_addr as u64,
+            next_rip: (fault_addr + insn_len) as u64,
+            original_rflags: orig_rflags,
+            in_progress: true,
+        };
+
+        KprobeBreakStatus::Handled
+    }
+
+    /// Handles a Single-Step (#DB) debug exception following instruction execution.
+    /// Clears Trap Flag, invokes post-handler, and resumes original execution path.
+    pub fn handle_debug_trap(&mut self, regs: &mut PtRegs) -> KprobeBreakStatus {
+        if !self.step_state.in_progress {
+            return KprobeBreakStatus::NotOurs;
+        }
+
+        let id = self.step_state.active_probe_id;
+        let next_rip = self.step_state.next_rip;
+        let orig_rflags = self.step_state.original_rflags;
+
+        // 1. Clear Trap Flag from RFLAGS
+        regs.rflags &= !EFLAGS_TF;
+
+        // 2. Invoke post-handler callback
+        let post_fn = self.find_by_id(id).and_then(|p| p.post_handler);
+        if let Some(post) = post_fn {
+            let p_ref = self.find_by_id(id).unwrap();
+            post(p_ref, regs, orig_rflags);
+        }
+
+        // 3. Restore RIP to the next instruction in original function body
+        regs.rip = next_rip;
+        self.step_state.in_progress = false;
+
+        KprobeBreakStatus::Handled
     }
 }
 
@@ -393,12 +459,12 @@ pub fn test_int3_and_kprobe_registry() -> bool {
     regs.rip = (probe_addr + 1) as u64;
     regs.rax = 0x1234;
 
-    let status = registry.handle_int3(&mut regs);
+    let status = registry.handle_int3(&mut regs, 1);
     if status != KprobeBreakStatus::Handled {
         return false;
     }
-    // RIP must be rewound to probe_addr
-    if regs.rip != probe_addr as u64 {
+    // TF must be set
+    if (regs.rflags & EFLAGS_TF) == 0 {
         return false;
     }
     let p_hit = registry.find_by_id(id).expect("probe lookup 3 failed");
@@ -406,10 +472,24 @@ pub fn test_int3_and_kprobe_registry() -> bool {
         return false;
     }
 
+    // Single step trap resolution
+    let db_status = registry.handle_debug_trap(&mut regs);
+    if db_status != KprobeBreakStatus::Handled {
+        return false;
+    }
+    // RIP must be at next instruction (probe_addr + 1)
+    if regs.rip != (probe_addr + 1) as u64 {
+        return false;
+    }
+    // TF must be cleared
+    if (regs.rflags & EFLAGS_TF) != 0 {
+        return false;
+    }
+
     // 4. Test non-registered address returns NotOurs
     let mut rogue_regs = PtRegs::empty();
     rogue_regs.rip = 0x3000_5001; // Not registered
-    if registry.handle_int3(&mut rogue_regs) != KprobeBreakStatus::NotOurs {
+    if registry.handle_int3(&mut rogue_regs, 1) != KprobeBreakStatus::NotOurs {
         return false;
     }
 
@@ -428,6 +508,104 @@ pub fn test_int3_and_kprobe_registry() -> bool {
     if registry.count() != 0 {
         return false;
     }
+
+    true
+}
+
+static mut TEST_PRE_HIT: bool = false;
+static mut TEST_POST_HIT: bool = false;
+static mut TEST_CAPTURED_ARG: u64 = 0;
+
+fn sample_pre_handler(_kp: &Kprobe, regs: &mut PtRegs) -> bool {
+    unsafe {
+        TEST_PRE_HIT = true;
+        TEST_CAPTURED_ARG = regs.rdi;
+        // Mutate register to verify context modification
+        regs.rax = 0x9999;
+    }
+    true
+}
+
+fn sample_post_handler(_kp: &Kprobe, regs: &mut PtRegs, _flags: u64) {
+    unsafe {
+        TEST_POST_HIT = true;
+        // Verify register mutation survived
+        if regs.rax == 0x9999 {
+            regs.rbx = 0xAAAA;
+        }
+    }
+}
+
+/// Unit test verifying pre/post probe callback invocation and register context capture.
+pub fn test_kprobe_callbacks_and_context() -> bool {
+    unsafe {
+        TEST_PRE_HIT = false;
+        TEST_POST_HIT = false;
+        TEST_CAPTURED_ARG = 0;
+    }
+
+    let mut registry = KprobeRegistry::new();
+    let mut code_buf = [0x48, 0x89, 0xF8, 0xC3]; // mov rax, rdi (3 bytes); ret
+    let target_addr = 0x4000_2000usize;
+
+    let probe_id = registry
+        .register_with_handlers(
+            target_addr,
+            "sample_fn",
+            Some(sample_pre_handler),
+            Some(sample_post_handler),
+        )
+        .expect("registration failed");
+
+    registry.arm_probe(probe_id, &mut code_buf).expect("arm failed");
+
+    // Simulate entry into probed function with RDI argument 0xCAFE_BABE
+    let mut regs = PtRegs::empty();
+    regs.rip = (target_addr + 1) as u64; // CPU executed INT3 at target_addr
+    regs.rdi = 0xCAFE_BABE;
+    regs.rax = 0;
+
+    // Handle INT3: triggers pre-handler
+    let res = registry.handle_int3(&mut regs, 3);
+    if res != KprobeBreakStatus::Handled {
+        return false;
+    }
+
+    unsafe {
+        if !TEST_PRE_HIT || TEST_CAPTURED_ARG != 0xCAFE_BABE {
+            return false;
+        }
+    }
+
+    // Verify pre-handler mutated RAX and set TF
+    if regs.rax != 0x9999 || (regs.rflags & EFLAGS_TF) == 0 {
+        return false;
+    }
+
+    // Simulate CPU executing single instruction and triggering #DB
+    let db_res = registry.handle_debug_trap(&mut regs);
+    if db_res != KprobeBreakStatus::Handled {
+        return false;
+    }
+
+    unsafe {
+        if !TEST_POST_HIT {
+            return false;
+        }
+    }
+
+    // Verify post-handler verified RAX and mutated RBX
+    if regs.rbx != 0xAAAA {
+        return false;
+    }
+    // Verify TF is cleared and RIP points to next instruction (target_addr + 3)
+    if (regs.rflags & EFLAGS_TF) != 0 || regs.rip != (target_addr + 3) as u64 {
+        return false;
+    }
+
+    // Disarm and unregister
+    registry.disarm_probe(probe_id, &mut code_buf).expect("disarm failed");
+    registry.unregister(probe_id).expect("unregister failed");
 
     true
 }
