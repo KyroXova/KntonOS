@@ -5,6 +5,8 @@
 //! - Coulomb counting charge integration with microampere-hour accumulation
 //! - State of Charge (SoC %) and State of Health (SoH %) estimators
 //! - Open-Circuit Voltage (OCV) calibration curves for zero-current drift correction
+//! - Low-battery critical thresholds (10% warning, <= 3% emergency S4 hibernation trigger)
+//! - Thermal discharge protector guarding against thermal runaway and cold lithium plating
 
 // -----------------------------------------------------------------------------
 // ACPI Battery Structures & Status Flags
@@ -88,6 +90,38 @@ impl BatteryInfoExtended {
             cycle_count: 1,
         }
     }
+}
+
+// -----------------------------------------------------------------------------
+// Power Actions & Thermal Protection
+// -----------------------------------------------------------------------------
+
+/// Recommended system action based on battery energy reserve.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BatteryPowerAction {
+    /// Normal operation.
+    Normal,
+    /// Low battery (<= 10% SoC): notify user, dim backlight, throttle non-essential background tasks.
+    WarningAlert,
+    /// Critical battery (<= 3% SoC or < 3.0V/cell): trigger immediate S4 disk hibernation.
+    EmergencyHibernate,
+    /// Brownout cutoff: hardware shutdown imminent.
+    CriticalCutoff,
+}
+
+/// Thermal discharge protection operating tier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThermalProtectionState {
+    /// 0°C to 45°C: Safe operating envelope.
+    Normal,
+    /// 45°C to 55°C: Warm pack, throttle discharge rate to 2000 mA.
+    WarmThrottling,
+    /// 55°C to 60°C: Over-temperature warning, throttle discharge rate to 1000 mA.
+    OverTempWarning,
+    /// > 60°C: Critical over-temperature hazard, emergency shutdown.
+    CriticalShutdown,
+    /// < 0°C: Sub-zero freezing pack, prevent rapid discharge and fast charge (lithium plating hazard).
+    UnderTempWarning,
 }
 
 // -----------------------------------------------------------------------------
@@ -198,6 +232,61 @@ impl SmartBatteryGauge {
         if self.status.remaining_capacity_mah <= self.info.low_capacity_mah {
             self.status.state = BatteryStateFlags(self.status.state.bits() | BatteryStateFlags::CRITICAL.bits());
         }
+    }
+
+    /// Evaluates recommended power management action based on SoC, remaining capacity, and cell voltage.
+    pub fn evaluate_power_action(&self) -> BatteryPowerAction {
+        let cell_mv = self.status.present_voltage_mv / self.cell_series_count as u32;
+
+        if cell_mv < 3000 {
+            return BatteryPowerAction::CriticalCutoff;
+        }
+
+        if self.soc_permille <= 30 || self.status.remaining_capacity_mah <= self.info.low_capacity_mah {
+            return BatteryPowerAction::EmergencyHibernate;
+        }
+
+        if self.soc_permille <= 100 || self.status.remaining_capacity_mah <= self.info.warning_capacity_mah {
+            return BatteryPowerAction::WarningAlert;
+        }
+
+        BatteryPowerAction::Normal
+    }
+
+    /// Evaluates thermal operating tier of the battery pack.
+    pub fn evaluate_thermal_protection(&self) -> ThermalProtectionState {
+        let temp_c = self.status.temperature_dci / 10;
+
+        if temp_c > 60 {
+            ThermalProtectionState::CriticalShutdown
+        } else if temp_c >= 55 {
+            ThermalProtectionState::OverTempWarning
+        } else if temp_c >= 45 {
+            ThermalProtectionState::WarmThrottling
+        } else if temp_c < 0 {
+            ThermalProtectionState::UnderTempWarning
+        } else {
+            ThermalProtectionState::Normal
+        }
+    }
+
+    /// Maximum safe discharge current in mA under current thermal and reserve conditions.
+    pub fn max_recommended_discharge_rate_ma(&self) -> u32 {
+        match self.evaluate_thermal_protection() {
+            ThermalProtectionState::Normal => 4000,       // Full 4A peak discharge
+            ThermalProtectionState::WarmThrottling => 2000, // 2A discharge limit (~15W)
+            ThermalProtectionState::OverTempWarning => 1000,// 1A emergency limit (~7.4W)
+            ThermalProtectionState::CriticalShutdown => 0,  // Immediate cutoff
+            ThermalProtectionState::UnderTempWarning => 1500, // Low-temp protection
+        }
+    }
+
+    /// Returns true if an emergency S4 disk hibernation must be triggered immediately.
+    #[inline(always)]
+    pub fn is_emergency_hibernate_required(&self) -> bool {
+        self.evaluate_power_action() == BatteryPowerAction::EmergencyHibernate
+            || self.evaluate_power_action() == BatteryPowerAction::CriticalCutoff
+            || self.evaluate_thermal_protection() == ThermalProtectionState::CriticalShutdown
     }
 
     /// Recalibrates remaining capacity using Open-Circuit Voltage (OCV) when current is near zero (< 50mA).
@@ -318,6 +407,102 @@ pub fn verify_battery_gauge_and_coulomb_counter() -> bool {
     gauge.update(-1200, 7500, 300, 1000);
     if gauge.recalibrate_with_ocv(7500) {
         return false; // Must reject OCV recalibration under load
+    }
+
+    true
+}
+
+/// Unit test verifying low-battery critical thresholds and thermal discharge protection.
+pub fn verify_low_battery_and_thermal_protection() -> bool {
+    let mut gauge = SmartBatteryGauge::new(5000, 4800, 2);
+
+    // 1. Normal state at 50% SoC, 30°C
+    gauge.update(-1500, 7680, 300, 1000);
+    if gauge.evaluate_power_action() != BatteryPowerAction::Normal {
+        return false;
+    }
+    if gauge.evaluate_thermal_protection() != ThermalProtectionState::Normal {
+        return false;
+    }
+    if gauge.max_recommended_discharge_rate_ma() != 4000 {
+        return false;
+    }
+    if gauge.is_emergency_hibernate_required() {
+        return false;
+    }
+
+    // 2. Low-battery warning alert at 10% SoC (480 mAh remaining)
+    gauge.status.remaining_capacity_mah = 450;
+    gauge.soc_permille = 93; // 9.3%
+    if gauge.evaluate_power_action() != BatteryPowerAction::WarningAlert {
+        return false;
+    }
+    if gauge.is_emergency_hibernate_required() {
+        return false; // Warning alert only, not hibernate
+    }
+
+    // 3. Emergency hibernate trigger at <= 3% SoC (144 mAh remaining)
+    gauge.status.remaining_capacity_mah = 120;
+    gauge.soc_permille = 25; // 2.5%
+    if gauge.evaluate_power_action() != BatteryPowerAction::EmergencyHibernate {
+        return false;
+    }
+    if !gauge.is_emergency_hibernate_required() {
+        return false; // Must trigger emergency hibernate!
+    }
+
+    // 4. Critical cell undervoltage cutoff (< 3000 mV/cell = < 6000 mV total)
+    gauge.status.present_voltage_mv = 5900;
+    if gauge.evaluate_power_action() != BatteryPowerAction::CriticalCutoff {
+        return false;
+    }
+    if !gauge.is_emergency_hibernate_required() {
+        return false;
+    }
+
+    // 5. Thermal protection evaluation across temperature bands
+    // Reset capacity to healthy level
+    gauge.status.remaining_capacity_mah = 3000;
+    gauge.soc_permille = 625;
+    gauge.status.present_voltage_mv = 7600;
+
+    // 5a. Warm Throttling at 48°C (480 dci) -> 2000 mA discharge cap
+    gauge.status.temperature_dci = 480;
+    if gauge.evaluate_thermal_protection() != ThermalProtectionState::WarmThrottling {
+        return false;
+    }
+    if gauge.max_recommended_discharge_rate_ma() != 2000 {
+        return false;
+    }
+
+    // 5b. Over-Temperature Warning at 57°C (570 dci) -> 1000 mA discharge cap
+    gauge.status.temperature_dci = 570;
+    if gauge.evaluate_thermal_protection() != ThermalProtectionState::OverTempWarning {
+        return false;
+    }
+    if gauge.max_recommended_discharge_rate_ma() != 1000 {
+        return false;
+    }
+
+    // 5c. Critical Shutdown at 63°C (630 dci) -> 0 mA discharge cap, emergency hibernate
+    gauge.status.temperature_dci = 630;
+    if gauge.evaluate_thermal_protection() != ThermalProtectionState::CriticalShutdown {
+        return false;
+    }
+    if gauge.max_recommended_discharge_rate_ma() != 0 {
+        return false;
+    }
+    if !gauge.is_emergency_hibernate_required() {
+        return false;
+    }
+
+    // 5d. Sub-zero Under-Temperature Warning at -5°C (-50 dci) -> 1500 mA cap
+    gauge.status.temperature_dci = -50;
+    if gauge.evaluate_thermal_protection() != ThermalProtectionState::UnderTempWarning {
+        return false;
+    }
+    if gauge.max_recommended_discharge_rate_ma() != 1500 {
+        return false;
     }
 
     true
