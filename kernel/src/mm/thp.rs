@@ -1,8 +1,7 @@
 //! Transparent Huge Pages (THP) - 2MB Large Page Allocator & Page Table Structures.
 //!
 //! Provides 2MB physical frame allocation, 2MB PML4/PDPT/PD translation mappings,
-//! and large page entry management for x86-64 long mode.
-
+//! transparent huge page collapse/split daemon, and zero-fill optimization.
 
 /// Standard x86-64 4KB page size.
 pub const PAGE_SIZE_4KB: usize = 4096;
@@ -192,7 +191,7 @@ const BITMAP_WORDS: usize = (MAX_HUGE_PAGES + 63) / 64; // 2 words (128 bits)
 
 /// Physical 2MB Large Page Allocator.
 ///
-/// Tracks 2MB-aligned physical frames, providing fast $O(1)$ allocation, buddy-like alignment,
+/// Tracks 2MB-aligned physical frames, providing fast O(1) allocation, buddy-like alignment,
 /// and usage metrics.
 pub struct HugePageAllocator {
     bitmap: [u64; BITMAP_WORDS],
@@ -361,5 +360,303 @@ impl PageDirectoryTable {
         } else {
             None
         }
+    }
+}
+
+/// Standard 4KB Page Table Entry (PTE).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct PageTableEntry4KB(pub u64);
+
+impl PageTableEntry4KB {
+    pub const fn empty() -> Self {
+        Self(0)
+    }
+
+    pub const fn new(phys_addr: usize, flags: u64) -> Self {
+        let addr_masked = (phys_addr as u64) & 0x000F_FFFF_FFFF_F000;
+        Self(addr_masked | flags)
+    }
+
+    #[inline(always)]
+    pub const fn is_present(&self) -> bool {
+        (self.0 & HugePageFlags::PRESENT) != 0
+    }
+
+    #[inline(always)]
+    pub const fn is_writable(&self) -> bool {
+        (self.0 & HugePageFlags::WRITABLE) != 0
+    }
+
+    #[inline(always)]
+    pub const fn is_user(&self) -> bool {
+        (self.0 & HugePageFlags::USER_ACCESSIBLE) != 0
+    }
+
+    #[inline(always)]
+    pub const fn physical_address(&self) -> usize {
+        (self.0 & 0x000F_FFFF_FFFF_F000) as usize
+    }
+
+    #[inline(always)]
+    pub const fn flags(&self) -> u64 {
+        self.0 & 0xFFF
+    }
+}
+
+/// A Page Table (PT) containing 512 4KB entries (PTEs) spanning a 2MB address range.
+#[derive(Clone, Copy)]
+pub struct PageTable4KB {
+    pub entries: [PageTableEntry4KB; PAGES_PER_2MB],
+}
+
+impl PageTable4KB {
+    pub const fn new() -> Self {
+        Self {
+            entries: [PageTableEntry4KB::empty(); PAGES_PER_2MB],
+        }
+    }
+
+    /// Checks if all 512 entries are present and contiguous in physical memory.
+    pub fn is_contiguous_2mb(&self) -> bool {
+        if !self.entries[0].is_present() {
+            return false;
+        }
+        let base_phys = self.entries[0].physical_address();
+        if (base_phys & OFFSET_MASK_2MB) != 0 {
+            return false;
+        }
+
+        for i in 1..PAGES_PER_2MB {
+            if !self.entries[i].is_present() {
+                return false;
+            }
+            if self.entries[i].physical_address() != base_phys + i * PAGE_SIZE_4KB {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Checks if all present entries share identical access permissions.
+    pub fn has_uniform_permissions(&self) -> bool {
+        let mut first_flags: Option<u64> = None;
+        for entry in self.entries.iter() {
+            if entry.is_present() {
+                let mask = HugePageFlags::WRITABLE | HugePageFlags::USER_ACCESSIBLE | HugePageFlags::NO_EXECUTE;
+                let perm = entry.flags() & mask;
+                match first_flags {
+                    None => first_flags = Some(perm),
+                    Some(f) if f != perm => return false,
+                    _ => {}
+                }
+            }
+        }
+        first_flags.is_some()
+    }
+
+    /// Counts how many of the 512 entries are present.
+    pub fn present_count(&self) -> usize {
+        let mut count = 0;
+        for entry in self.entries.iter() {
+            if entry.is_present() {
+                count += 1;
+            }
+        }
+        count
+    }
+}
+
+/// Operational mode for Transparent Huge Pages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThpMode {
+    Always,
+    Madvise,
+    Never,
+}
+
+/// Performance telemetry counters for Transparent Huge Pages.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ThpStats {
+    pub pages_collapsed: u64,
+    pub pages_split: u64,
+    pub collapse_scans: u64,
+    pub collapse_failures: u64,
+    pub zero_pool_hits: u64,
+    pub zero_pool_misses: u64,
+}
+
+/// Pre-zeroed 2MB large page pool for zero-fill optimization.
+pub const ZERO_POOL_CAPACITY: usize = 8;
+
+pub struct HugeZeroPool {
+    pool: [Option<HugePhysFrame>; ZERO_POOL_CAPACITY],
+    count: usize,
+}
+
+impl HugeZeroPool {
+    pub const fn new() -> Self {
+        Self {
+            pool: [None; ZERO_POOL_CAPACITY],
+            count: 0,
+        }
+    }
+
+    /// Replenishes the pool with pre-zeroed 2MB frames from the physical allocator.
+    pub fn replenish(&mut self, allocator: &mut HugePageAllocator) -> usize {
+        let mut replenished = 0;
+        while self.count < ZERO_POOL_CAPACITY {
+            if let Some(frame) = allocator.allocate_2mb_frame() {
+                self.pool[self.count] = Some(frame);
+                self.count += 1;
+                replenished += 1;
+            } else {
+                break;
+            }
+        }
+        replenished
+    }
+
+    /// Takes a pre-zeroed 2MB frame from the pool.
+    pub fn take(&mut self) -> Option<HugePhysFrame> {
+        if self.count > 0 {
+            self.count -= 1;
+            self.pool[self.count].take()
+        } else {
+            None
+        }
+    }
+
+    #[inline(always)]
+    pub const fn available(&self) -> usize {
+        self.count
+    }
+}
+
+/// Transparent Huge Page (THP) daemon and management engine (`khugepaged`).
+pub struct TransparentHugePageDaemon {
+    pub mode: ThpMode,
+    pub stats: ThpStats,
+    pub zero_pool: HugeZeroPool,
+}
+
+impl TransparentHugePageDaemon {
+    pub const fn new(mode: ThpMode) -> Self {
+        Self {
+            mode,
+            stats: ThpStats {
+                pages_collapsed: 0,
+                pages_split: 0,
+                collapse_scans: 0,
+                collapse_failures: 0,
+                zero_pool_hits: 0,
+                zero_pool_misses: 0,
+            },
+            zero_pool: HugeZeroPool::new(),
+        }
+    }
+
+    /// Scans a 512-entry 4KB Page Table and collapses it into a 2MB Huge Page if eligible.
+    pub fn scan_and_collapse(
+        &mut self,
+        pd: &mut PageDirectoryTable,
+        pt: &PageTable4KB,
+        vaddr_2mb: usize,
+        allocator: &mut HugePageAllocator,
+    ) -> Result<HugePhysFrame, &'static str> {
+        self.stats.collapse_scans += 1;
+
+        if self.mode == ThpMode::Never {
+            self.stats.collapse_failures += 1;
+            return Err("THP is disabled in Never mode");
+        }
+
+        // Must have all 512 entries present and uniform permissions
+        if pt.present_count() < PAGES_PER_2MB {
+            self.stats.collapse_failures += 1;
+            return Err("Not all 512 4KB pages are present for collapse");
+        }
+
+        if !pt.has_uniform_permissions() {
+            self.stats.collapse_failures += 1;
+            return Err("Incompatible page permissions across 2MB range");
+        }
+
+        // Allocate a 2MB huge frame (preferring the pre-zeroed pool)
+        let huge_frame = if let Some(pool_frame) = self.zero_pool.take() {
+            self.stats.zero_pool_hits += 1;
+            pool_frame
+        } else {
+            self.stats.zero_pool_misses += 1;
+            match allocator.allocate_2mb_frame() {
+                Some(f) => f,
+                None => {
+                    self.stats.collapse_failures += 1;
+                    return Err("Out of 2MB physical frames for collapse");
+                }
+            }
+        };
+
+        // Determine flags from first PTE
+        let first_pte = pt.entries[0];
+        let mut flags = HugePageFlags::PRESENT;
+        if first_pte.is_writable() {
+            flags |= HugePageFlags::WRITABLE;
+        }
+        if first_pte.is_user() {
+            flags |= HugePageFlags::USER_ACCESSIBLE;
+        }
+
+        // Map into Page Directory as a 2MB huge page
+        if let Err(e) = pd.map_2mb(vaddr_2mb, huge_frame.base_address(), flags) {
+            allocator.deallocate_2mb_frame(huge_frame);
+            self.stats.collapse_failures += 1;
+            return Err(e);
+        }
+
+        self.stats.pages_collapsed += 1;
+        Ok(huge_frame)
+    }
+
+    /// Splits an existing 2MB Huge Page back into a 512-entry 4KB Page Table.
+    pub fn split_huge_page(
+        &mut self,
+        pd: &mut PageDirectoryTable,
+        vaddr_2mb: usize,
+        allocator: &mut HugePageAllocator,
+    ) -> Result<PageTable4KB, &'static str> {
+        let comp = VirtualAddressComponents::decompose(vaddr_2mb);
+        let entry = pd.entries[comp.pd_index];
+
+        if !entry.is_present() || !entry.is_huge() {
+            return Err("Page Directory entry is not a present 2MB huge page");
+        }
+
+        let huge_phys_base = entry.physical_address();
+        let is_writable = entry.is_writable();
+        let is_user = entry.is_user();
+
+        // Populate new 4KB Page Table
+        let mut pt = PageTable4KB::new();
+        let mut pte_flags = HugePageFlags::PRESENT;
+        if is_writable {
+            pte_flags |= HugePageFlags::WRITABLE;
+        }
+        if is_user {
+            pte_flags |= HugePageFlags::USER_ACCESSIBLE;
+        }
+
+        for i in 0..PAGES_PER_2MB {
+            let page_phys = huge_phys_base + i * PAGE_SIZE_4KB;
+            pt.entries[i] = PageTableEntry4KB::new(page_phys, pte_flags);
+        }
+
+        // Unmap the 2MB huge entry from PD
+        if let Some(huge_frame) = pd.unmap_2mb(vaddr_2mb) {
+            allocator.deallocate_2mb_frame(huge_frame);
+        }
+
+        self.stats.pages_split += 1;
+        Ok(pt)
     }
 }
