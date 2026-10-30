@@ -270,6 +270,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] NVMe storage subsystem self-test failed!\r\n");
     }
 
+    // Initialize and verify High-Speed NVMe Overlapped Async I/O (io_uring Style) Completion Engine
+    if !drivers::storage::test_nvme_uring_subsystem() {
+        serial_write_str("[KNT-PANIC] NVMe overlapped async I/O completion engine self-test failed!\r\n");
+    }
+
     // Initialize Embedded Network Protocol Stack (ARP, IPv4, ICMP, UDP, TCP)
     net::init();
     if !net::test_network_stack() {
