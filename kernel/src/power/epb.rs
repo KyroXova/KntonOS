@@ -1,30 +1,16 @@
 //! Energy-Performance Bias (EPB) & Hardware P-State EPP Governor Profiles.
-//!
 //! Controls Intel IA32_ENERGY_PERF_BIAS (MSR 0x1B0) and Intel/AMD IA32_HWP_REQUEST
-//! Energy-Performance Preference (EPP bits 31:24 of MSR 0x774).
-//! Provides high-level profiles: Performance, Balanced, and PowerSaver.
 
 use crate::arch::x86_64::syscall::{rdmsr, wrmsr};
 
-// -----------------------------------------------------------------------------
 // Hardware MSR Addresses & Architectural Masks
-// -----------------------------------------------------------------------------
 
 /// Intel IA32_ENERGY_PERF_BIAS MSR (introduced in Nehalem/Sandy Bridge).
 /// Bits 3:0 specify EPB policy:
-/// - 0: Maximum Performance
-/// - 4: Balanced Performance
-/// - 6: Normal Balanced
-/// - 8: Balanced Power
-/// - 15: Maximum Power Saving
 pub const IA32_ENERGY_PERF_BIAS_MSR: u32 = 0x0000_01B0;
 
 /// Intel & AMD Hardware-Controlled P-States (HWP) Request MSR.
 /// Bits 31:24 define Energy_Performance_Preference (EPP):
-/// - 0x00: Performance
-/// - 0x40: Balance Performance
-/// - 0x80: Balance Power
-/// - 0xFF: Power Saver
 pub const IA32_HWP_REQUEST_MSR: u32 = 0x0000_0774;
 
 /// Intel IA32_MISC_ENABLE MSR. Bit 16 indicates whether Turbo Mode is available.
@@ -34,9 +20,7 @@ pub const IA32_MISC_ENABLE_MSR: u32 = 0x0000_01A0;
 pub const HWP_REQUEST_EPP_MASK: u64 = 0xFF00_0000;
 pub const HWP_REQUEST_EPP_SHIFT: u32 = 24;
 
-// -----------------------------------------------------------------------------
 // EPB / EPP Governor Profiles
-// -----------------------------------------------------------------------------
 
 /// High-level Energy-Performance governor profile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,9 +53,7 @@ impl EpbProfile {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Hardware MSR Controller & Emulated Register Store
-// -----------------------------------------------------------------------------
 
 /// Hardware EPB & EPP MSR Controller.
 pub struct HardwareEpbManager {
@@ -128,9 +110,7 @@ impl HardwareEpbManager {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Unit Tests & Verification
-// -----------------------------------------------------------------------------
 
 /// Verification self-test for EPB and EPP hardware MSR governor profiles.
 pub fn verify_epb_and_epp_profiles() -> bool {
