@@ -195,6 +195,181 @@ impl DualMotorRumbleController {
 // Unit Tests & Verification
 // -----------------------------------------------------------------------------
 
+// -----------------------------------------------------------------------------
+// USB HID & Gamepad Force Feedback Report Framing
+// -----------------------------------------------------------------------------
+
+/// Wire protocol for gamepad force feedback / vibration output report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HapticReportProtocol {
+    /// Xbox One / Series XINPUT vibration report (Report ID 0x09, 8 bytes).
+    XboxOneGip,
+    /// Standard USB HID PID (Physical Interface Device) force feedback output report.
+    UsbHidPid,
+    /// DualSense / DualShock 4 haptic output packet (Report ID 0x05 / 0x11).
+    PlayStationDs,
+}
+
+/// Standard Xbox GIP Haptic Output Report (Report ID 0x09).
+/// Format:
+/// [0]: Report ID (0x09)
+/// [1]: Sub-command / flags (0x00)
+/// [2]: Left trigger motor (0-255)
+/// [3]: Right trigger motor (0-255)
+/// [4]: Left main LF motor (0-255)
+/// [5]: Right main HF motor (0-255)
+/// [6]: Duration in 10ms increments (0 = continuous)
+/// [7]: Delay in 10ms increments
+#[repr(C, packed)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct XboxHapticReport {
+    pub report_id: u8,
+    pub flags: u8,
+    pub left_trigger: u8,
+    pub right_trigger: u8,
+    pub strong_lf: u8,
+    pub weak_hf: u8,
+    pub duration_10ms: u8,
+    pub delay_10ms: u8,
+}
+
+impl XboxHapticReport {
+    pub fn new(speeds: MotorSpeeds) -> Self {
+        Self {
+            report_id: 0x09,
+            flags: 0x00,
+            left_trigger: 0,
+            right_trigger: 0,
+            strong_lf: speeds.strong_lf,
+            weak_hf: speeds.weak_hf,
+            duration_10ms: 0xFF, // continuous until next report
+            delay_10ms: 0x00,
+        }
+    }
+
+    pub fn to_bytes(&self) -> [u8; 8] {
+        [
+            self.report_id,
+            self.flags,
+            self.left_trigger,
+            self.right_trigger,
+            self.strong_lf,
+            self.weak_hf,
+            self.duration_10ms,
+            self.delay_10ms,
+        ]
+    }
+}
+
+/// Standard USB HID Force Feedback PID (Physical Interface Device) Report.
+/// Report ID 0x01: Output Report with 16-bit magnitude values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UsbHidPidReport {
+    pub report_id: u8,
+    pub strong_lf_magnitude: u16, // 0..=65535
+    pub weak_hf_magnitude: u16,   // 0..=65535
+}
+
+impl UsbHidPidReport {
+    pub fn new(speeds: MotorSpeeds) -> Self {
+        Self {
+            report_id: 0x01,
+            strong_lf_magnitude: (speeds.strong_lf as u16) * 257, // 0..255 -> 0..65535
+            weak_hf_magnitude: (speeds.weak_hf as u16) * 257,
+        }
+    }
+
+    pub fn to_bytes(&self) -> [u8; 5] {
+        [
+            self.report_id,
+            (self.strong_lf_magnitude & 0xFF) as u8,
+            ((self.strong_lf_magnitude >> 8) & 0xFF) as u8,
+            (self.weak_hf_magnitude & 0xFF) as u8,
+            ((self.weak_hf_magnitude >> 8) & 0xFF) as u8,
+        ]
+    }
+}
+
+/// Formatter creating device-specific wire packets from motor speeds.
+pub struct HapticReportFormatter;
+
+impl HapticReportFormatter {
+    /// Formats an output report byte buffer according to the target protocol.
+    pub fn format_report(protocol: HapticReportProtocol, speeds: MotorSpeeds, out_buf: &mut [u8]) -> usize {
+        match protocol {
+            HapticReportProtocol::XboxOneGip => {
+                if out_buf.len() < 8 {
+                    return 0;
+                }
+                let report = XboxHapticReport::new(speeds);
+                out_buf[..8].copy_from_slice(&report.to_bytes());
+                8
+            }
+            HapticReportProtocol::UsbHidPid => {
+                if out_buf.len() < 5 {
+                    return 0;
+                }
+                let report = UsbHidPidReport::new(speeds);
+                out_buf[..5].copy_from_slice(&report.to_bytes());
+                5
+            }
+            HapticReportProtocol::PlayStationDs => {
+                if out_buf.len() < 10 {
+                    return 0;
+                }
+                // DualSense / DS4 compatible rumble frame
+                // [0] = 0x05 (Report ID)
+                // [1] = 0x07 (Motor flag enable)
+                // [2] = 0x00
+                // [3] = Weak HF motor (right)
+                // [4] = Strong LF motor (left)
+                out_buf[0] = 0x05;
+                out_buf[1] = 0x07;
+                out_buf[2] = 0x00;
+                out_buf[3] = speeds.weak_hf;
+                out_buf[4] = speeds.strong_lf;
+                for i in 5..10 {
+                    out_buf[i] = 0;
+                }
+                10
+            }
+        }
+    }
+}
+
+/// Unit test verifying USB HID and Gamepad force feedback report packet formatting.
+pub fn verify_haptic_report_formatting() -> bool {
+    let speeds = MotorSpeeds::new(180, 220);
+
+    // 1. Xbox GIP framing
+    let mut xbox_buf = [0u8; 8];
+    let len_xbox = HapticReportFormatter::format_report(HapticReportProtocol::XboxOneGip, speeds, &mut xbox_buf);
+    if len_xbox != 8 || xbox_buf[0] != 0x09 || xbox_buf[4] != 180 || xbox_buf[5] != 220 {
+        return false;
+    }
+
+    // 2. USB HID PID framing
+    let mut pid_buf = [0u8; 5];
+    let len_pid = HapticReportFormatter::format_report(HapticReportProtocol::UsbHidPid, speeds, &mut pid_buf);
+    if len_pid != 5 || pid_buf[0] != 0x01 {
+        return false;
+    }
+    let lf_16 = (pid_buf[1] as u16) | ((pid_buf[2] as u16) << 8);
+    let hf_16 = (pid_buf[3] as u16) | ((pid_buf[4] as u16) << 8);
+    if lf_16 != 180 * 257 || hf_16 != 220 * 257 {
+        return false;
+    }
+
+    // 3. PlayStation DS framing
+    let mut ds_buf = [0u8; 10];
+    let len_ds = HapticReportFormatter::format_report(HapticReportProtocol::PlayStationDs, speeds, &mut ds_buf);
+    if len_ds != 10 || ds_buf[0] != 0x05 || ds_buf[3] != 220 || ds_buf[4] != 180 {
+        return false;
+    }
+
+    true
+}
+
 /// Unit test verifying dual-motor rumble controller, playback queue mixing, and timeline progression.
 pub fn verify_dual_motor_controller() -> bool {
     use crate::drivers::input::waveform::{AdsrEnvelope, WaveformType};
