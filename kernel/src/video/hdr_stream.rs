@@ -465,3 +465,388 @@ impl MirrorStreamPacketHeader {
         crc
     }
 }
+
+
+// -----------------------------------------------------------------------------
+// Real-Time Fixed-Point HDR Tonemapper & Gamut Compressor Implementation
+// -----------------------------------------------------------------------------
+
+/// Unpack 32-bit packed HDR10 R10G10B10A2 pixel into 10-bit components and 2-bit alpha.
+#[inline(always)]
+pub fn unpack_r10g10b10a2(packed: u32) -> (u16, u16, u16, u8) {
+    let r = (packed & 0x3FF) as u16;
+    let g = ((packed >> 10) & 0x3FF) as u16;
+    let b = ((packed >> 20) & 0x3FF) as u16;
+    let a = ((packed >> 30) & 0x03) as u8;
+    (r, g, b, a)
+}
+
+/// Pack 10-bit color components and 2-bit alpha into 32-bit R10G10B10A2 pixel.
+#[inline(always)]
+pub fn pack_r10g10b10a2(r: u16, g: u16, b: u16, a: u8) -> u32 {
+    ((r as u32) & 0x3FF)
+        | (((g as u32) & 0x3FF) << 10)
+        | (((b as u32) & 0x3FF) << 20)
+        | (((a as u32) & 0x03) << 30)
+}
+
+/// Convert 10-bit HDR10 PQ sample value into normalized linear luminance in 16.16 fixed point.
+/// Calibrated so that 512 (reference SDR paper-white) maps to 1.0 (65536),
+/// and 1023 (maximum HDR peak) maps to 4.0x (262144).
+#[inline]
+pub fn hdr10_to_linear_q16(val_10bit: u16) -> u32 {
+    let v = val_10bit.min(1023) as u32;
+    if v <= 512 {
+        // Linear mapping up to 1.0 (65536)
+        v * 128
+    } else {
+        // Non-linear expansion above paper-white up to 4.0x (262144)
+        let delta = v - 512;
+        65536 + ((delta as u64 * 196608) / 511) as u32
+    }
+}
+
+/// Convert 16-bit scRGB linear sample into normalized 16.16 fixed-point luminance.
+/// Standard scRGB maps 1.0 (paper-white) to 8192.
+#[inline]
+pub fn scrgb_to_linear_q16(val_16bit: u16) -> u32 {
+    let v = val_16bit as u32;
+    (v * 65536) / 8192
+}
+
+/// Apply extended Reinhard tonemapping curve:
+/// $L_{out} = L_{in} (1 + L_{in} / L_{w}^2) / (1 + L_{in})$.
+/// Computed entirely in 64-bit integer arithmetic without floating-point instructions.
+pub fn apply_tonemap_reinhard(x_q16: u32, white_point_q16: u32) -> u32 {
+    if x_q16 == 0 {
+        return 0;
+    }
+    let x = x_q16 as u64;
+    let w = white_point_q16.max(65536) as u64;
+    let w2 = (w * w) >> 16;
+    let w2_safe = if w2 == 0 { 65536 } else { w2 };
+
+    let x2_over_w2 = (x * x) / w2_safe;
+    let numerator = (x + x2_over_w2) * 65536;
+    let denominator = x + 65536;
+
+    let result = numerator / denominator;
+    result.min(65536) as u32
+}
+
+/// Apply Academy Color Encoding System (ACES) filmic S-curve approximation:
+/// $f(x) = x(2.51x + 0.03) / (x(2.43x + 0.59) + 0.14)$.
+/// Computed entirely with fixed-point integer arithmetic in Q16.16.
+pub fn apply_tonemap_aces(x_q16: u32) -> u32 {
+    if x_q16 == 0 {
+        return 0;
+    }
+    let x = x_q16 as u64;
+
+    // ACES coefficients scaled to Q16.16:
+    // a = 2.51 * 65536 = 164495
+    // b = 0.03 * 65536 = 1966
+    // c = 2.43 * 65536 = 159252
+    // d = 0.59 * 65536 = 38666
+    // e = 0.14 * 65536 = 9175
+    let a: u64 = 164495;
+    let b: u64 = 1966;
+    let c: u64 = 159252;
+    let d: u64 = 38666;
+    let e: u64 = 9175;
+
+    let ax_b = ((a * x) >> 16) + b;
+    let num = (x * ax_b) >> 16;
+
+    let cx_d = ((c * x) >> 16) + d;
+    let den = ((x * cx_d) >> 16) + e;
+
+    if den == 0 {
+        return 0;
+    }
+
+    let result = (num << 16) / den;
+    result.min(65536) as u32
+}
+
+/// Convert BT.2020 wide color gamut primaries to BT.709 (sRGB) primaries using 16.16 fixed-point matrix:
+/// [R_709]   [ 1.6605  -0.5876  -0.0728 ] [R_2020]
+/// [G_709] = [ -0.1246  1.1329  -0.0083 ] [G_2020]
+/// [B_709]   [ -0.0182  -0.1006  1.1187 ] [B_2020]
+pub fn apply_bt2020_to_bt709_gamut(r_q16: i32, g_q16: i32, b_q16: i32) -> (i32, i32, i32) {
+    let r = r_q16 as i64;
+    let g = g_q16 as i64;
+    let b = b_q16 as i64;
+
+    let r_out = (108823 * r - 38509 * g - 4778 * b) >> 16;
+    let g_out = (-8166 * r + 74246 * g - 544 * b) >> 16;
+    let b_out = (-1193 * r - 6593 * g + 73322 * b) >> 16;
+
+    (r_out.max(0) as i32, g_out.max(0) as i32, b_out.max(0) as i32)
+}
+
+/// Perform highlight desaturation and gamut compression.
+/// Prevents out-of-gamut color clipping and edge hue shifts in high-brightness areas.
+pub fn apply_highlight_desaturation(
+    r_q16: u32,
+    g_q16: u32,
+    b_q16: u32,
+    saturation_q16: u32,
+) -> (u32, u32, u32) {
+    // Luminance approximation Y = 0.2126 R + 0.7152 G + 0.0722 B in Q8
+    let y = ((54 * (r_q16 >> 8) + 183 * (g_q16 >> 8) + 19 * (b_q16 >> 8)) >> 8) << 8;
+
+    // Above 75% of SDR white (49152 in Q16.16), smoothly desaturate towards paper-white
+    let desat_threshold = 49152u32;
+    let mut sat = saturation_q16 as u64;
+
+    if y > desat_threshold {
+        let excess = (y - desat_threshold) as u64;
+        let factor = (excess << 16) / 16384; // 0..65536
+        let roll_off = 65536 - factor.min(65536);
+        sat = (sat * roll_off) >> 16;
+    }
+
+    let r_diff = (r_q16 as i64) - (y as i64);
+    let g_diff = (g_q16 as i64) - (y as i64);
+    let b_diff = (b_q16 as i64) - (y as i64);
+
+    let r_final = ((y as i64) + ((r_diff * (sat as i64)) >> 16)).max(0).min(65536) as u32;
+    let g_final = ((y as i64) + ((g_diff * (sat as i64)) >> 16)).max(0).min(65536) as u32;
+    let b_final = ((y as i64) + ((b_diff * (sat as i64)) >> 16)).max(0).min(65536) as u32;
+
+    (r_final, g_final, b_final)
+}
+
+/// Tonemap a single pixel with arbitrary linear input channels into 8-bit SDR RGB.
+pub fn tonemap_pixel(
+    r_lin_q16: u32,
+    g_lin_q16: u32,
+    b_lin_q16: u32,
+    params: &TonemapParameters,
+) -> (u8, u8, u8) {
+    // 1. Apply exposure scaling
+    let r_exp = ((r_lin_q16 as u64 * params.exposure_q16 as u64) >> 16) as u32;
+    let g_exp = ((g_lin_q16 as u64 * params.exposure_q16 as u64) >> 16) as u32;
+    let b_exp = ((b_lin_q16 as u64 * params.exposure_q16 as u64) >> 16) as u32;
+
+    // 2. Wide color gamut compression from BT.2020 to BT.709 if enabled
+    let (r_gamut, g_gamut, b_gamut) = if params.gamut_compress_enabled {
+        let (r709, g709, b709) = apply_bt2020_to_bt709_gamut(r_exp as i32, g_exp as i32, b_exp as i32);
+        (r709 as u32, g709 as u32, b709 as u32)
+    } else {
+        (r_exp, g_exp, b_exp)
+    };
+
+    // 3. Apply mathematical tonemapping curve
+    let (r_tm, g_tm, b_tm) = match params.operator {
+        TonemapOperator::LinearClamp => (
+            r_gamut.min(65536),
+            g_gamut.min(65536),
+            b_gamut.min(65536),
+        ),
+        TonemapOperator::Reinhard => (
+            apply_tonemap_reinhard(r_gamut, 65536),
+            apply_tonemap_reinhard(g_gamut, 65536),
+            apply_tonemap_reinhard(b_gamut, 65536),
+        ),
+        TonemapOperator::ReinhardExtended => (
+            apply_tonemap_reinhard(r_gamut, params.white_point_q16),
+            apply_tonemap_reinhard(g_gamut, params.white_point_q16),
+            apply_tonemap_reinhard(b_gamut, params.white_point_q16),
+        ),
+        TonemapOperator::AcesFilmic => (
+            apply_tonemap_aces(r_gamut),
+            apply_tonemap_aces(g_gamut),
+            apply_tonemap_aces(b_gamut),
+        ),
+    };
+
+    // 4. Highlight desaturation & saturation modulation
+    let (r_desat, g_desat, b_desat) = apply_highlight_desaturation(
+        r_tm,
+        g_tm,
+        b_tm,
+        params.saturation_q16,
+    );
+
+    // 5. Convert Q16.16 [0..65536] to 8-bit [0..255]
+    let r_8 = ((r_desat as u64 * 255 + 32768) >> 16).min(255) as u8;
+    let g_8 = ((g_desat as u64 * 255 + 32768) >> 16).min(255) as u8;
+    let b_8 = ((b_desat as u64 * 255 + 32768) >> 16).min(255) as u8;
+
+    (r_8, g_8, b_8)
+}
+
+/// Real-time kernel HDR tonemapper engine executing scanline-level processing.
+pub struct HdrTonemapper {
+    pub params: TonemapParameters,
+}
+
+impl HdrTonemapper {
+    /// Initialize a new real-time tonemapper engine.
+    pub fn new(params: TonemapParameters) -> Self {
+        Self { params }
+    }
+
+    /// Update active tonemapping parameters.
+    pub fn update_parameters(&mut self, params: TonemapParameters) {
+        self.params = params;
+    }
+
+    /// Tonemap a single scanline of packed HDR10 R10G10B10A2 into SDR RGBA8888.
+    pub fn tonemap_scanline_hdr10_to_rgba8(
+        &self,
+        src_hdr10: &[u8],
+        dst_rgba8: &mut [u8],
+        pixel_count: usize,
+    ) {
+        let src_bytes = pixel_count * 4;
+        let dst_bytes = pixel_count * 4;
+        if src_hdr10.len() < src_bytes || dst_rgba8.len() < dst_bytes {
+            return;
+        }
+
+        for i in 0..pixel_count {
+            let src_offset = i * 4;
+            let packed = u32::from_le_bytes([
+                src_hdr10[src_offset],
+                src_hdr10[src_offset + 1],
+                src_hdr10[src_offset + 2],
+                src_hdr10[src_offset + 3],
+            ]);
+
+            let (r10, g10, b10, _a2) = unpack_r10g10b10a2(packed);
+            let r_lin = hdr10_to_linear_q16(r10);
+            let g_lin = hdr10_to_linear_q16(g10);
+            let b_lin = hdr10_to_linear_q16(b10);
+
+            let (r8, g8, b8) = tonemap_pixel(r_lin, g_lin, b_lin, &self.params);
+
+            let dst_offset = i * 4;
+            dst_rgba8[dst_offset] = r8;
+            dst_rgba8[dst_offset + 1] = g8;
+            dst_rgba8[dst_offset + 2] = b8;
+            dst_rgba8[dst_offset + 3] = 255;
+        }
+    }
+
+    /// Tonemap a single scanline of 64-bit scRGB FP16 linear pixels into SDR RGBA8888.
+    pub fn tonemap_scanline_scrgb_to_rgba8(
+        &self,
+        src_scrgb: &[u8],
+        dst_rgba8: &mut [u8],
+        pixel_count: usize,
+    ) {
+        let src_bytes = pixel_count * 8;
+        let dst_bytes = pixel_count * 4;
+        if src_scrgb.len() < src_bytes || dst_rgba8.len() < dst_bytes {
+            return;
+        }
+
+        for i in 0..pixel_count {
+            let src_offset = i * 8;
+            let r_half = u16::from_le_bytes([src_scrgb[src_offset], src_scrgb[src_offset + 1]]);
+            let g_half = u16::from_le_bytes([src_scrgb[src_offset + 2], src_scrgb[src_offset + 3]]);
+            let b_half = u16::from_le_bytes([src_scrgb[src_offset + 4], src_scrgb[src_offset + 5]]);
+
+            let r_lin = scrgb_to_linear_q16(r_half);
+            let g_lin = scrgb_to_linear_q16(g_half);
+            let b_lin = scrgb_to_linear_q16(b_half);
+
+            let (r8, g8, b8) = tonemap_pixel(r_lin, g_lin, b_lin, &self.params);
+
+            let dst_offset = i * 4;
+            dst_rgba8[dst_offset] = r8;
+            dst_rgba8[dst_offset + 1] = g8;
+            dst_rgba8[dst_offset + 2] = b8;
+            dst_rgba8[dst_offset + 3] = 255;
+        }
+    }
+
+    /// Tonemap a single scanline of HDR10 into compact 16-bit RGB565 (for bandwidth constrained mirrors).
+    pub fn tonemap_scanline_hdr10_to_rgb565(
+        &self,
+        src_hdr10: &[u8],
+        dst_rgb565: &mut [u8],
+        pixel_count: usize,
+    ) {
+        let src_bytes = pixel_count * 4;
+        let dst_bytes = pixel_count * 2;
+        if src_hdr10.len() < src_bytes || dst_rgb565.len() < dst_bytes {
+            return;
+        }
+
+        for i in 0..pixel_count {
+            let src_offset = i * 4;
+            let packed = u32::from_le_bytes([
+                src_hdr10[src_offset],
+                src_hdr10[src_offset + 1],
+                src_hdr10[src_offset + 2],
+                src_hdr10[src_offset + 3],
+            ]);
+
+            let (r10, g10, b10, _) = unpack_r10g10b10a2(packed);
+            let (r8, g8, b8) = tonemap_pixel(
+                hdr10_to_linear_q16(r10),
+                hdr10_to_linear_q16(g10),
+                hdr10_to_linear_q16(b10),
+                &self.params,
+            );
+
+            let rgb565: u16 = (((r8 as u16) >> 3) << 11)
+                | (((g8 as u16) >> 2) << 5)
+                | ((b8 as u16) >> 3);
+
+            let dst_offset = i * 2;
+            let bytes = rgb565.to_le_bytes();
+            dst_rgb565[dst_offset] = bytes[0];
+            dst_rgb565[dst_offset + 1] = bytes[1];
+        }
+    }
+
+    /// Tonemap a horizontal slice of scanlines between source surface and destination surface.
+    pub fn tonemap_slice(
+        &self,
+        src: &[u8],
+        dst: &mut [u8],
+        src_stride: usize,
+        dst_stride: usize,
+        width: usize,
+        start_line: usize,
+        line_count: usize,
+        src_format: HdrPixelFormat,
+        dst_format: HdrPixelFormat,
+    ) -> Result<usize, &'static str> {
+        let mut bytes_written = 0;
+        for line in 0..line_count {
+            let row = start_line + line;
+            let src_offset = row * src_stride;
+            let dst_offset = line * dst_stride;
+
+            if src_offset + src_stride > src.len() || dst_offset + dst_stride > dst.len() {
+                return Err("Slice bounds exceed buffer size");
+            }
+
+            let src_row = &src[src_offset..src_offset + src_stride];
+            let dst_row = &mut dst[dst_offset..dst_offset + dst_stride];
+
+            match (src_format, dst_format) {
+                (HdrPixelFormat::Hdr10R10G10B10A2, HdrPixelFormat::SdrRgba8888) => {
+                    self.tonemap_scanline_hdr10_to_rgba8(src_row, dst_row, width);
+                    bytes_written += width * 4;
+                }
+                (HdrPixelFormat::Hdr10R10G10B10A2, HdrPixelFormat::SdrRgb565) => {
+                    self.tonemap_scanline_hdr10_to_rgb565(src_row, dst_row, width);
+                    bytes_written += width * 2;
+                }
+                (HdrPixelFormat::ScRgbFp16, HdrPixelFormat::SdrRgba8888) => {
+                    self.tonemap_scanline_scrgb_to_rgba8(src_row, dst_row, width);
+                    bytes_written += width * 4;
+                }
+                _ => return Err("Unsupported format combination for tonemapper"),
+            }
+        }
+        Ok(bytes_written)
+    }
+}
