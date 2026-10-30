@@ -203,6 +203,155 @@ impl HardwareOverlayPlane {
 // Unit Tests & Verification
 // -----------------------------------------------------------------------------
 
+// -----------------------------------------------------------------------------
+// Global Overlay Shortcut Interceptor & Controller Trigger
+// -----------------------------------------------------------------------------
+
+/// Controller / Keyboard Overlay Toggle Trigger.
+/// Intercepts:
+/// - Controller: Guide + A combo
+/// - Keyboard: Super / Meta (Windows key) + G combo
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct OverlayShortcutInterceptor {
+    pub guide_pressed: bool,
+    pub a_pressed: bool,
+    pub meta_pressed: bool,
+    pub g_pressed: bool,
+    pub toggle_latched: bool,
+}
+
+impl OverlayShortcutInterceptor {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Evaluates raw gamepad button state (Guide = bit 14, A = bit 0).
+    /// Returns true if Guide + A combo was just triggered.
+    pub fn process_gamepad_buttons(&mut self, buttons: u32) -> bool {
+        let is_guide = (buttons & (1 << 14)) != 0;
+        let is_a = (buttons & (1 << 0)) != 0;
+
+        self.guide_pressed = is_guide;
+        self.a_pressed = is_a;
+
+        if is_guide && is_a {
+            if !self.toggle_latched {
+                self.toggle_latched = true;
+                return true;
+            }
+        } else {
+            self.toggle_latched = false;
+        }
+
+        false
+    }
+
+    /// Evaluates USB / PS2 keyboard scancodes.
+    /// Standard USB HID usages: Left GUI = 0xE3, Right GUI = 0xE7, Key 'G' = 0x0A.
+    /// PS/2 set 1: Left Windows = 0x5B (or 0xE05B), Key 'G' = 0x22.
+    pub fn process_key_event(&mut self, scancode: u16, pressed: bool) -> bool {
+        let is_meta = scancode == 0xE3 || scancode == 0xE7 || scancode == 0x5B || scancode == 0xE05B;
+        let is_g = scancode == 0x0A || scancode == 0x22 || scancode == 0x47;
+
+        if is_meta {
+            self.meta_pressed = pressed;
+        }
+        if is_g {
+            self.g_pressed = pressed;
+        }
+
+        if self.meta_pressed && self.g_pressed {
+            if !self.toggle_latched {
+                self.toggle_latched = true;
+                return true;
+            }
+        } else if !self.meta_pressed || !self.g_pressed {
+            self.toggle_latched = false;
+        }
+
+        false
+    }
+
+    /// Toggles visibility of target overlay plane upon combo detection.
+    pub fn handle_gamepad_toggle(&mut self, buttons: u32, overlay: &mut HardwareOverlayPlane) -> bool {
+        if self.process_gamepad_buttons(buttons) {
+            let next_vis = !overlay.visible;
+            overlay.set_visible(next_vis);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Toggles visibility of target overlay plane upon keyboard combo detection.
+    pub fn handle_keyboard_toggle(&mut self, scancode: u16, pressed: bool, overlay: &mut HardwareOverlayPlane) -> bool {
+        if self.process_key_event(scancode, pressed) {
+            let next_vis = !overlay.visible;
+            overlay.set_visible(next_vis);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// Unit test verifying gamepad and keyboard overlay shortcut interception and toggle latching.
+pub fn verify_overlay_shortcut_interception() -> bool {
+    let mut interceptor = OverlayShortcutInterceptor::new();
+    let mut overlay = HardwareOverlayPlane::new(HARDWARE_PLANE_OVERLAY_ID, 200, 100);
+
+    if overlay.visible {
+        return false;
+    }
+
+    // 1. Controller combo: Guide + A (bits 14 and 0) => 0x4001
+    // First press triggers toggle
+    let triggered1 = interceptor.handle_gamepad_toggle(0x4001, &mut overlay);
+    if !triggered1 || !overlay.visible {
+        return false;
+    }
+
+    // Held combo must not repeat due to latching
+    let triggered_held = interceptor.handle_gamepad_toggle(0x4001, &mut overlay);
+    if triggered_held || !overlay.visible {
+        return false;
+    }
+
+    // Release combo
+    interceptor.handle_gamepad_toggle(0x0000, &mut overlay);
+
+    // Second press toggles off
+    let triggered2 = interceptor.handle_gamepad_toggle(0x4001, &mut overlay);
+    if !triggered2 || overlay.visible {
+        return false;
+    }
+    interceptor.handle_gamepad_toggle(0x0000, &mut overlay);
+
+    // 2. Keyboard combo: Win (0x5B) + G (0x22)
+    // Press Win
+    interceptor.handle_keyboard_toggle(0x5B, true, &mut overlay);
+    if overlay.visible {
+        return false; // G not pressed yet
+    }
+
+    // Press G while Win is held => Toggles ON
+    let kbd_trig = interceptor.handle_keyboard_toggle(0x22, true, &mut overlay);
+    if !kbd_trig || !overlay.visible {
+        return false;
+    }
+
+    // Release G
+    interceptor.handle_keyboard_toggle(0x22, false, &mut overlay);
+
+    // Press G again => Toggles OFF
+    let kbd_trig2 = interceptor.handle_keyboard_toggle(0x22, true, &mut overlay);
+    if !kbd_trig2 || overlay.visible {
+        return false;
+    }
+
+    true
+}
+
 /// Unit test verifying Plane #2 hardware overlay abstraction, alpha blending, and dirty bounds.
 pub fn verify_overlay_plane_abstraction() -> bool {
     let mut overlay = HardwareOverlayPlane::new(HARDWARE_PLANE_OVERLAY_ID, 200, 100);
