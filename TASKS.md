@@ -68,13 +68,12 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-041 | AHCI SATA Persistent Storage Controller Driver & Port Command Queue Engine | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-041-ahci-sata.md) |
 | TASK-KNT-042 | Virtual Memory Demand Paging, Copy-on-Write (COW) Fork Engine, & Page Fault Handler | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-042-cow-paging.md) |
 | TASK-KNT-043 | Unix Domain Sockets (AF_UNIX) & Local IPC Streaming / Datagram Engine | Claimed | TASK-KNT-027 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-043-unix-sockets.md) |
-| TASK-KNT-044 | USB Mass Storage Class (MSC) Bulk-Only Transport (BOT) Protocol Driver | Claimed | TASK-KNT-023 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-044-usb-msc.md) |
+| TASK-KNT-044 | USB Mass Storage Class (MSC) Bulk-Only Transport (BOT) Protocol Driver | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-044-usb-msc.md) |
 | TASK-KNT-045 | kpkg Native Package Manifest Parser, Merkle Tree Content-Addressed Storage (CAS), & Zstandard Archive Decompressor | Claimed | TASK-KNT-038 | ArdenKestrel / dev | [Card](docs/tasks/TASK-KNT-045-kpkg-cas.md) |
 | TASK-KNT-046 | NVMe (Non-Volatile Memory Express) Storage Controller Driver & Submission/Completion Queue Engine | Claimed | TASK-KNT-041 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-046-nvme.md) |
 
 ## Active reservations
 
 - `kernel/src/net/af_unix.rs`: reserved by Priya Nair for TASK-KNT-043.
-- `kernel/src/drivers/usb/msc.rs`, `kernel/src/drivers/usb/bot.rs`: reserved by Ada Chen for TASK-KNT-044.
 - `kernel/src/pkg/`: reserved by ArdenKestrel for TASK-KNT-045.
 - `kernel/src/drivers/storage/nvme.rs`: reserved by Jules Martin for TASK-KNT-046.
