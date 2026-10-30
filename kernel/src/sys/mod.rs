@@ -8,6 +8,9 @@
 #![allow(dead_code)]
 
 pub mod health;
+pub mod minidump;
+
+pub use minidump::*;
 
 /// Comprehensive verification self-test suite for Milestone 100:
 /// Unified Gaming Subsystem Health Matrix & Benchmark Supervisor.
