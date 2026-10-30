@@ -17,9 +17,9 @@ These branches are managed by their respective developers with granular commit l
 
 | Contributor identity | Branch | Local workspace | Status |
 | --- | --- | --- | --- |
-| Ada Chen | `workspace/ada-chen` | `E:\Git Lab's\kntonOS-ada-chen` | Active (TASK-KNT-039) |
-| Jules Martin | `workspace/jules-martin` | `E:\Git Lab's\kntonOS-jules-martin` | Active (TASK-KNT-040) |
-| Priya Nair | `workspace/priya-nair` | `E:\Git Lab's\kntonOS-priya-nair` | Active (TASK-KNT-038) |
+| Ada Chen | `workspace/ada-chen` | `E:\Git Lab's\kntonOS-ada-chen` | Active (TASK-KNT-100) |
+| Jules Martin | `workspace/jules-martin` | `E:\Git Lab's\kntonOS-jules-martin` | Active (TASK-KNT-098) |
+| Priya Nair | `workspace/priya-nair` | `E:\Git Lab's\kntonOS-priya-nair` | Active (TASK-KNT-099) |
 
 ## Task index
 
@@ -119,13 +119,16 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-092 | Unified Handheld PC Capacitive Touch Controller & Multi-Finger Gesture Engine | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-092-touch-gesture.md) |
 | TASK-KNT-093 | Direct3D 12 Raytracing Acceleration Structure (BVH) Memory Manager & DispatchRays Engine | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-093-dxr-bvh.md) |
 | TASK-KNT-094 | Unified Kernel Dynamic Frequency Scaling (DVFS) & Micro-Voltage Stepping Governor | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-094-dvfs-governor.md) |
-| TASK-KNT-095 | Unified Handheld PC Capacitive Touchpad & Virtual Trackball Emulation Engine | Claimed | TASK-KNT-051 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-095-touchpad-trackball.md) |
-| TASK-KNT-096 | Direct3D 12 Variable Rate Shading (VRS Tier 2) & Eye-Tracked Foveated Rasterizer | Claimed | TASK-KNT-071 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-096-vrs-foveated.md) |
-| TASK-KNT-097 | Kernel-Direct Hardware Video Decode & Zero-Copy Presentation Streamer | Claimed | TASK-KNT-069 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-097-video-decode.md) |
+| TASK-KNT-095 | Unified Handheld PC Capacitive Touchpad & Virtual Trackball Emulation Engine | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-095-touchpad-trackball.md) |
+| TASK-KNT-096 | Direct3D 12 Variable Rate Shading (VRS Tier 2) & Eye-Tracked Foveated Rasterizer | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-096-vrs-foveated.md) |
+| TASK-KNT-097 | Kernel-Direct Hardware Video Decode & Zero-Copy Presentation Streamer | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-097-video-decode.md) |
+| TASK-KNT-098 | Unified Handheld PC RGB LED Lighting Controller & Game State Aura Sync Engine | Claimed | TASK-KNT-074 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-098-rgb-lighting.md) |
+| TASK-KNT-099 | Direct3D 12 Mesh Shader & Amplification Shader Primitive Pipeline Engine | Claimed | TASK-KNT-071 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-099-mesh-shaders.md) |
+| TASK-KNT-100 | Milestone 100: KntonOS Micro-Kernel Unified Gaming Subsystem Health Matrix & Benchmark Supervisor | Claimed | None | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-100-health-matrix-supervisor.md) |
 
 ## Active reservations
 
 - `kernel/src/pkg/`: reserved by ArdenKestrel for TASK-KNT-045.
-- `kernel/src/drivers/input/touchpad.rs`, `kernel/src/drivers/input/trackball.rs`: reserved by Jules Martin for TASK-KNT-095.
-- `kernel/src/gfx/vrs.rs`, `kernel/src/gfx/foveated.rs`: reserved by Priya Nair for TASK-KNT-096.
-- `kernel/src/video/decode.rs`, `kernel/src/video/nv12.rs`: reserved by Ada Chen for TASK-KNT-097.
+- `kernel/src/drivers/led/`: reserved by Jules Martin for TASK-KNT-098.
+- `kernel/src/gfx/mesh_shader.rs`: reserved by Priya Nair for TASK-KNT-099.
+- `kernel/src/sys/health.rs`: reserved by Ada Chen for TASK-KNT-100.
