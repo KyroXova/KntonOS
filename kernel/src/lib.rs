@@ -160,6 +160,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Kernel trace ring buffer self-test failed!\r\n");
     }
 
+    // Initialize and verify Dynamic Instrumentation Probes (kprobes / ftrace Style) & Instruction Detours
+    if !trace::test_kprobes_subsystem() {
+        serial_write_str("[KNT-PANIC] Dynamic kprobes instrumentation self-test failed!\r\n");
+    }
+
     // Initialize and verify Dynamic Power Governor & Thermal Energy Meter
     if !power::test_power_governor_subsystem() {
         serial_write_str("[KNT-PANIC] Dynamic power governor self-test failed!\r\n");
