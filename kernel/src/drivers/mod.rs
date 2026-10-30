@@ -9,6 +9,9 @@ pub mod usb;
 pub mod gpu;
 pub mod storage;
 pub mod input;
+pub mod sensor;
+
+pub use sensor::*;
 
 use alloc::vec::Vec;
 use crate::memory::spinlock::Spinlock;
