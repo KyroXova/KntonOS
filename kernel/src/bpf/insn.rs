@@ -1,11 +1,5 @@
 //! eBPF 64-bit Instruction Format, Opcode Encoding, & Argument Decoding.
-//!
 //! Implements standard 8-byte eBPF instruction representation conforming to Linux eBPF ISA:
-//! - 8-bit opcode
-//! - 4-bit destination register (dst_reg)
-//! - 4-bit source register (src_reg)
-//! - 16-bit signed offset
-//! - 32-bit signed immediate (imm)
 
 /// Maximum general-purpose registers (R0-R9 general, R10 read-only stack frame pointer).
 pub const BPF_REG_COUNT: usize = 11;
