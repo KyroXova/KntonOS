@@ -1,8 +1,4 @@
-//! Virtual Terminal ANSI 24-bit TrueColor Terminal Emulator & PTY Master/Slave Subsystem.
-//!
-//! Provides full POSIX pseudoterminal pairs (/dev/ptmx, /dev/pts/N), line discipline
-//! with canonical and raw modes, ANSI / VT100 / xterm escape code parsing, 24-bit RGB TrueColor SGR,
-//! and terminal window sizing with SIGWINCH broadcast.
+//! Virtual terminal ANSI 24-bit TrueColor emulator and PTY subsystem.
 
 pub mod ansi;
 pub mod pty;

@@ -1,11 +1,4 @@
-//! ANSI / VT100 / xterm Terminal Escape Sequence Parser & 24-bit TrueColor SGR Renderer.
-//!
-//! Implements:
-//! - ANSI parser state machine (Ground, Escape, CSI, OSC)
-//! - Cursor navigation: up, down, forward, backward, absolute positioning, save/restore
-//! - SGR graphic rendition: bold, dim, underline, reverse, 16-color, 256-color palette,
-//!   and full 24-bit RGB TrueColor (`CSI 38;2;r;g;b m` / `CSI 48;2;r;g;b m`)
-//! - Text grid buffer management, line clearing, and scrolling
+//! ANSI/VT100 escape sequence parser and 24-bit TrueColor SGR renderer.
 
 use alloc::vec;
 use alloc::vec::Vec;
