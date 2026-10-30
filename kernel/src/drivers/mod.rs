@@ -12,9 +12,11 @@ pub mod input;
 pub mod sensor;
 pub mod display;
 pub mod led;
+pub mod power;
 
 pub use sensor::*;
 pub use led::*;
+pub use power::*;
 
 use alloc::vec::Vec;
 use crate::memory::spinlock::Spinlock;

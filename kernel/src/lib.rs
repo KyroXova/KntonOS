@@ -531,6 +531,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] USB-C DisplayPort Alternate Mode and hot-plug daemon self-test failed!\r\n");
     }
 
+    // Initialize and verify Handheld PC Dual-Battery Balance Manager & Fast USB-PD 3.1 EPR Engine (TASK-KNT-116)
+    if !drivers::power::test_dual_battery_balance_subsystem() {
+        serial_write_str("[KNT-PANIC] Dual-battery balance manager and USB-PD 3.1 EPR engine self-test failed!\r\n");
+    }
+
     // Initialize and verify USB Mass Storage Class (MSC) Bulk-Only Transport (BOT) Driver
     if !drivers::usb::test_usb_msc_subsystem() {
         serial_write_str("[KNT-PANIC] USB MSC BOT storage subsystem self-test failed!\r\n");
