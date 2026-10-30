@@ -113,13 +113,16 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-086 | Unified Handheld PC Multi-Zone Haptic Actuator & Resonant Frequency Tracking Governor | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-086-lra-haptics.md) |
 | TASK-KNT-087 | Kernel-Direct NVMe ZNS (Zoned Namespaces) & Copy Offload Engine | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-087-nvme-zns.md) |
 | TASK-KNT-088 | High-Frequency Kernel High-Resolution Timers (hrtimer) & Red-Black Tree Wheel Engine | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-088-hrtimer.md) |
-| TASK-KNT-089 | Direct3D 12 Dynamic Constant Buffer Pool & Ring Allocator Engine | Claimed | TASK-KNT-071 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-089-cbv-ring.md) |
-| TASK-KNT-090 | Unified Handheld PC USB-C DisplayPort Alternate Mode & Hot-Plug Modeset Daemon | Claimed | TASK-KNT-050 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-090-dp-altmode.md) |
-| TASK-KNT-091 | Zero-Copy Shared-Memory Audio Client Protocol & Real-Time Waveform Mixer Ring | Claimed | TASK-KNT-060 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-091-audio-client.md) |
+| TASK-KNT-089 | Direct3D 12 Dynamic Constant Buffer Pool & Ring Allocator Engine | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-089-cbv-ring.md) |
+| TASK-KNT-090 | Unified Handheld PC USB-C DisplayPort Alternate Mode & Hot-Plug Modeset Daemon | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-090-dp-altmode.md) |
+| TASK-KNT-091 | Zero-Copy Shared-Memory Audio Client Protocol & Real-Time Waveform Mixer Ring | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-091-audio-client.md) |
+| TASK-KNT-092 | Unified Handheld PC Capacitive Touch Controller & Multi-Finger Gesture Engine | Claimed | TASK-KNT-051 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-092-touch-gesture.md) |
+| TASK-KNT-093 | Direct3D 12 Raytracing Acceleration Structure (BVH) Memory Manager & DispatchRays Engine | Claimed | TASK-KNT-071 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-093-dxr-bvh.md) |
+| TASK-KNT-094 | Unified Kernel Dynamic Frequency Scaling (DVFS) & Micro-Voltage Stepping Governor | Claimed | TASK-KNT-049 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-094-dvfs-governor.md) |
 
 ## Active reservations
 
 - `kernel/src/pkg/`: reserved by ArdenKestrel for TASK-KNT-045.
-- `kernel/src/gfx/cbv_pool.rs`, `kernel/src/gfx/ring_alloc.rs`: reserved by Jules Martin for TASK-KNT-089.
-- `kernel/src/drivers/display/dp_alt.rs`, `kernel/src/drivers/display/dpcd.rs`: reserved by Priya Nair for TASK-KNT-090.
-- `kernel/src/audio/client_ring.rs`, `kernel/src/audio/simd_mix.rs`: reserved by Ada Chen for TASK-KNT-091.
+- `kernel/src/drivers/input/touch.rs`, `kernel/src/drivers/input/gesture.rs`: reserved by Jules Martin for TASK-KNT-092.
+- `kernel/src/gfx/dxr_as.rs`, `kernel/src/gfx/dispatch_rays.rs`: reserved by Priya Nair for TASK-KNT-093.
+- `kernel/src/power/dvfs.rs`, `kernel/src/power/cppc.rs`: reserved by Ada Chen for TASK-KNT-094.
