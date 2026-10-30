@@ -147,6 +147,10 @@ pub extern "C" fn kmain() -> ! {
     if !arch::test_hpet_subsystem() {
         serial_write_str("[KNT-PANIC] HPET and monotonic clock self-test failed!\r\n");
     }
+    // Initialize and verify MMIO Watchpoint & Kernel Debug Trap Engine
+    if !arch::test_debug_trap_subsystem() {
+        serial_write_str("[KNT-PANIC] MMIO watchpoint and debug trap self-test failed!\r\n");
+    }
 
     // Initialize and verify Dynamic Power Governor & Thermal Energy Meter
     if !power::test_power_governor_subsystem() {
