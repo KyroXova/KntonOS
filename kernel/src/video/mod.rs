@@ -9,12 +9,15 @@
 pub mod decode;
 pub mod nv12;
 
-/// Verification self-test for hardware video decode engine and picture parameter parsing.
+/// Verification self-test for hardware video decode engine and presentation pipelines.
 pub fn test_video_decode_subsystem() -> bool {
     if !decode::test_video_decode_queue_and_parser() {
         return false;
     }
     if !nv12::test_nv12_p010_allocator_and_dpb() {
+        return false;
+    }
+    if !nv12::test_zero_copy_presentation_and_color_matrices() {
         return false;
     }
     true
