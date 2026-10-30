@@ -6,6 +6,7 @@
 pub mod governor;
 pub mod rapl;
 pub mod parking;
+pub mod cstate;
 
 pub use governor::{
     verify_pid_power_governor, verify_thermal_monitoring, CoreThermalStatus, GovernorAction,
@@ -20,6 +21,7 @@ pub use governor::{
 };
 
 pub use parking::*;
+pub use cstate::*;
 pub use rapl::{
     verify_rapl_and_smu_structures, AmdSmuMailbox, CpuPowerVendor, EnergyCounter, PkgPowerLimit,
     RaplUnits, AMD_SMU_MSG_GET_CORE_TEMP, AMD_SMU_MSG_GET_PACKAGE_POWER,
