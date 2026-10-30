@@ -26,6 +26,7 @@ pub enum FileType {
     Directory,
     Symlink,
     Device,
+    Socket,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

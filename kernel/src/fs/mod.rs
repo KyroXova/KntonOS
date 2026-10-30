@@ -88,11 +88,47 @@ impl Inode for DynamicFileInode {
     }
 }
 
+
+/// Inode representation of an in-memory Unix domain socket node in VFS.
+pub struct SocketInode {
+    pub name: alloc::string::String,
+    pub permissions: FilePerms,
+    pub inode_id: u64,
+    pub socket_handle: usize,
+}
+
+impl Inode for SocketInode {
+    fn metadata(&self) -> VfsMetadata {
+        VfsMetadata {
+            file_type: FileType::Socket,
+            size: 0,
+            permissions: self.permissions,
+            inode_id: self.inode_id,
+        }
+    }
+
+    fn read_at(&self, _offset: u64, _buf: &mut [u8]) -> Result<usize, FsError> {
+        Err(FsError::NotSupported)
+    }
+
+    fn write_at(&self, _offset: u64, _buf: &[u8]) -> Result<usize, FsError> {
+        Err(FsError::NotSupported)
+    }
+
+    fn lookup(&self, _name: &str) -> Result<Arc<dyn Inode>, FsError> {
+        Err(FsError::NotADirectory)
+    }
+
+    fn readdir(&self) -> Result<Vec<DirEntry>, FsError> {
+        Err(FsError::NotADirectory)
+    }
+}
 pub struct VfsManager {
     root_fs: Option<Arc<dyn FileSystem>>,
     mounts: alloc::collections::BTreeMap<alloc::string::String, Arc<dyn FileSystem>>,
     dynamic_files: alloc::collections::BTreeMap<alloc::string::String, Vec<u8>>,
     security: alloc::collections::BTreeMap<alloc::string::String, VfsSecurityContext>,
+    socket_nodes: alloc::collections::BTreeMap<alloc::string::String, (usize, FilePerms, u64)>,
 }
 
 impl VfsManager {
@@ -102,6 +138,7 @@ impl VfsManager {
             mounts: alloc::collections::BTreeMap::new(),
             dynamic_files: alloc::collections::BTreeMap::new(),
             security: alloc::collections::BTreeMap::new(),
+            socket_nodes: alloc::collections::BTreeMap::new(),
         }
     }
 
@@ -116,6 +153,14 @@ impl VfsManager {
 
     /// Internal path resolver that traverses mounts and roots to find an Inode.
     fn resolve_path(&self, path: &str) -> Result<Arc<dyn Inode>, FsError> {
+        if let Some(&(handle, perms, inode_id)) = self.socket_nodes.get(path) {
+            return Ok(Arc::new(SocketInode {
+                name: alloc::string::String::from(path),
+                permissions: perms,
+                inode_id,
+                socket_handle: handle,
+            }));
+        }
         if let Some(data) = self.dynamic_files.get(path) {
             let inode_id = 0x8000_0000_0000_0000u64 | (path.len() as u64);
             let perms = if let Some(sec) = self.security.get(path) {
@@ -388,6 +433,45 @@ impl VfsManager {
     }
 
     /// Sets or updates POSIX file mode permissions on an existing file.
+    
+    pub fn bind_socket(&mut self, path: &str, socket_handle: usize, perms: FilePerms) -> Result<u64, FsError> {
+        if self.dynamic_files.contains_key(path) || self.socket_nodes.contains_key(path) {
+            return Err(FsError::AlreadyExists);
+        }
+        let inode_id = 0xC000_0000_0000_0000u64 | (self.socket_nodes.len() as u64 + 1);
+        self.socket_nodes.insert(alloc::string::String::from(path), (socket_handle, perms, inode_id));
+        let inode = Arc::new(SocketInode {
+            name: alloc::string::String::from(path),
+            permissions: perms,
+            inode_id,
+            socket_handle,
+        });
+        let entry = InodeCacheEntry::new(
+            inode_id,
+            path,
+            inode,
+            FilePermissions::from_octal(0o777),
+            SecurityIdentifier::root(),
+        );
+        INODE_CACHE.lock().insert(entry);
+        Ok(inode_id)
+    }
+
+    pub fn get_socket_node(&self, path: &str) -> Option<usize> {
+        self.socket_nodes.get(path).map(|(handle, _, _)| *handle)
+    }
+
+    pub fn unlink(&mut self, path: &str) -> Result<(), FsError> {
+        let removed_socket = self.socket_nodes.remove(path).is_some();
+        let removed_file = self.dynamic_files.remove(path).is_some();
+        if removed_socket || removed_file {
+            self.security.remove(path);
+            INODE_CACHE.lock().invalidate_path(path);
+            Ok(())
+        } else {
+            Err(FsError::NotFound)
+        }
+    }
     pub fn set_permissions(
         &mut self,
         path: &str,
@@ -424,6 +508,10 @@ impl VfsManager {
 }
 
 pub static VFS: Spinlock<VfsManager> = Spinlock::new(VfsManager::new());
+
+pub fn unlink(path: &str) -> Result<(), FsError> {
+    VFS.lock().unlink(path)
+}
 
 pub fn init() {
     serial_write_str("[KNT-FS] Initializing Virtual File System (VFS)...\r\n");
