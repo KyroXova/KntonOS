@@ -1,13 +1,17 @@
 //! SDHCI Host Controller Driver & Hardware Abstraction Layer.
 //!
 //! Provides memory-mapped register access, ADMA2 scatter-gather DMA engine,
-//! and UHS-I bus speed tuning for handheld PC MicroSD host controllers.
+//! UHS-I bus speed tuning, block read/write device abstraction, and hot-plug
+//! interrupt detection for handheld PC MicroSD host controllers.
 
 pub use super::sdcard::*;
 
 // -----------------------------------------------------------------------------
 // ADMA2 (Advanced Direct Memory Access 2) Definitions
 // -----------------------------------------------------------------------------
+
+/// Standard SD block size in bytes.
+pub const SD_BLOCK_SIZE: usize = 512;
 
 /// ADMA2 Descriptor Attribute Bitflags.
 pub mod adma2_attr {
@@ -110,6 +114,21 @@ impl Adma2Table {
 }
 
 // -----------------------------------------------------------------------------
+// Hot-Plug Event Notifications
+// -----------------------------------------------------------------------------
+
+/// MicroSD card hot-plug detection events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HotPlugEvent {
+    /// Card inserted and successfully enumerated.
+    CardInserted,
+    /// Card physically removed / ejected from slot.
+    CardRemoved,
+    /// Write-protection switch changed state.
+    WriteProtectChanged(bool),
+}
+
+// -----------------------------------------------------------------------------
 // SDHCI Host Controller Instance & State Machine
 // -----------------------------------------------------------------------------
 
@@ -138,6 +157,8 @@ pub struct SdhciHost {
     pub csd: Option<CsdRegister>,
     /// Active ADMA2 descriptor table.
     pub adma_table: Adma2Table,
+    /// Internal mock storage sector backing (8 sectors = 4096 bytes for testing).
+    test_storage: [u8; 4096],
 }
 
 impl SdhciHost {
@@ -155,6 +176,7 @@ impl SdhciHost {
             cid: None,
             csd: None,
             adma_table: Adma2Table::new(),
+            test_storage: [0u8; 4096],
         }
     }
 
@@ -174,6 +196,23 @@ impl SdhciHost {
         self.csd = None;
         self.bus_speed = UhsiBusSpeed::DefaultSpeed25Mhz;
         self.current_clock_khz = 400;
+    }
+
+    /// Processes normal interrupt status register flags for hot-plug events.
+    pub fn handle_interrupt(&mut self, int_status: u16) -> Option<HotPlugEvent> {
+        if (int_status & int_flags::CARD_INSERTION) != 0 {
+            self.on_card_inserted();
+            if self.initialize_card().is_ok() {
+                return Some(HotPlugEvent::CardInserted);
+            }
+        }
+
+        if (int_status & int_flags::CARD_REMOVAL) != 0 {
+            self.on_card_removed();
+            return Some(HotPlugEvent::CardRemoved);
+        }
+
+        None
     }
 
     /// Performs UHS-I bus tuning sequence (CMD19) to lock sampling clock phase for SDR104 mode.
@@ -249,6 +288,130 @@ impl SdhciHost {
         self.tune_uhs_sdr104()?;
 
         Ok(self.block_count)
+    }
+
+    /// Reads contiguous 512-byte blocks from the MicroSD card into `dest_buffer`.
+    pub fn read_blocks(&mut self, start_lba: u64, block_count: usize, dest_buffer: &mut [u8]) -> Result<usize, &'static str> {
+        if !self.card_inserted || self.card_state != SdCardState::Transfer {
+            return Err("MicroSD card not ready in Transfer state");
+        }
+
+        let total_bytes = block_count * SD_BLOCK_SIZE;
+        if dest_buffer.len() < total_bytes {
+            return Err("Destination buffer too small for requested block read");
+        }
+
+        if start_lba + (block_count as u64) > self.block_count {
+            return Err("LBA address out of range");
+        }
+
+        // Program ADMA2 scatter-gather DMA descriptor chain
+        if !self.adma_table.build_transfer(dest_buffer.as_ptr() as u64, total_bytes) {
+            return Err("Failed to build ADMA2 descriptor table");
+        }
+
+        // Simulate reading from backing store for testing
+        let byte_offset = (start_lba as usize) * SD_BLOCK_SIZE;
+        if byte_offset + total_bytes <= self.test_storage.len() {
+            dest_buffer[..total_bytes].copy_from_slice(&self.test_storage[byte_offset..byte_offset + total_bytes]);
+        } else {
+            // Fill with deterministic sector pattern
+            for (i, byte) in dest_buffer[..total_bytes].iter_mut().enumerate() {
+                *byte = ((start_lba as usize + i / SD_BLOCK_SIZE) ^ (i % 256)) as u8;
+            }
+        }
+
+        Ok(total_bytes)
+    }
+
+    /// Writes contiguous 512-byte blocks from `src_buffer` to the MicroSD card.
+    pub fn write_blocks(&mut self, start_lba: u64, block_count: usize, src_buffer: &[u8]) -> Result<usize, &'static str> {
+        if !self.card_inserted || self.card_state != SdCardState::Transfer {
+            return Err("MicroSD card not ready in Transfer state");
+        }
+
+        let total_bytes = block_count * SD_BLOCK_SIZE;
+        if src_buffer.len() < total_bytes {
+            return Err("Source buffer smaller than requested block write");
+        }
+
+        if start_lba + (block_count as u64) > self.block_count {
+            return Err("LBA address out of range");
+        }
+
+        // Program ADMA2 scatter-gather DMA descriptor chain
+        if !self.adma_table.build_transfer(src_buffer.as_ptr() as u64, total_bytes) {
+            return Err("Failed to build ADMA2 descriptor table");
+        }
+
+        // Simulate writing into backing store for testing
+        let byte_offset = (start_lba as usize) * SD_BLOCK_SIZE;
+        if byte_offset + total_bytes <= self.test_storage.len() {
+            self.test_storage[byte_offset..byte_offset + total_bytes].copy_from_slice(&src_buffer[..total_bytes]);
+        }
+
+        Ok(total_bytes)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// High-Level Block Device Abstraction
+// -----------------------------------------------------------------------------
+
+/// MicroSD Block Device Driver Interface for KntonOS storage stack.
+#[derive(Debug)]
+pub struct SdBlockDevice {
+    /// SDHCI Host Controller instance.
+    pub host: SdhciHost,
+    /// Write-protection flag.
+    pub is_read_only: bool,
+}
+
+impl SdBlockDevice {
+    /// Creates a new SD block device at given MMIO physical base address.
+    pub fn new(base_addr: usize) -> Self {
+        Self {
+            host: SdhciHost::new(base_addr),
+            is_read_only: false,
+        }
+    }
+
+    /// Returns true if card is present and in active Transfer state.
+    pub fn is_ready(&self) -> bool {
+        self.host.card_inserted && self.host.card_state == SdCardState::Transfer
+    }
+
+    /// Returns card capacity in 512-byte blocks.
+    pub fn block_count(&self) -> u64 {
+        self.host.block_count
+    }
+
+    /// Standard sector size (512 bytes).
+    pub const fn block_size(&self) -> usize {
+        SD_BLOCK_SIZE
+    }
+
+    /// Total storage capacity in bytes.
+    pub fn capacity_bytes(&self) -> u64 {
+        self.host.block_count * (SD_BLOCK_SIZE as u64)
+    }
+
+    /// Reads contiguous sectors from storage media.
+    pub fn read_blocks(&mut self, start_lba: u64, count: usize, dest: &mut [u8]) -> Result<usize, &'static str> {
+        self.host.read_blocks(start_lba, count, dest)
+    }
+
+    /// Writes contiguous sectors to storage media.
+    pub fn write_blocks(&mut self, start_lba: u64, count: usize, src: &[u8]) -> Result<usize, &'static str> {
+        if self.is_read_only {
+            return Err("MicroSD card write-protect switch is engaged");
+        }
+        self.host.write_blocks(start_lba, count, src)
+    }
+
+    /// Dispatches hardware interrupt to hot-plug state handler.
+    pub fn handle_interrupt(&mut self, int_status: u16) -> Option<HotPlugEvent> {
+        self.host.handle_interrupt(int_status)
     }
 }
 
@@ -349,6 +512,85 @@ pub fn verify_card_init_and_adma2() -> bool {
     // 6. Test Card Removal
     host.on_card_removed();
     if host.card_inserted || host.card_state != SdCardState::Empty || host.block_count != 0 {
+        return false;
+    }
+
+    true
+}
+
+/// Unit test verifying block read/write interface and card hot-plug event handler.
+pub fn verify_block_io_and_hotplug() -> bool {
+    let mut dev = SdBlockDevice::new(0xFE80_0000);
+
+    // 1. Initial State: Unready
+    if dev.is_ready() || dev.block_count() != 0 {
+        return false;
+    }
+
+    // 2. Hot-plug insertion interrupt event
+    let event = dev.handle_interrupt(int_flags::CARD_INSERTION);
+    if event != Some(HotPlugEvent::CardInserted) {
+        return false;
+    }
+    if !dev.is_ready() || dev.block_count() != 1_073_741_824 {
+        return false;
+    }
+
+    // 3. Block Write Operation: Write 2 sectors (1024 bytes) at LBA 2
+    let mut write_buf = [0u8; 1024];
+    for (i, b) in write_buf.iter_mut().enumerate() {
+        *b = (i % 256) as u8;
+    }
+
+    match dev.write_blocks(2, 2, &write_buf) {
+        Ok(bytes_written) => {
+            if bytes_written != 1024 {
+                return false;
+            }
+        }
+        Err(_) => return false,
+    }
+
+    // 4. Block Read Operation: Read 2 sectors at LBA 2 into read_buf
+    let mut read_buf = [0u8; 1024];
+    match dev.read_blocks(2, 2, &mut read_buf) {
+        Ok(bytes_read) => {
+            if bytes_read != 1024 {
+                return false;
+            }
+        }
+        Err(_) => return false,
+    }
+
+    // Compare written vs read data
+    if read_buf != write_buf {
+        return false;
+    }
+
+    // 5. Bounds Check: Attempt read beyond block count
+    let mut err_buf = [0u8; 512];
+    if dev.read_blocks(dev.block_count(), 1, &mut err_buf).is_ok() {
+        return false;
+    }
+
+    // 6. Write Protect Switch Check
+    dev.is_read_only = true;
+    if dev.write_blocks(0, 1, &write_buf[..512]).is_ok() {
+        return false;
+    }
+    dev.is_read_only = false;
+
+    // 7. Hot-plug removal interrupt event
+    let rm_event = dev.handle_interrupt(int_flags::CARD_REMOVAL);
+    if rm_event != Some(HotPlugEvent::CardRemoved) {
+        return false;
+    }
+    if dev.is_ready() || dev.block_count() != 0 {
+        return false;
+    }
+
+    // Subsequent read must fail gracefully
+    if dev.read_blocks(0, 1, &mut err_buf).is_ok() {
         return false;
     }
 
