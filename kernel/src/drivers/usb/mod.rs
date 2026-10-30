@@ -2,6 +2,7 @@
 
 pub mod bot;
 pub mod hid;
+pub mod msc;
 pub mod xhci;
 
 pub use bot::{
