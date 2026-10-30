@@ -10,6 +10,7 @@ pub mod gyro_aim;
 pub mod motion_assist;
 pub mod lra_haptic;
 pub mod haptic_brake;
+pub mod touch;
 
 pub use imu::*;
 pub use gamepad::*;
@@ -21,6 +22,7 @@ pub use gyro_aim::*;
 pub use motion_assist::*;
 pub use lra_haptic::*;
 pub use haptic_brake::*;
+pub use touch::*;
 
 use crate::serial_write_str;
 
