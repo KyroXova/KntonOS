@@ -17,6 +17,7 @@ pub mod shell;
 pub mod ipc;
 pub mod loader;
 pub mod graphics;
+pub mod terminal;
 
 pub use memory::ALLOCATOR;
 
@@ -232,6 +233,11 @@ pub extern "C" fn kmain() -> ! {
     shell::init(34, 9);
     if !shell::test_shell_subsystem() {
         serial_write_str("[KNT-PANIC] Shell subsystem self-test failed!\r\n");
+    }
+
+    // Verify Virtual Terminal ANSI 24-bit TrueColor Terminal Emulator & PTY Subsystem
+    if !terminal::test_pty_and_ansi_subsystem() {
+        serial_write_str("[KNT-PANIC] Terminal PTY and TrueColor subsystem self-test failed!\r\n");
     }
 
     // Initialize and verify USB 3.0 xHCI & HID Keyboard/Mouse Input Pipeline
