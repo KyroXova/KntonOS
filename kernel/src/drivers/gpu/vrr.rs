@@ -372,3 +372,205 @@ pub fn verify_vrr_descriptor_and_ranges() -> bool {
 
     true
 }
+
+
+// -----------------------------------------------------------------------------
+// Low Framerate Compensation (LFC) Engine
+// -----------------------------------------------------------------------------
+
+/// Pacing decision produced by the Low Framerate Compensation (LFC) engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LfcDecision {
+    pub lfc_active: bool,
+    pub multiplier: u32,
+    pub target_refresh_hz: u32,
+    pub sub_frame_duration_ns: u64,
+    pub sub_frame_vtotal: u32,
+    pub sub_frame_front_porch: u32,
+}
+
+impl LfcDecision {
+    pub const fn direct(
+        refresh_hz: u32,
+        duration_ns: u64,
+        vtotal: u32,
+        front_porch: u32,
+    ) -> Self {
+        Self {
+            lfc_active: false,
+            multiplier: 1,
+            target_refresh_hz: refresh_hz,
+            sub_frame_duration_ns: duration_ns,
+            sub_frame_vtotal: vtotal,
+            sub_frame_front_porch: front_porch,
+        }
+    }
+}
+
+/// Low Framerate Compensation (LFC) frame doubler and dynamic pacing coordinator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LfcEngine {
+    pub range: VrrRange,
+    pub base_front_porch: u32,
+    pub clock_khz: u32,
+    pub htotal: u32,
+    pub line_time_ns: u64,
+}
+
+impl LfcEngine {
+    pub const fn new(
+        range: VrrRange,
+        base_front_porch: u32,
+        clock_khz: u32,
+        htotal: u32,
+        line_time_ns: u64,
+    ) -> Self {
+        Self {
+            range,
+            base_front_porch,
+            clock_khz,
+            htotal,
+            line_time_ns,
+        }
+    }
+
+    /// Evaluates incoming render duration and computes the optimal LFC frame multiplier and timing.
+    pub fn evaluate(&self, render_duration_ns: u64) -> LfcDecision {
+        if render_duration_ns == 0 {
+            let vtotal = self.range.min_vtotal;
+            return LfcDecision::direct(self.range.max_refresh_hz, 0, vtotal, self.base_front_porch);
+        }
+
+        // Instantaneous application framerate = 1_000_000_000 / render_duration_ns
+        let app_fps = ((1_000_000_000u64 + render_duration_ns / 2) / render_duration_ns) as u32;
+
+        // Case 1: Application framerate is within native VRR range [min_refresh_hz, max_refresh_hz]
+        if app_fps >= self.range.min_refresh_hz {
+            let clamped_fps = app_fps.min(self.range.max_refresh_hz);
+            let vtotal = self.range.vtotal_for_refresh(self.clock_khz, self.htotal, clamped_fps);
+            let delta = (vtotal as i32) - (self.range.nominal_vtotal as i32);
+            let porch = ((self.base_front_porch as i32) + delta).max(1) as u32;
+            let duration = (self.line_time_ns * vtotal as u64).max(render_duration_ns);
+
+            return LfcDecision::direct(clamped_fps, duration, vtotal, porch);
+        }
+
+        // Case 2: Sub-threshold framerate (< min_refresh_hz)
+        // If panel does not support LFC (e.g. max < 2 * min), clamp to min_refresh_hz
+        if !self.range.lfc_supported || app_fps == 0 {
+            let vtotal = self.range.max_vtotal;
+            let delta = (vtotal as i32) - (self.range.nominal_vtotal as i32);
+            let porch = ((self.base_front_porch as i32) + delta).max(1) as u32;
+            let duration = self.line_time_ns * (vtotal as u64);
+
+            return LfcDecision {
+                lfc_active: false,
+                multiplier: 1,
+                target_refresh_hz: self.range.min_refresh_hz,
+                sub_frame_duration_ns: duration,
+                sub_frame_vtotal: vtotal,
+                sub_frame_front_porch: porch,
+            };
+        }
+
+        // Compute minimal multiplier N such that (app_fps * N) >= min_refresh_hz
+        let mut multiplier = (self.range.min_refresh_hz + app_fps - 1) / app_fps;
+        multiplier = multiplier.max(2); // At least frame doubling
+
+        // Ensure app_fps * multiplier does not exceed max_refresh_hz
+        while (app_fps * multiplier) > self.range.max_refresh_hz && multiplier > 2 {
+            multiplier -= 1;
+        }
+
+        let effective_hz = (app_fps * multiplier).clamp(self.range.min_refresh_hz, self.range.max_refresh_hz);
+        let sub_frame_duration = render_duration_ns / (multiplier as u64);
+
+        // Calculate sub-frame vtotal and front porch
+        let sub_vtotal = self.range.vtotal_for_refresh(self.clock_khz, self.htotal, effective_hz);
+        let delta = (sub_vtotal as i32) - (self.range.nominal_vtotal as i32);
+        let sub_porch = ((self.base_front_porch as i32) + delta).max(1) as u32;
+
+        LfcDecision {
+            lfc_active: true,
+            multiplier,
+            target_refresh_hz: effective_hz,
+            sub_frame_duration_ns: sub_frame_duration,
+            sub_frame_vtotal: sub_vtotal,
+            sub_frame_front_porch: sub_porch,
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Unit Verification for Low Framerate Compensation (LFC)
+// -----------------------------------------------------------------------------
+
+/// Unit test verifying LFC frame doubling, tripling, and sub-threshold tear-free pacing decisions.
+pub fn verify_lfc_engine() -> bool {
+    let limits = EdidRangeLimits {
+        min_v_rate_hz: 48,
+        max_v_rate_hz: 144,
+        min_h_rate_khz: 30,
+        max_h_rate_khz: 160,
+        max_pixel_clock_khz: 360_000,
+        supports_continuous_frequency: true,
+    };
+
+    let mode_144 = DrmModeInfo::new(
+        "1920x1080@144",
+        356400,
+        1920,
+        2008,
+        2052,
+        2200,
+        1080,
+        1084,
+        1089,
+        1125,
+        144,
+        0,
+        0,
+    );
+
+    let vrr_range = VrrRange::from_mode_and_limits(&mode_144, &limits);
+    let line_time_ns = 6172; // (2200 * 1_000_000) / 356400
+    let lfc = LfcEngine::new(vrr_range, 4, 356400, 2200, line_time_ns);
+
+    // 1. In-Range 60 FPS (16.67 ms = 16_666_667 ns) -> No LFC, multiplier = 1, target = 60 Hz
+    let dec_60 = lfc.evaluate(16_666_667);
+    assert!(!dec_60.lfc_active);
+    assert_eq!(dec_60.multiplier, 1);
+    assert_eq!(dec_60.target_refresh_hz, 60);
+
+    // 2. In-Range 120 FPS (8.33 ms = 8_333_333 ns) -> No LFC, multiplier = 1, target = 120 Hz
+    let dec_120 = lfc.evaluate(8_333_333);
+    assert!(!dec_120.lfc_active);
+    assert_eq!(dec_120.multiplier, 1);
+    assert_eq!(dec_120.target_refresh_hz, 120);
+
+    // 3. Sub-Threshold 30 FPS (33.33 ms = 33_333_333 ns) -> LFC active, multiplier = 2 (frame doubling)
+    // 30 FPS * 2 = 60 Hz (within 48-144 Hz)
+    let dec_30 = lfc.evaluate(33_333_333);
+    assert!(dec_30.lfc_active);
+    assert_eq!(dec_30.multiplier, 2);
+    assert_eq!(dec_30.target_refresh_hz, 60);
+    assert_eq!(dec_30.sub_frame_vtotal, 2700); // 60 Hz vtotal
+    assert_eq!(dec_30.sub_frame_duration_ns, 33_333_333 / 2);
+
+    // 4. Sub-Threshold 20 FPS (50.00 ms = 50_000_000 ns) -> LFC active, multiplier = 3 (frame tripling)
+    // 20 FPS * 3 = 60 Hz (within 48-144 Hz)
+    let dec_20 = lfc.evaluate(50_000_000);
+    assert!(dec_20.lfc_active);
+    assert_eq!(dec_20.multiplier, 3);
+    assert_eq!(dec_20.target_refresh_hz, 60);
+    assert_eq!(dec_20.sub_frame_vtotal, 2700);
+
+    // 5. Sub-Threshold 15 FPS (66.67 ms = 66_666_667 ns) -> LFC active, multiplier = 4 (frame quadrupling)
+    // 15 FPS * 4 = 60 Hz
+    let dec_15 = lfc.evaluate(66_666_667);
+    assert!(dec_15.lfc_active);
+    assert_eq!(dec_15.multiplier, 4);
+    assert_eq!(dec_15.target_refresh_hz, 60);
+
+    true
+}
