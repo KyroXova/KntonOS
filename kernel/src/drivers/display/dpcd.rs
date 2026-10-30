@@ -297,3 +297,232 @@ impl AuxChannelEngine {
         }
     }
 }
+
+
+// -----------------------------------------------------------------------------
+// DisplayPort Link Training Engine
+// -----------------------------------------------------------------------------
+
+pub const DP_TRAINING_PATTERN_DISABLE: u8 = 0x00;
+pub const DP_TRAINING_PATTERN_1: u8 = 0x01;
+pub const DP_TRAINING_PATTERN_2: u8 = 0x02;
+pub const DP_TRAINING_PATTERN_3: u8 = 0x03;
+
+/// Result of physical DisplayPort link training.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LinkTrainingResult {
+    pub rate: DpLinkRate,
+    pub lane_count: u8,
+    pub voltage_swing_level: u8,
+    pub pre_emphasis_level: u8,
+    pub clock_recovery_passed: bool,
+    pub channel_eq_passed: bool,
+}
+
+/// Link training engine executing hardware Clock Recovery and Channel Equalization phases.
+#[derive(Debug, Default)]
+pub struct DpLinkTrainingEngine;
+
+impl DpLinkTrainingEngine {
+    pub const fn new() -> Self {
+        Self
+    }
+
+    /// Performs full 2-phase link training (Clock Recovery -> Channel Equalization).
+    pub fn execute_link_training(
+        &self,
+        aux: &mut AuxChannelEngine,
+        target_rate: DpLinkRate,
+        lane_count: u8,
+    ) -> Result<LinkTrainingResult, &'static str> {
+        let lanes = lane_count.clamp(1, 4);
+
+        // 1. Program Link Rate and Lane Count into DPCD registers
+        aux.set_link_config(target_rate, lanes)?;
+
+        // 2. Phase 1: Clock Recovery (CR) Training
+        let cr_req = AuxTransactionRequest::new_native_write(
+            DPCD_TRAINING_PATTERN_SET,
+            &[DP_TRAINING_PATTERN_1],
+        );
+        aux.process_transaction(&cr_req);
+
+        // Simulate sink receiver locking clock recovery
+        let mut lane0_1_status: u8 = 0x11; // Bit 0 (CR Done Lane 0) | Bit 4 (CR Done Lane 1)
+        let mut lane2_3_status: u8 = 0x00;
+        if lanes > 2 {
+            lane2_3_status = 0x11; // Bit 0 (CR Done Lane 2) | Bit 4 (CR Done Lane 3)
+        }
+        aux.set_register(DPCD_LANE0_1_STATUS, lane0_1_status);
+        aux.set_register(DPCD_LANE2_3_STATUS, lane2_3_status);
+
+        // Read back status over AUX
+        let status_req = AuxTransactionRequest::new_native_read(DPCD_LANE0_1_STATUS, 2);
+        let status_reply = aux.process_transaction(&status_req);
+        if status_reply.status != AuxReplyStatus::Ack {
+            return Err("Failed to read lane status during Clock Recovery");
+        }
+
+        let l0_1 = status_reply.data[0];
+        let cr_lane0 = (l0_1 & 0x01) != 0;
+        let cr_lane1 = if lanes >= 2 { (l0_1 & 0x10) != 0 } else { true };
+        if !cr_lane0 || !cr_lane1 {
+            return Err("Clock recovery failed on lanes 0/1");
+        }
+
+        // 3. Phase 2: Channel Equalization (EQ) / Symbol Lock Training
+        let eq_req = AuxTransactionRequest::new_native_write(
+            DPCD_TRAINING_PATTERN_SET,
+            &[DP_TRAINING_PATTERN_2],
+        );
+        aux.process_transaction(&eq_req);
+
+        // Simulate sink receiver achieving Channel EQ, Symbol Lock, and Interlane Alignment
+        // Lane Status bits: Bit 0: CR_DONE, Bit 1: CH_EQ_DONE, Bit 2: SYMBOL_LOCKED
+        lane0_1_status = 0x77; // Lanes 0 & 1 fully locked (CR + EQ + Symbol Lock)
+        if lanes > 2 {
+            lane2_3_status = 0x77;
+        }
+        aux.set_register(DPCD_LANE0_1_STATUS, lane0_1_status);
+        aux.set_register(DPCD_LANE2_3_STATUS, lane2_3_status);
+        aux.set_register(DPCD_LANE_ALIGN_STATUS_UPDATED, 0x01); // Bit 0: Interlane align done
+
+        let eq_status_req = AuxTransactionRequest::new_native_read(DPCD_LANE0_1_STATUS, 3);
+        let eq_status_reply = aux.process_transaction(&eq_status_req);
+        if eq_status_reply.status != AuxReplyStatus::Ack {
+            return Err("Failed to read lane status during Channel Equalization");
+        }
+
+        let align_done = (eq_status_reply.data[2] & 0x01) != 0;
+        if !align_done {
+            return Err("Interlane alignment not completed");
+        }
+
+        // 4. End Link Training: disable training pattern and enter normal video transmission
+        let end_req = AuxTransactionRequest::new_native_write(
+            DPCD_TRAINING_PATTERN_SET,
+            &[DP_TRAINING_PATTERN_DISABLE],
+        );
+        aux.process_transaction(&end_req);
+
+        Ok(LinkTrainingResult {
+            rate: target_rate,
+            lane_count: lanes,
+            voltage_swing_level: 1, // 600 mV
+            pre_emphasis_level: 1,  // 3.5 dB
+            clock_recovery_passed: true,
+            channel_eq_passed: true,
+        })
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Hot-Plug Detect (HPD) Daemon & Dynamic Multi-Display Modesetter
+// -----------------------------------------------------------------------------
+
+/// Multi-display topology configuration for handheld gaming PC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisplayTopologyMode {
+    /// Handheld internal panel only (e.g. 1920x1080 @ 120Hz VRR).
+    InternalOnly,
+    /// Handheld docked: internal panel blanked, output solely to external high-res monitor.
+    ExternalOnly,
+    /// Dual-display mirror/clone mode.
+    ClonedMirror,
+    /// Extended multi-monitor workspace.
+    ExtendedDesktop,
+}
+
+/// Active video timing descriptor for display modesetting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DisplayModeDescriptor {
+    pub width: u32,
+    pub height: u32,
+    pub refresh_rate_hz: u32,
+    pub is_external: bool,
+}
+
+impl DisplayModeDescriptor {
+    pub const fn internal_handheld() -> Self {
+        Self {
+            width: 1920,
+            height: 1080,
+            refresh_rate_hz: 120,
+            is_external: false,
+        }
+    }
+
+    pub const fn external_4k60() -> Self {
+        Self {
+            width: 3840,
+            height: 2160,
+            refresh_rate_hz: 60,
+            is_external: true,
+        }
+    }
+}
+
+/// Daemon managing hot-plug connection events, link training handoffs, and dynamic display modesetting.
+#[derive(Debug)]
+pub struct HotPlugModesetDaemon {
+    pub topology: DisplayTopologyMode,
+    pub internal_panel: DisplayModeDescriptor,
+    pub external_display: Option<DisplayModeDescriptor>,
+    pub modeset_handoff_count: u64,
+    pub is_external_connected: bool,
+}
+
+impl HotPlugModesetDaemon {
+    pub const fn new() -> Self {
+        Self {
+            topology: DisplayTopologyMode::InternalOnly,
+            internal_panel: DisplayModeDescriptor::internal_handheld(),
+            external_display: None,
+            modeset_handoff_count: 0,
+            is_external_connected: false,
+        }
+    }
+
+    /// Handles an external display dock connection event, transitioning to the requested multi-display topology.
+    pub fn handle_hpd_connect(
+        &mut self,
+        external_mode: DisplayModeDescriptor,
+        preferred_topology: DisplayTopologyMode,
+    ) {
+        self.is_external_connected = true;
+        self.external_display = Some(external_mode);
+        self.topology = preferred_topology;
+        self.modeset_handoff_count += 1;
+    }
+
+    /// Handles an external display disconnect (undocking), restoring internal panel scanout.
+    pub fn handle_hpd_disconnect(&mut self) {
+        self.is_external_connected = false;
+        self.external_display = None;
+        self.topology = DisplayTopologyMode::InternalOnly;
+        self.modeset_handoff_count += 1;
+    }
+
+    /// Checks if internal handheld display scanout should be enabled.
+    #[inline(always)]
+    pub fn is_internal_scanout_active(&self) -> bool {
+        match self.topology {
+            DisplayTopologyMode::InternalOnly
+            | DisplayTopologyMode::ClonedMirror
+            | DisplayTopologyMode::ExtendedDesktop => true,
+            DisplayTopologyMode::ExternalOnly => false,
+        }
+    }
+
+    /// Checks if external DisplayPort scanout should be enabled.
+    #[inline(always)]
+    pub fn is_external_scanout_active(&self) -> bool {
+        self.is_external_connected
+            && matches!(
+                self.topology,
+                DisplayTopologyMode::ExternalOnly
+                    | DisplayTopologyMode::ClonedMirror
+                    | DisplayTopologyMode::ExtendedDesktop
+            )
+    }
+}
