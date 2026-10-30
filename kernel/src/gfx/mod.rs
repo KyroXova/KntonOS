@@ -10,6 +10,7 @@ pub mod gpu_queue;
 pub mod texture_stream;
 pub mod ring_alloc;
 pub mod cbv_pool;
+pub mod dxr_as;
 
 pub use cmdbuf::*;
 pub use compute::*;
@@ -18,6 +19,7 @@ pub use gpu_queue::*;
 pub use texture_stream::*;
 pub use ring_alloc::*;
 pub use cbv_pool::*;
+pub use dxr_as::*;
 
 /// Comprehensive verification self-test suite for Direct3D / Vulkan-Style Command Buffer
 /// Recording and Hardware Queue Submission Engine.
