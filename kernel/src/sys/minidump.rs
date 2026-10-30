@@ -448,6 +448,208 @@ impl RawNvmeCrashStreamer {
     }
 }
 
+// =============================================================================
+// 3. Minidump Reader, Stack Frame Unwinder & Game State Restorer
+// =============================================================================
+
+/// Parsed Minidump Reader for post-crash inspection and triage.
+pub struct MinidumpReader<'a> {
+    data: &'a [u8],
+    header: MinidumpHeader,
+}
+
+impl<'a> MinidumpReader<'a> {
+    pub fn parse(data: &'a [u8]) -> Result<Self, &'static str> {
+        let header_size = core::mem::size_of::<MinidumpHeader>();
+        if data.len() < header_size {
+            return Err("Data too short for MinidumpHeader");
+        }
+
+        let header = unsafe { *(data.as_ptr() as *const MinidumpHeader) };
+        if !header.is_valid() {
+            return Err("Invalid minidump signature");
+        }
+
+        let dir_offset = header.stream_directory_rva as usize;
+        let dir_total_size = header.number_of_streams as usize * core::mem::size_of::<MinidumpDirectory>();
+        if dir_offset + dir_total_size > data.len() {
+            return Err("Stream directory out of bounds");
+        }
+
+        let computed = LocklessCrashDumpWriter::compute_adler32(&data[dir_offset..]);
+        if header.checksum != 0 && header.checksum != computed {
+            return Err("Minidump checksum mismatch (corrupted dump)");
+        }
+
+        Ok(Self { data, header })
+    }
+
+    /// Finds a stream by its type code and returns a byte slice to its payload.
+    pub fn get_stream(&self, stream_type: u32) -> Option<&'a [u8]> {
+        let dir_offset = self.header.stream_directory_rva as usize;
+        let count = self.header.number_of_streams as usize;
+
+        for i in 0..count {
+            let offset = dir_offset + i * core::mem::size_of::<MinidumpDirectory>();
+            let dir = unsafe { *(self.data[offset..].as_ptr() as *const MinidumpDirectory) };
+            if dir.stream_type == stream_type {
+                let start = dir.location_rva as usize;
+                let end = start + dir.data_size as usize;
+                if end <= self.data.len() {
+                    return Some(&self.data[start..end]);
+                }
+            }
+        }
+        None
+    }
+
+    /// Reads captured CPU register context.
+    pub fn read_context(&self) -> Option<CpuContextRecordX64> {
+        let bytes = self.get_stream(MINIDUMP_STREAM_THREAD_LIST)?;
+        if bytes.len() >= core::mem::size_of::<CpuContextRecordX64>() {
+            Some(unsafe { *(bytes.as_ptr() as *const CpuContextRecordX64) })
+        } else {
+            None
+        }
+    }
+
+    /// Reads captured Exception record.
+    pub fn read_exception(&self) -> Option<MinidumpExceptionRecord> {
+        let bytes = self.get_stream(MINIDUMP_STREAM_EXCEPTION)?;
+        if bytes.len() >= core::mem::size_of::<MinidumpExceptionRecord>() {
+            Some(unsafe { *(bytes.as_ptr() as *const MinidumpExceptionRecord) })
+        } else {
+            None
+        }
+    }
+
+    /// Reads crash telemetry.
+    pub fn read_telemetry(&self) -> Option<PanicTelemetryRecord> {
+        let bytes = self.get_stream(MINIDUMP_STREAM_KNT_TELEMETRY)?;
+        if bytes.len() >= core::mem::size_of::<PanicTelemetryRecord>() {
+            Some(unsafe { *(bytes.as_ptr() as *const PanicTelemetryRecord) })
+        } else {
+            None
+        }
+    }
+
+    /// Reads post-crash game recovery state.
+    pub fn read_game_recovery(&self) -> Option<GameRecoveryRecord> {
+        let bytes = self.get_stream(MINIDUMP_STREAM_KNT_GAME_STATE)?;
+        if bytes.len() >= core::mem::size_of::<GameRecoveryRecord>() {
+            Some(unsafe { *(bytes.as_ptr() as *const GameRecoveryRecord) })
+        } else {
+            None
+        }
+    }
+}
+
+/// Unwound stack call frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StackFrame {
+    pub frame_index: usize,
+    pub rip: u64,
+    pub rbp: u64,
+}
+
+/// Call Stack Frame Pointer Unwinder.
+pub struct StackTraceUnwinder;
+
+impl StackTraceUnwinder {
+    /// Unwinds up to `max_frames` call frames from captured stack memory using RBP frame pointers.
+    pub fn unwind_from_memory(
+        ctx: &CpuContextRecordX64,
+        stack_mem: &[u8],
+        stack_base_rsp: u64,
+        max_frames: usize,
+    ) -> alloc::vec::Vec<StackFrame> {
+        let mut frames = alloc::vec::Vec::new();
+        frames.push(StackFrame {
+            frame_index: 0,
+            rip: ctx.rip,
+            rbp: ctx.rbp,
+        });
+
+        let mut current_rbp = ctx.rbp;
+
+        while frames.len() < max_frames {
+            if current_rbp < stack_base_rsp {
+                break;
+            }
+            let offset = (current_rbp - stack_base_rsp) as usize;
+            if offset + 16 > stack_mem.len() {
+                break;
+            }
+
+            let caller_rbp = u64::from_le_bytes(stack_mem[offset..offset + 8].try_into().unwrap_or([0; 8]));
+            let return_rip = u64::from_le_bytes(stack_mem[offset + 8..offset + 16].try_into().unwrap_or([0; 8]));
+
+            if return_rip == 0 {
+                break;
+            }
+
+            frames.push(StackFrame {
+                frame_index: frames.len(),
+                rip: return_rip,
+                rbp: caller_rbp,
+            });
+
+            if caller_rbp <= current_rbp {
+                break;
+            }
+            current_rbp = caller_rbp;
+        }
+
+        frames
+    }
+}
+
+/// Post-Crash Game State Recovery Record for instant game resurrection.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[repr(C)]
+pub struct GameRecoveryRecord {
+    pub magic: u32,             // 0x454D4147 ("GAME")
+    pub game_pid: u32,
+    pub session_id: u64,
+    pub last_frame_number: u64,
+    pub camera_position: [f32; 3],
+    pub player_health: u32,
+    pub checkpoint_hash: u64,
+}
+
+impl GameRecoveryRecord {
+    pub fn new(pid: u32, session_id: u64, frame_num: u64, pos: [f32; 3], health: u32, hash: u64) -> Self {
+        Self {
+            magic: 0x454D4147,
+            game_pid: pid,
+            session_id,
+            last_frame_number: frame_num,
+            camera_position: pos,
+            player_health: health,
+            checkpoint_hash: hash,
+        }
+    }
+
+    pub fn is_valid(&self) -> bool {
+        self.magic == 0x454D4147 && self.game_pid > 0 && self.checkpoint_hash != 0
+    }
+}
+
+/// Instant Post-Crash Game State Restorer.
+pub struct PostCrashGameRestorer;
+
+impl PostCrashGameRestorer {
+    /// Inspects a raw minidump for a valid game recovery stream and restores the checkpoint.
+    pub fn restore_from_minidump(dump_data: &[u8]) -> Result<GameRecoveryRecord, &'static str> {
+        let reader = MinidumpReader::parse(dump_data)?;
+        let record = reader.read_game_recovery().ok_or("No game recovery stream present in minidump")?;
+        if !record.is_valid() {
+            return Err("Invalid game recovery record format");
+        }
+        Ok(record)
+    }
+}
+
 // -----------------------------------------------------------------------------
 // Unit Tests for Commit 1
 // -----------------------------------------------------------------------------
@@ -515,5 +717,55 @@ mod tests {
         });
         assert!(res.is_ok());
         assert!(streamed_sectors >= 1);
+    }
+    #[test]
+    pub fn test_minidump_reader_unwinder_and_game_restorer() {
+        let mut buffer = [0u8; 4096];
+        let mut writer = LocklessCrashDumpWriter::new(&mut buffer);
+
+        let mut ctx = CpuContextRecordX64::default();
+        ctx.rip = 0xFFFF_8000_0010_5000;
+        ctx.rsp = 0xFFFF_8000_0040_0000;
+        ctx.rbp = 0xFFFF_8000_0040_0020;
+        ctx.cr2 = 0xDEAD_BEEF;
+
+        // Construct synthetic 2-frame call stack:
+        // offset 0x20: caller_rbp = 0xFFFF_8000_0040_0060, return_rip = 0xFFFF_8000_0010_4500
+        // offset 0x60: caller_rbp = 0, return_rip = 0xFFFF_8000_0010_4000
+        let mut stack = [0u8; 256];
+        let frame1_rbp = (0xFFFF_8000_0040_0060u64).to_le_bytes();
+        let frame1_rip = (0xFFFF_8000_0010_4500u64).to_le_bytes();
+        stack[0x20..0x28].copy_from_slice(&frame1_rbp);
+        stack[0x28..0x30].copy_from_slice(&frame1_rip);
+
+        let telem = PanicTelemetryRecord::new(STATUS_ACCESS_VIOLATION, 0x0100_0000, 5, 10, b"Memory Access Violation");
+        writer.capture_crash(&ctx, STATUS_ACCESS_VIOLATION, &stack, &telem).expect("Capture failed");
+
+        // Append Game Recovery Stream
+        let game_rec = GameRecoveryRecord::new(10, 0xCAFE_BABE, 12450, [100.0, 50.0, -25.0], 100, 0x1234_5678);
+        let game_bytes = unsafe {
+            core::slice::from_raw_parts(&game_rec as *const _ as *const u8, core::mem::size_of::<GameRecoveryRecord>())
+        };
+        let game_rva = writer.append_bytes(game_bytes).expect("Append game failed");
+        writer.add_stream(MINIDUMP_STREAM_KNT_GAME_STATE, game_rva, game_bytes.len() as u32).expect("Add stream failed");
+        let total_len = writer.finalize().expect("Finalize failed");
+
+        // Parse with MinidumpReader
+        let reader = MinidumpReader::parse(&writer.buffer[..total_len]).expect("Parse minidump failed");
+        let parsed_ctx = reader.read_context().expect("Read context failed");
+        assert_eq!(parsed_ctx.rip, ctx.rip);
+        assert_eq!(parsed_ctx.cr2, ctx.cr2);
+
+        // Unwind call stack
+        let frames = StackTraceUnwinder::unwind_from_memory(&parsed_ctx, &stack, ctx.rsp, 4);
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].rip, 0xFFFF_8000_0010_5000);
+        assert_eq!(frames[1].rip, 0xFFFF_8000_0010_4500);
+
+        // Restore game state
+        let restored = PostCrashGameRestorer::restore_from_minidump(&writer.buffer[..total_len]).expect("Restore failed");
+        assert_eq!(restored.game_pid, 10);
+        assert_eq!(restored.last_frame_number, 12450);
+        assert_eq!(restored.player_health, 100);
     }
 }
