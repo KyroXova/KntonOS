@@ -1,8 +1,5 @@
 //! Kernel High-Resolution Timers (hrtimer) & Ordered Red-Black Tree Queue.
-//!
 //! Provides sub-microsecond precision monotonic timers organized in an ordered
-//! Red-Black tree per CPU core. Supports one-shot and periodic timers, dynamic arming,
-//! cancellation, and precise deadline dispatching.
 
 use alloc::vec::Vec;
 

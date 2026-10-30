@@ -1,5 +1,4 @@
 //! KntonOS Virtual File System (VFS) Subsystem
-//!
 //! Exposes universal file and directory tree abstractions for KntonOS.
 
 pub mod vfs;
@@ -87,7 +86,6 @@ impl Inode for DynamicFileInode {
         Err(FsError::NotADirectory)
     }
 }
-
 
 /// Inode representation of an in-memory Unix domain socket node in VFS.
 pub struct SocketInode {
@@ -669,7 +667,6 @@ pub fn test_vfs_subsystem() -> bool {
     serial_write_str("[KNT-FS-PASS] Initramfs directory tree and file reads verified\r\n");
     true
 }
-
 
 /// Verification test suite for VFS Unified Inode Cache, Lock Manager, & ACL Access Controls.
 pub fn test_vfs_acl_and_cache() -> bool {

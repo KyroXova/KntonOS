@@ -17,10 +17,7 @@ pub fn sys_yield_execution() -> u32 {
 }
 
 /// NtWriteFile: Writes data from a userland buffer to an open handle (serial/console).
-/// - arg1: Handle to file/device
-/// - arg2: Reserved/Event handle
-/// - arg3: Userland buffer pointer
-/// - arg4: Byte length of buffer
+/// arg1: Handle to file/device
 pub fn sys_write_file(handle: u64, _event: u64, buffer_ptr: u64, length: u64) -> u32 {
     // Validate buffer bounds before touching memory
     let slice = match validate_user_slice(buffer_ptr as *const u8, length as usize) {
@@ -40,10 +37,7 @@ pub fn sys_write_file(handle: u64, _event: u64, buffer_ptr: u64, length: u64) ->
 }
 
 /// NtReadFile: Reads data into a userland buffer from an open handle.
-/// - arg1: Handle to file/device
-/// - arg2: Reserved/Event handle
-/// - arg3: Userland destination buffer pointer
-/// - arg4: Maximum byte length to read
+/// arg1: Handle to file/device
 pub fn sys_read_file(handle: u64, _event: u64, buffer_ptr: u64, length: u64) -> u32 {
     let _slice = match validate_user_mut_slice(buffer_ptr as *mut u8, length as usize) {
         Ok(s) => s,
@@ -59,10 +53,7 @@ pub fn sys_read_file(handle: u64, _event: u64, buffer_ptr: u64, length: u64) -> 
 }
 
 /// NtAllocateVirtualMemory: Allocates or commits virtual memory pages for a process.
-/// - arg1: Process handle
-/// - arg2: Pointer to BaseAddress (in/out)
-/// - arg3: Pointer to RegionSize (in/out)
-/// - arg4: Allocation type and protection flags
+/// arg1: Process handle
 pub fn sys_allocate_virtual_memory(
     process_handle: u64,
     base_addr_ptr: u64,
@@ -111,8 +102,7 @@ pub fn sys_allocate_virtual_memory(
 }
 
 /// NtTerminateProcess: Terminates the target process with an exit status code.
-/// - arg1: Process handle
-/// - arg2: Exit status code
+/// arg1: Process handle
 pub fn sys_terminate_process(process_handle: u64, exit_code: u64) -> u32 {
     crate::serial_write_str("[KNT-SYSCALL] NtTerminateProcess called (handle: ");
     if process_handle == NT_CURRENT_PROCESS || process_handle == 0 {
@@ -130,10 +120,7 @@ pub fn sys_terminate_process(process_handle: u64, exit_code: u64) -> u32 {
 }
 
 /// NtCreateSection: Creates a shared memory section.
-/// - arg1: Pointer to receive SectionHandle (*mut u64)
-/// - arg2: Desired access flags
-/// - arg3: Section size in bytes
-/// - arg4: Object attributes / name pointer
+/// arg1: Pointer to receive SectionHandle (*mut u64)
 pub fn sys_create_section(
     section_handle_ptr: u64,
     _desired_access: u64,
@@ -163,10 +150,7 @@ pub fn sys_create_section(
 }
 
 /// NtMapViewOfSection: Maps a view of a section into the virtual address space.
-/// - arg1: Section handle
-/// - arg2: Process handle (NT_CURRENT_PROCESS)
-/// - arg3: Pointer to BaseAddress (*mut usize)
-/// - arg4: View size in bytes
+/// arg1: Section handle
 pub fn sys_map_view_of_section(
     section_handle: u64,
     process_handle: u64,
@@ -197,9 +181,7 @@ pub fn sys_map_view_of_section(
 }
 
 /// NtWaitForAlertByThreadId: Fast futex wait operation.
-/// - arg1: Address of futex variable (*const u32)
-/// - arg2: Expected value (u32)
-/// - arg3: Timeout in ticks (0 = infinite)
+/// arg1: Address of futex variable (*const u32)
 pub fn sys_wait_for_alert_by_thread_id(
     address: u64,
     expected_val: u64,
@@ -226,8 +208,7 @@ pub fn sys_wait_for_alert_by_thread_id(
 }
 
 /// NtAlertThreadByThreadId: Fast futex wake operation.
-/// - arg1: Thread ID or futex address
-/// - arg2: Wake count (if > 0, wakes futex address in arg1; if 0, wakes TID in arg1)
+/// arg1: Thread ID or futex address
 pub fn sys_alert_thread_by_thread_id(
     target: u64,
     count: u64,
@@ -247,9 +228,7 @@ pub fn sys_alert_thread_by_thread_id(
 }
 
 /// NtSigAction: Sets or retrieves action associated with a signal.
-/// - arg1: Signal number
-/// - arg2: Pointer to new SigAction (*const SigAction)
-/// - arg3: Pointer to receive old SigAction (*mut SigAction)
+/// arg1: Signal number
 pub fn sys_sigaction(signum: u64, act_ptr: u64, oldact_ptr: u64) -> u32 {
     let sig = signum as usize;
     if sig == 0 || sig >= crate::process::NSIG {
@@ -306,8 +285,7 @@ pub fn sys_sigaction(signum: u64, act_ptr: u64, oldact_ptr: u64) -> u32 {
 }
 
 /// NtKill: Sends a signal to a process or thread.
-/// - arg1: Target PID (0 or NT_CURRENT_PROCESS = current process)
-/// - arg2: Signal number
+/// arg1: Target PID (0 or NT_CURRENT_PROCESS = current process)
 pub fn sys_kill(pid: u64, sig: u64) -> u32 {
     let sig = sig as usize;
     if sig >= crate::process::NSIG {
@@ -380,9 +358,7 @@ pub fn sys_sigreturn() -> u32 {
 }
 
 /// NtSigProcMask: Examines and changes blocked signals mask for current thread.
-/// - arg1: How flag (SIG_BLOCK=0, SIG_UNBLOCK=1, SIG_SETMASK=2)
-/// - arg2: Pointer to new mask (*const u64)
-/// - arg3: Pointer to receive old mask (*mut u64)
+/// arg1: How flag (SIG_BLOCK=0, SIG_UNBLOCK=1, SIG_SETMASK=2)
 pub fn sys_sigprocmask(how: u64, set_ptr: u64, oldset_ptr: u64) -> u32 {
     let mut guard = crate::process::SCHEDULER.lock();
     let sched = match guard.as_mut() {

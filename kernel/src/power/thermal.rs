@@ -1,19 +1,9 @@
 //! Multi-Zone Thermal Temperature Aggregator & Acoustic Pacing Governor.
-//!
 //! Collects thermal sensor readings across handheld physical zones:
-//! - CPU Package
-//! - GPU Core
-//! - Battery Pack
-//! - Chassis / Skin Touch Surface
-//!
-//! Computes a weighted composite thermal index and controls fan acoustics across
-//! operational modes: Quiet, Balanced, and Turbo (Performance).
 
 use crate::power::fan::{DampedFanController, MultiPointFanCurve};
 
-// -----------------------------------------------------------------------------
 // Thermal Zones & Weighted Sensor Telemetry
-// -----------------------------------------------------------------------------
 
 /// Multi-zone temperature readings in degrees Celsius.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,10 +37,7 @@ impl MultiZoneTemperatures {
     }
 
     /// Computes a weighted thermal index taking skin touch comfort and silicon heat into account:
-    /// - CPU Weight: 35%
-    /// - GPU Weight: 35%
-    /// - Battery Weight: 10%
-    /// - Chassis Skin Weight: 20%
+    /// CPU Weight: 35%
     pub fn weighted_index(&self) -> u8 {
         let weighted = (self.cpu_pkg_celsius as u32 * 35
             + self.gpu_core_celsius as u32 * 35
@@ -61,9 +48,7 @@ impl MultiZoneTemperatures {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Acoustic Pacing Governor Profiles
-// -----------------------------------------------------------------------------
 
 /// Acoustic governor operating profiles for handheld gaming.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,9 +130,7 @@ impl HandheldThermalGovernor {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Unit Tests & Verification
-// -----------------------------------------------------------------------------
 
 /// Unit test verifying multi-zone temperature aggregation and acoustic pacing governor.
 pub fn verify_thermal_governor_and_zones() -> bool {

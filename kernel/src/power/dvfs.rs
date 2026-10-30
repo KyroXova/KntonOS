@@ -1,8 +1,5 @@
 //! Dynamic Voltage & Frequency Scaling (DVFS) & Micro-Voltage Stepping Governor.
-//!
 //! Provides unified Operating Performance Point (OPP) generation, per-core micro-voltage
-//! curve undervolting offsets (-25mV to -100mV), and physical power estimation for handheld
-//! x86-64 gaming APUs.
 
 use super::cppc::CppcController;
 
@@ -397,7 +394,6 @@ pub fn test_micro_voltage_stepping_and_undervolt() -> bool {
 
     // Set Core 1 to minimum frequency (1.2 GHz, base 750 mV)
     // 750 mV - 100 mV = 650 mV, which is below MIN_SAFE_VOLTAGE_MV (680 mV)!
-    // Must be clamped to 680 mV!
     let opp1_min = gov.set_target_frequency(1, 1200).unwrap();
     if opp1_min.effective_voltage_mv != MIN_SAFE_VOLTAGE_MV {
         return false;

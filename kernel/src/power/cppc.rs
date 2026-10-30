@@ -1,7 +1,5 @@
 //! Collaborative Processor Performance Control (CPPC v2) & Hardware P-State MSR Interface.
-//!
 //! Provides ACPI 6.x CPPC v2 performance capability discovery, per-core Desired Performance
-//! regulation, and Intel Speed Shift / AMD Hardware P-state (HWP) MSR control.
 
 /// Maximum number of logical CPU cores supported by CPPC.
 pub const MAX_CPPC_CORES: usize = 16;

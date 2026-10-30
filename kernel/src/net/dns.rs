@@ -1,10 +1,5 @@
 //! Domain Name System (DNS, RFC 1035) Wire Protocol Parser & Serializer.
-//!
 //! Implements standard RFC 1035 wire framing:
-//! - 12-byte DNS message header with bitfield flags
-//! - Question section serialization with label length encoding
-//! - Answer section parsing with uncompressed & pointer compression (`0xC000 | offset`)
-//! - IPv4 address resolution (Type A, Class IN)
 
 use alloc::string::String;
 use alloc::vec::Vec;

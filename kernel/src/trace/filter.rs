@@ -1,7 +1,5 @@
 //! Dynamic Trace Event Filtering & Shared-Memory Userspace Reader Export Engine.
-//!
 //! Provides global and per-core event filtering masks, TSC nanosecond conversion,
-//! and shared memory export framing for userspace profiling tools (`knton-trace-dump`).
 
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use crate::trace::events::{TraceEventMask, TraceEventType, TraceRecord};

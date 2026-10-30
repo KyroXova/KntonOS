@@ -1,7 +1,5 @@
 //! Kernel Trace Record Structures, Event Type Enumeration, & Binary Serialization.
-//!
 //! Provides zero-allocation, fixed-size 32-byte trace record framing with high-resolution
-//! timestamps, CPU core indexing, and structured payload decoding.
 
 /// Well-known kernel profiling event classifications.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,9 +74,7 @@ impl TraceEventMask {
 pub const TRACE_RECORD_MAGIC: u16 = 0x5452; // "TR"
 
 /// Fixed-size 32-byte zero-allocation kernel trace event record.
-///
 /// Designed to pack cleanly into L1 cache lines (two records per 64-byte line)
-/// without crossing cacheline boundaries.
 #[repr(C, align(32))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TraceRecord {

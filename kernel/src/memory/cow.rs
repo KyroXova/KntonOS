@@ -1,9 +1,5 @@
 //! Copy-on-Write (COW) Address Space Management & Physical Frame Reference Tracking.
-//!
 //! Implements:
-//! - `FrameRefCounter`: Physical frame reference table tracking shared COW mappings.
-//! - `fork_address_space`: Duplication of parent address space into child with COW write-protection.
-//! - `handle_cow_fault`: Resolution of Copy-on-Write write faults (page copy or in-place unsharing).
 
 use super::demand_paging::{AddressSpace, PageFaultErrorCode, PageFaultResolution, VmArea, VmFlags};
 use super::pmm::{FrameAllocator, PhysAddr, PAGE_SIZE};
@@ -79,9 +75,7 @@ impl FrameRefCounter {
 pub static FRAME_REF_COUNTER: Spinlock<FrameRefCounter> = Spinlock::new(FrameRefCounter::new());
 
 /// Clones an address space for process fork using Copy-on-Write (COW).
-///
 /// Marks all writable mapped pages as Read-Only with PTE_COW_BIT in both parent and child,
-/// and increments physical frame reference counts.
 pub unsafe fn fork_address_space<A: FrameAllocator>(
     parent: &mut AddressSpace,
     child_pml4: *mut PageTable,

@@ -1,7 +1,5 @@
 //! ChaCha20 Stream Cipher State and Quarter-Round Permutations (RFC 7539).
-//!
 //! Provides the 512-bit (16 x 32-bit word) ChaCha20 state matrix, 20-round ARX
-//! (Add-Rotate-Xor) block function, and keystream generator.
 
 pub const CHACHA20_KEY_SIZE: usize = 32;       // 256-bit key
 pub const CHACHA20_NONCE_SIZE: usize = 12;     // 96-bit nonce
@@ -14,12 +12,7 @@ pub const CONST_2: u32 = 0x79622d32; // "2-by"
 pub const CONST_3: u32 = 0x6b206574; // "te k"
 
 /// 512-bit ChaCha20 State Matrix (16 x 32-bit unsigned words).
-///
 /// Layout:
-/// - Words 0..3: Constants ("expand 32-byte k")
-/// - Words 4..11: 256-bit Key (8 words)
-/// - Word 12: 32-bit Block Counter
-/// - Words 13..15: 96-bit Nonce (3 words)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChaCha20State {
     pub state: [u32; 16],
@@ -107,7 +100,6 @@ impl ChaCha20State {
 
     /// Executes the standard RFC 7539 ChaCha20 20-round block function.
     /// Performs 10 double-rounds (column rounds then diagonal rounds), adds the
-    /// initial working state, and produces a 64-byte keystream block.
     pub fn block_function(&self) -> [u8; CHACHA20_BLOCK_SIZE] {
         let mut working = self.state;
 

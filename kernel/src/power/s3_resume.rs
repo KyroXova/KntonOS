@@ -1,9 +1,5 @@
 //! S3 Low-Power Entry, CPU Core Freeze, & DRAM Self-Refresh Engine.
-//!
 //! Provides x86-64 CPU state preservation (CR0, CR3, CR4, GDT, IDT, RSP, MSRs),
-//! secondary core synchronization via Inter-Processor Interrupts (IPI),
-//! ACPI PM1a/PM1b sleep control register programming, and DRAM self-refresh
-//! preservation for instant sub-450ms resumption.
 
 /// x86-64 Core Architectural Register State preserved across deep sleep.
 #[repr(C)]
@@ -314,7 +310,6 @@ pub fn verify_cpu_freeze_and_dram_self_refresh() -> bool {
 }
 
 /// Real-time Atomic Wakeup & Context Restoration Pipeline.
-///
 /// Guarantees sub-450ms resumption time from hardware wakeup interrupt to userland thread dispatch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WakeupSource {

@@ -1,15 +1,9 @@
 //! Handheld PC Multi-Point Fan Speed Interpolation Curves & PWM Duty Table.
-//!
 //! Provides multi-point linear and cubic interpolation mapping temperatures (°C)
-//! to fan PWM duty cycle percentages (0-100%), acoustic floor enforcement,
-//! emergency trip triggers (100% blast on critical thermal trip), and rate-of-change
-//! hysteresis damping.
 
 use alloc::vec::Vec;
 
-// -----------------------------------------------------------------------------
 // Constants and Operational Limits
-// -----------------------------------------------------------------------------
 
 /// Minimum audible fan floor percentage (e.g. 15% to guarantee fan motor stall prevention).
 pub const DEFAULT_FAN_MIN_AUDIBLE_FLOOR_PERCENT: u8 = 15;
@@ -20,9 +14,7 @@ pub const EMERGENCY_FAN_TRIP_TEMP_CELSIUS: u8 = 95;
 /// Maximum number of control points supported per fan curve.
 pub const MAX_FAN_CURVE_POINTS: usize = 8;
 
-// -----------------------------------------------------------------------------
 // Multi-Point Fan Curve Definitions
-// -----------------------------------------------------------------------------
 
 /// Single temperature-to-PWM control point on a fan curve.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -177,13 +169,9 @@ impl MultiPointFanCurve {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Unit Tests & Verification
-// -----------------------------------------------------------------------------
 
-// -----------------------------------------------------------------------------
 // Thermal Hysteresis Damping & Acoustic Rate-of-Change Limiter
-// -----------------------------------------------------------------------------
 
 /// Default temperature hysteresis in °C to prevent rapid step switching.
 pub const DEFAULT_FAN_HYSTERESIS_CELSIUS: u8 = 3;
@@ -218,10 +206,7 @@ impl DampedFanController {
     }
 
     /// Evaluates target PWM with thermal hysteresis damping and slewing rate limiter.
-    ///
     /// # Parameters:
-    /// - `measured_temp`: Current filtered temperature in °C.
-    /// - `elapsed_ms`: Time elapsed since last evaluation step in milliseconds.
     pub fn update(&mut self, measured_temp: u8, elapsed_ms: u32) -> u8 {
         // Critical emergency trip overrides all rate limiters and hysteresis
         if measured_temp >= self.curve.emergency_temp_celsius {
@@ -282,7 +267,6 @@ pub fn verify_thermal_hysteresis_and_rate_limiter() -> bool {
 
     // 3. Temperature drops by 5°C (to 43°C), exceeding hysteresis threshold
     // Target drops towards 43°C regime (~7%), but rate limiter prevents abrupt acoustic dropping
-    // In 1000ms, max ramp down is 5%/s => drops from 25% to 20%
     let pwm3 = controller.update(43, 1000);
     if pwm3 != 20 {
         return false;

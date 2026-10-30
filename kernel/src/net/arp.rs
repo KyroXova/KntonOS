@@ -1,7 +1,5 @@
 //! Address Resolution Protocol (ARP, RFC 826) Framing and Cache Table.
-//!
 //! Provides Ethernet-to-IPv4 address resolution, request/reply generation,
-//! and an in-memory dynamic ARP table mapping IPv4 addresses to MAC hardware addresses.
 
 use alloc::vec::Vec;
 

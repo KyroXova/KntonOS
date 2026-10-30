@@ -1,11 +1,5 @@
 //! Kernel Cryptographic Primitives Subsystem.
-//!
 //! Provides zero-dependency cryptographic engines for KntonOS network security:
-//! - SHA-256 (FIPS 180-4 / RFC 6234) message digest & HMAC-SHA256 (RFC 2104)
-//! - HKDF (RFC 5869) key derivation functions (Extract & Expand)
-//! - AES-128-GCM (NIST SP 800-38D) authenticated encryption and GHASH authenticator
-//! - Hardware RNG (RDRAND/RDSEED) detection, entropy extractor, and ChaCha20 cipher state structures
-//! - ChaCha20 256-bit CSPRNG stream generator and kernel entropy pool
 
 pub mod aes_gcm;
 pub mod chacha20;
@@ -44,10 +38,7 @@ pub fn verify_crypto_primitives() -> bool {
 }
 
 /// Comprehensive verification of the hardware entropy extractor and ChaCha20 CSPRNG.
-///
 /// Tests CPUID detection, RDRAND/RDSEED/RDTSC extraction, RFC 7539 test vectors,
-/// ChaCha20 20-round keystream generation, monobit statistical balance,
-/// byte frequency distribution, and non-repeating sequence uniqueness.
 pub fn test_crypto_rng_subsystem() -> bool {
     // 1. Verify underlying cryptographic primitives and RFC vectors
     if !verify_crypto_primitives() {

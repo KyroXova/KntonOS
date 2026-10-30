@@ -1,7 +1,5 @@
 //! Dynamic Kernel Probes (kprobes) Infrastructure & INT3 Breakpoint Handler.
-//!
 //! Provides dynamic software breakpoint insertion (INT3 0xCC), probe registry,
-//! out-of-line single-step execution buffers, and execution hooks.
 
 use core::sync::atomic::{fence, Ordering};
 
@@ -344,7 +342,6 @@ impl KprobeRegistry {
 
     /// Handles an INT3 (#BP) breakpoint exception.
     /// In x86-64, CPU pushes `saved_rip = probe_addr + 1`.
-    /// `insn_len` is the length of the original instruction being probed.
     pub fn handle_int3(&mut self, regs: &mut PtRegs, insn_len: usize) -> KprobeBreakStatus {
         if regs.rip == 0 {
             return KprobeBreakStatus::NotOurs;

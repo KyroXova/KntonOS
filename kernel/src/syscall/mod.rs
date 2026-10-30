@@ -1,7 +1,5 @@
 //! Userland Execution and Syscall Dispatch Engine for KntonOS.
-//!
 //! Provides fast system call routing matching Windows NT calling conventions,
-//! userland buffer sanitation, and core NT kernel service stubs.
 
 pub mod handlers;
 pub mod table;

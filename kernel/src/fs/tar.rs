@@ -1,7 +1,5 @@
 //! POSIX UStar Archive Parser for In-Memory Initramfs
-//!
 //! Parses 512-byte block structured TAR archives loaded in memory without
-//! external allocations.
 
 use super::vfs::FsError;
 

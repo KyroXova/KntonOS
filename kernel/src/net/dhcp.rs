@@ -1,10 +1,5 @@
 //! Dynamic Host Configuration Protocol (DHCPv4, RFC 2131) Packet Format & Option TLVs.
-//!
 //! Implements standard RFC 2131 wire framing:
-//! - 240-byte base BOOTP/DHCP message layout with magic cookie (`0x63825363`)
-//! - Option TLV encoding and decoding (Option 53 Message Type, Option 1 Subnet Mask,
-//!   Option 3 Router, Option 6 DNS Servers, Option 51 Lease Time, Option 54 Server Identifier)
-//! - Client hardware address (chaddr) MAC formatting and broadcast flag handling
 
 use alloc::vec::Vec;
 

@@ -1,5 +1,4 @@
 //! KntonOS Inode and Directory Entry Abstractions
-//!
 //! Represents files, directories, and pseudofiles in the VFS hierarchy.
 
 use alloc::string::String;

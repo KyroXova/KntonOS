@@ -1,8 +1,5 @@
 //! S0i3 Modern Standby & S3 Deep Sleep System Quiescence Coordinator.
-//!
 //! Provides the system sleep state machine, device quiescence phases,
-//! driver suspend/resume callback registrations, and device state capture
-//! for zero-packet-loss / zero-frame-drop instant sleep transitions.
 
 pub const MAX_SUSPEND_DEVICES: usize = 16;
 
@@ -179,14 +176,7 @@ impl QuiescenceCoordinator {
     }
 
     /// Executes the complete deterministic device quiescence pipeline.
-    ///
     /// Sequencing:
-    /// 1. Userland threads frozen & sync
-    /// 2. Audio DMA engines halted
-    /// 3. NVMe storage queues parked
-    /// 4. USB xHCI ports suspended
-    /// 5. Display scanout disabled
-    /// 6. System entering frozen state ready for CPU suspend
     pub fn execute_quiescence_pipeline(&mut self) -> Result<(), QuiesceError> {
         if self.current_phase != QuiescencePhase::ActiveS0 {
             return Err(QuiesceError::InvalidPhaseTransition);

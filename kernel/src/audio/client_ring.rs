@@ -1,8 +1,5 @@
 //! Low-Latency Zero-Copy Audio Client Protocol & Shared-Memory Ring Buffer.
-//!
 //! Provides a lock-free Single-Producer Single-Consumer (SPSC) circular ring buffer
-//! for high-performance audio data exchange between userland audio engines and the
-//! kernel audio mixer.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -132,7 +129,6 @@ impl AudioClientRing {
 
     /// Reads audio frames from the ring buffer into the kernel mixer buffer.
     /// If fewer frames are available than requested, fills the remainder with silence
-    /// and logs a starvation underrun. Returns the number of actual audio frames read.
     pub fn read_frames(&mut self, output: &mut [AudioFrame]) -> usize {
         let r = self.read_index.load(Ordering::Relaxed);
         let w = self.write_index.load(Ordering::Acquire);

@@ -1,7 +1,5 @@
 //! Transparent Huge Pages (THP) - 2MB Large Page Allocator & Page Table Structures.
-//!
 //! Provides 2MB physical frame allocation, 2MB PML4/PDPT/PD translation mappings,
-//! transparent huge page collapse/split daemon, and zero-fill optimization.
 
 /// Standard x86-64 4KB page size.
 pub const PAGE_SIZE_4KB: usize = 4096;
@@ -190,9 +188,7 @@ pub const MAX_HUGE_PAGES: usize = 128;
 const BITMAP_WORDS: usize = (MAX_HUGE_PAGES + 63) / 64; // 2 words (128 bits)
 
 /// Physical 2MB Large Page Allocator.
-///
 /// Tracks 2MB-aligned physical frames, providing fast O(1) allocation, buddy-like alignment,
-/// and usage metrics.
 pub struct HugePageAllocator {
     bitmap: [u64; BITMAP_WORDS],
     base_phys_addr: usize,

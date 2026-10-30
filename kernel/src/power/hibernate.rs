@@ -1,8 +1,5 @@
 //! Direct-to-Disk Kernel Hibernation (S4 State) & Swap Image Engine.
-//!
 //! Provides the ACPI S4 hibernation state machine, physical page frame bitmap scanning,
-//! active memory exclusion (skipping unallocated PMM frames), disk block layout mapping,
-//! and standard hibernation swap header generation (`KNT-S4-HIBERNATE`).
 
 use alloc::vec::Vec;
 use crate::power::s3_resume::CpuRegisterContext;
@@ -54,10 +51,7 @@ pub enum HibernateState {
 }
 
 /// Physical Page Frame Bitmap Scanner.
-///
 /// Efficiently tracks and scans physical memory frames (PFNs) to distinguish active
-/// kernel/user allocations from free PMM frames. By excluding free physical frames,
-/// the hibernation engine reduces disk write volume and restore latency by over 80%.
 pub struct PageFrameBitmapScanner {
     total_frames: usize,
     bitmap: Vec<u64>,
@@ -171,7 +165,6 @@ impl PageFrameBitmapScanner {
 }
 
 /// Disk Block Extent Descriptor.
-///
 /// Maps a physical memory page frame to its corresponding compressed disk sector extent.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -204,7 +197,6 @@ impl DiskBlockExtent {
 }
 
 /// Disk Block Layout Metadata Map.
-///
 /// Manages physical disk sector allocation within the dedicated hibernation swap partition.
 pub struct DiskBlockLayoutMap {
     pub start_swap_lba: u64,
@@ -264,9 +256,7 @@ impl DiskBlockLayoutMap {
 }
 
 /// S4 Hibernation Swap Header Metadata.
-///
 /// Resides at sector 0 of the hibernation swap partition, containing image signature,
-/// memory geometry, CPU architectural registers, checksums, and block map pointers.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HibernateSwapHeader {
@@ -393,7 +383,6 @@ impl HibernateSwapHeader {
 }
 
 /// Hibernation Controller.
-///
 /// Coordinates physical memory scanning, block mapping, and header generation.
 pub struct HibernateController {
     pub state: HibernateState,

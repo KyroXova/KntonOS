@@ -1,18 +1,11 @@
 //! Kernel-Direct Micro-Checkpoint Fast State Snapshot & Instant Resumption Engine.
-//!
 //! Provides bare-metal low-latency game process snapshotting and sub-10ms state restoration:
-//! - Hardware page-table dirty bit scanning and Copy-On-Write (COW) memory delta capture.
-//! - Sub-5ms page freezer capturing active game state without perceptible gameplay stutter.
-//! - Fast memory delta stream compressor (LZ4/Run-Length) and zero-copy NVMe checkpoint streaming.
-//! - Instantaneous game state resumption restoring register contexts and page table leaves.
 
 #![allow(dead_code)]
 
 extern crate alloc;
 
-// -----------------------------------------------------------------------------
 // Constants & Flags
-// -----------------------------------------------------------------------------
 
 /// Micro-checkpoint binary magic identifier: "KCHK" (0x4B43484B).
 pub const CHECKPOINT_MAGIC: u32 = 0x4B43484B;
@@ -41,9 +34,7 @@ pub const FLAG_COMPRESSED_LZ4: u32 = 1 << 2;
 /// Checkpoint flag: Copy-On-Write (COW) write protection is active on tracked pages.
 pub const FLAG_COW_ACTIVE: u32 = 1 << 3;
 
-// -----------------------------------------------------------------------------
 // 1. Snapshot Binary Header & Descriptors
-// -----------------------------------------------------------------------------
 
 /// Binary Header for KntonOS Micro-Checkpoint Snapshots.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,9 +175,7 @@ impl PageDeltaDescriptor {
     }
 }
 
-// -----------------------------------------------------------------------------
 // 2. Hardware Dirty Page Bitmap Tracker
-// -----------------------------------------------------------------------------
 
 /// High-performance 64-bit word bitmap tracking up to 8192 pages (32 MiB virtual address space).
 #[derive(Clone, Copy)]
@@ -299,9 +288,7 @@ pub fn compute_adler32(data: &[u8]) -> u32 {
     (b << 16) | a
 }
 
-// -----------------------------------------------------------------------------
 // 3. Sub-5ms COW Page Snapshot Freezer & x86-64 PTE Management
-// -----------------------------------------------------------------------------
 
 /// x86-64 Page Table Entry (PTE) flag bits.
 pub const PTE_PRESENT: u64 = 1 << 0;
@@ -394,7 +381,6 @@ impl CowPageSnapshotFreezer {
 
     /// Executes the sub-5ms COW freeze: scans dirty pages from the tracker,
     /// sets them to Read-Only + COW in page tables, records their original frames,
-    /// and resets the dirty flags.
     pub fn freeze_dirty_pages(&mut self, tracker: &mut DirtyPageBitmapTracker) -> usize {
         self.frozen_count = 0;
         let ptes = &mut self.ptes;
@@ -447,18 +433,14 @@ impl CowPageSnapshotFreezer {
     }
 }
 
-// -----------------------------------------------------------------------------
 // 4. Memory Delta Stream Compressor (LZ4/RLE Streaming)
-// -----------------------------------------------------------------------------
 
 /// High-speed zero-allocation memory delta stream compressor.
 pub struct MemoryDeltaCompressor;
 
 impl MemoryDeltaCompressor {
     /// Compresses a 4096-byte page using fast Run-Length and Byte Token encoding.
-    ///
     /// Encodes repeating byte runs (e.g. 0x00 runs in sparse heaps) and literal blocks.
-    /// Maximum output will never exceed output buffer capacity (returns Err if buffer too small).
     pub fn compress_page(src: &[u8; PAGE_SIZE], dst: &mut [u8]) -> Result<usize, &'static str> {
         let mut src_idx = 0;
         let mut dst_idx = 0;
@@ -558,9 +540,7 @@ impl MemoryDeltaCompressor {
     }
 }
 
-// -----------------------------------------------------------------------------
 // 5. Direct NVMe Checkpoint Ring Streamer & Instant Game Resumption Engine
-// -----------------------------------------------------------------------------
 
 /// Base LBA sector on NVMe storage reserved for the Micro-Checkpoint Ring partition.
 pub const CHECKPOINT_RING_BASE_LBA: u64 = 0x0020_0000;
@@ -574,7 +554,6 @@ pub const CHECKPOINT_RING_SLOTS: usize = 8;
 use crate::sys::minidump::NVME_SECTOR_SIZE;
 
 /// Direct NVMe Checkpoint Ring Streamer.
-///
 /// Streams compressed micro-checkpoints into reserved NVMe ring sectors without intermediate heap copies.
 #[derive(Debug, Clone, Copy)]
 pub struct NvmeCheckpointRingStreamer {
@@ -842,9 +821,7 @@ impl MicroCheckpointManager {
     }
 }
 
-// =============================================================================
 // 6. Subsystem Verification Suite & Boot Sentinel
-// =============================================================================
 
 /// Verification self-test suite for Kernel-Direct Micro-Checkpoint Fast State Snapshot & Instant Resumption Engine (TASK-KNT-121).
 pub fn test_micro_checkpoint_subsystem() -> bool {
@@ -982,9 +959,7 @@ pub fn test_micro_checkpoint_subsystem() -> bool {
     true
 }
 
-// -----------------------------------------------------------------------------
 // Unit Tests
-// -----------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

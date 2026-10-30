@@ -1,9 +1,5 @@
 //! x86-64 Atomic Instruction Detour Splicing & Out-of-Line Execution Trampoline.
-//!
 //! Provides inline function detour hooking by splicing instructions with either a
-//! 5-byte relative jump (`JMP rel32`) or a 14-byte 64-bit absolute indirect jump
-//! (`FF 25 00 00 00 00 <64-bit addr>`). Stolen prologue instructions are preserved
-//! in an out-of-line execute trampoline buffer to allow seamless continuation.
 
 use core::sync::atomic::{fence, Ordering};
 
@@ -407,10 +403,6 @@ impl DetourHook {
 pub fn test_instruction_detour_splicing() -> bool {
     // Simulated function in memory:
     // 0x00: 55                      push rbp
-    // 0x01: 48 89 E5                mov rbp, rsp
-    // 0x04: 48 83 EC 20             sub rsp, 0x20
-    // 0x08: B8 2A 00 00 00          mov eax, 42
-    // 0x0D: C3                      ret
     let mut func_mem = [
         0x55, 0x48, 0x89, 0xE5, 0x48, 0x83, 0xEC, 0x20, 0xB8, 0x2A, 0x00, 0x00, 0x00, 0xC3,
     ];

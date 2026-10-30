@@ -1,8 +1,5 @@
 //! Hierarchical Timing Wheel Engine with O(1) Cascade Insertion & Expiry Dispatch.
-//!
 //! Implements a 5-level hierarchical timing wheel (Level 0 through Level 4) providing
-//! O(1) timer insertion and deterministic cascading expiry dispatch. Ideal for coarse-
-//! to-medium kernel timeouts (networking, I/O timeouts, delayed work queues, and task deadlines).
 
 use alloc::vec::Vec;
 
@@ -343,11 +340,7 @@ pub fn test_timing_wheel_cascade_and_dispatch() -> bool {
     }
 
     // Schedule:
-    // - timer 1 at tick 10 (Level 0)
-    // - timer 2 at tick 50 (Level 0)
-    // - timer 3 at tick 300 (Level 1, delta = 300 >= 256)
-    // - timer 4 at tick 20,000 (Level 2, delta = 20,000 >= 16,384)
-    // - timer 5 (periodic) at tick 20 with interval 20
+    // timer 1 at tick 10 (Level 0)
     wheel.schedule(WheelTimer::new_oneshot(1, 10));
     wheel.schedule(WheelTimer::new_oneshot(2, 50));
     wheel.schedule(WheelTimer::new_oneshot(3, 300));

@@ -1,7 +1,5 @@
 //! High-Performance Register-Based eBPF Virtual Machine Interpreter & Helper Dispatch.
-//!
 //! Executes verified eBPF bytecode in the kernel with 64-bit virtual registers (R0-R10),
-//! dedicated 512-byte per-invocation stack frame, and helper call dispatch table.
 
 use crate::bpf::insn::*;
 use crate::bpf::verifier::{BpfVerifier, VerifierError, BPF_STACK_SIZE};

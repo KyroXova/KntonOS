@@ -1,9 +1,5 @@
 //! AES-128-GCM Authenticated Encryption with Associated Data (AEAD) (NIST SP 800-38D).
-//!
 //! Provides a zero-dependency, pure-Rust implementation of:
-//! - AES-128 (FIPS 197) block cipher (10 rounds, 128-bit block and key)
-//! - GHASH 128-bit Galois Field GF(2^128) authenticator
-//! - Galois/Counter Mode (GCM) AEAD encryption and decryption
 
 use alloc::vec::Vec;
 
@@ -396,8 +392,6 @@ impl Aes128Gcm {
 pub fn verify_aes_gcm() -> bool {
     // 1. AES-128 Block Cipher Test (FIPS 197 Appendix B):
     // Key: 2b7e151628aed2a6abf7158809cf4f3c
-    // Plaintext: 3243f6a8885a308d313198a2e0370734
-    // Expected Ciphertext: 3925841d02dc09fbdc118597196a0b32
     let aes_key: [u8; 16] = [
         0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6,
         0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c,
@@ -418,7 +412,6 @@ pub fn verify_aes_gcm() -> bool {
 
     // 2. NIST SP 800-38D Test Case 2 (16 zero bytes pt, 16 zero bytes key, 12 zero bytes IV):
     // CT: 0388dace60b6a392f328c2b971b2fe78
-    // Tag: ab6e47d42cec13bdf53a67b21257bddf
     let zero_key = [0u8; 16];
     let zero_nonce = [0u8; 12];
     let zero_pt = [0u8; 16];

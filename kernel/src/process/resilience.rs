@@ -1,10 +1,5 @@
 //! Sub-15ms Crash Interception, Fault Signal Handling, & Thread/PCB Recycling Engine.
-//!
 //! Implements zero-teardown micro-kernel fault recovery:
-//! - Intercepts fatal signals (SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGABRT)
-//! - Preserves process page tables (CR3), file descriptors, and shared memory partitions
-//! - Recycles crashed Thread Control Blocks (TCB) in-place without memory reallocation
-//! - Maintains resurrection budgets and crash telemetry history
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -130,9 +125,7 @@ impl FastCrashInterceptor {
     }
 
     /// Intercepts a fatal signal raised against a process, recycling its thread in-place if resilient.
-    ///
     /// Returns `true` if the crash was successfully intercepted and scheduled for resurrection;
-    /// returns `false` if the process is non-resilient and should be conventionally terminated.
     pub fn intercept_crash(
         &mut self,
         pcb: &mut ProcessControlBlock,
@@ -173,7 +166,6 @@ impl FastCrashInterceptor {
 
         // In-place Thread & PCB Recycling:
         // Do NOT touch pcb.page_table_cr3 or pcb.file_descriptors!
-        // Reset thread execution stack and bootstrap context:
         Self::recycle_thread_context(thread, entry_fn);
 
         true
@@ -227,9 +219,7 @@ unsafe extern "C" fn thread_bootstrap_entry() {
     );
 }
 
-// -----------------------------------------------------------------------------
 // Sub-15ms Worker Resurrection & State Re-attachment Engine
-// -----------------------------------------------------------------------------
 
 /// Maximum allowable resurrection latency under the real-time guarantee (15 milliseconds = 15,000,000 ns).
 pub const MAX_RESURRECTION_LATENCY_NS: u64 = 15_000_000;

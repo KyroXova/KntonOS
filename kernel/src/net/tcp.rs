@@ -1,8 +1,5 @@
 //! Transmission Control Protocol (TCP, RFC 793) Header Parser and Builder.
-//!
 //! Implements RFC 793 20-byte standard TCP header layout, control flags (SYN, ACK, FIN, RST, PSH),
-//! data offset parsing, window size, pseudo-header checksum calculation, connection state machine,
-//! and stream socket 3-way handshake generation.
 
 use super::ipv4::compute_checksum;
 use alloc::vec::Vec;

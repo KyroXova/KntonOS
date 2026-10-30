@@ -1,7 +1,5 @@
 //! ELF64 (64-bit Executable and Linkable Format) Binary Parser and Segment Descriptor.
-//!
 //! Implements strict System V ABI and Linux AMD64 executable validation,
-//! header parsing, and program header table enumeration for userland execution.
 
 use alloc::vec::Vec;
 
@@ -562,11 +560,6 @@ pub struct ElfStackInitializer;
 impl ElfStackInitializer {
     /// Formats the user stack according to System V AMD64 ABI specification:
     /// [rsp]                 = argc
-    /// [rsp + 8]             = argv[0] ...
-    /// [rsp + 8*(argc+1)]    = NULL (argv terminator)
-    /// [rsp + 8*(argc+2)]    = NULL (envp terminator)
-    /// [rsp + ...]           = auxv entries: [AT_ENTRY, AT_PHDR, AT_PHENT, AT_PHNUM, AT_PAGESZ, AT_NULL]
-    /// Strings stored at top of stack page.
     pub unsafe fn initialize(
         top_frame_ptr: *mut u8,
         stack_top_vaddr: u64,

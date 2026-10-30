@@ -1,8 +1,5 @@
 //! Low-Latency CPU Wait Instructions (UMONITOR, UMWAIT, TPAUSE) & Adaptive Synchronization.
-//!
 //! Provides hardware-accelerated user-mode thread parking on supported x86-64 processors
-//! (Intel Tremont / Tiger Lake / Alder Lake / Raptor Lake with WAITPKG), with seamless
-//! multi-stage adaptive spin-pause fallbacks for older CPUs and virtualized environments.
 
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -53,7 +50,6 @@ pub fn set_waitpkg_override(supported: bool) {
 }
 
 /// Arms hardware cacheline monitor for the address range containing `addr`.
-///
 /// Executes the `UMONITOR` instruction on supported CPUs, or acts as a memory fence fallback.
 #[inline(always)]
 pub unsafe fn cpu_umonitor(addr: *const u8) {
@@ -70,8 +66,6 @@ pub unsafe fn cpu_umonitor(addr: *const u8) {
 
 /// Puts the logical processor into an optimized wait state until a write to the monitored
 /// cacheline occurs or `deadline_tsc` is reached.
-///
-/// Returns `true` if condition/write woke the CPU, `false` on TSC timeout.
 #[inline(always)]
 pub unsafe fn cpu_umwait(c_state: UmwaitCState, deadline_tsc: u64) -> bool {
     if detect_waitpkg_support() {
@@ -153,12 +147,7 @@ pub fn read_tsc() -> u64 {
 }
 
 /// Adaptive multi-stage low-latency spin-wait barrier.
-///
 /// Designed for sub-microsecond IPC synchronization:
-/// - Stage 1 (0 to 16 cycles): Rapid `pause` loop (ultra-low overhead < 20ns).
-/// - Stage 2 (16 to 128 cycles): Exponential backoff `pause` loop.
-/// - Stage 3: If WAITPKG available, arms `UMONITOR` on the target cacheline and enters `UMWAIT`.
-/// - Stage 4: TSC timeout check.
 pub struct AdaptiveWaitBarrier {
     pub pause_limit: u32,
     pub max_wait_cycles: u64,

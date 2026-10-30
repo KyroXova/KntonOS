@@ -1,11 +1,5 @@
 //! Kernel-Direct Real-Time In-Game Audio Dynamic Range Compressor & Hearing Safety Limiter.
-//!
 //! Provides bare-metal low-latency dynamic range control (DRC) for handheld game audio:
-//! - Configurable soft-knee compression curve with variable threshold, ratio, and makeup gain.
-//! - Sub-millisecond lookahead buffer preventing transient overshoot.
-//! - Branching peak/RMS envelope detector with sub-millisecond attack and smooth release.
-//! - Hearing safety brickwall true-peak limiter clamping sound at -1.0 dBFS ceiling.
-//! - Footstep and ambient whisper boost mode for tactical esports gameplay.
 
 #![allow(dead_code)]
 
@@ -14,9 +8,7 @@ extern crate alloc;
 use crate::audio::hrtf::AUDIO_SAMPLE_RATE;
 use crate::audio::voice_dsp::log10_f32;
 
-// -----------------------------------------------------------------------------
 // Pure no_std Floating Point Math Helpers
-// -----------------------------------------------------------------------------
 
 /// Computes e^x using range reduction and 6th-order Taylor polynomial.
 /// Valid across [-80.0, 80.0].
@@ -50,8 +42,6 @@ pub fn exp_f32(x: f32) -> f32 {
     poly * scale
 }
 
-
-
 /// Converts linear amplitude to decibels full scale (dBFS).
 pub fn linear_to_db(lin: f32) -> f32 {
     let abs_val = if lin < 0.0 { -lin } else { lin };
@@ -71,9 +61,7 @@ pub fn db_to_linear(db: f32) -> f32 {
     }
 }
 
-// -----------------------------------------------------------------------------
 // 1. Dynamic Range Compressor Parameters & Gain Curve
-// -----------------------------------------------------------------------------
 
 /// Parameterizable configuration for dynamic range compression and peak limiting.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -175,9 +163,7 @@ impl CompressorParameters {
     }
 }
 
-// -----------------------------------------------------------------------------
 // 2. Envelope Detection State & Smoothing Filter
-// -----------------------------------------------------------------------------
 
 /// Branching peak envelope detector with decoupled attack and release time constants.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -231,9 +217,7 @@ impl EnvelopeDetector {
     }
 }
 
-// -----------------------------------------------------------------------------
 // 3. Sub-Millisecond Lookahead Buffer & Real-Time Compressor Engine
-// -----------------------------------------------------------------------------
 
 /// Capacity of the lookahead circular buffer (64 samples = 1.33 ms at 48 kHz).
 pub const LOOKAHEAD_CAPACITY: usize = 64;
@@ -337,8 +321,6 @@ impl DynamicRangeCompressor {
 
         // 3. Smooth gain reduction through decoupled attack/release filter
         // In gain reduction domain:
-        // When signal rises, target_gr_db becomes MORE negative -> attack phase
-        // When signal drops, target_gr_db recovers towards 0.0 dB -> release phase
         if target_gr_db < self.detector.envelope_db {
             // Attack phase
             self.detector.envelope_db = self.detector.attack_coeff * self.detector.envelope_db
@@ -378,9 +360,7 @@ impl DynamicRangeCompressor {
     }
 }
 
-// -----------------------------------------------------------------------------
 // 4. True-Peak Estimator, Hearing Safety Limiter & Footstep Booster
-// -----------------------------------------------------------------------------
 
 /// ITU-R BS.1770 compliant true-peak inter-sample loudness estimator.
 #[derive(Debug, Clone, Copy, Default)]
@@ -428,9 +408,7 @@ impl TruePeakEstimator {
 }
 
 /// Hearing Safety Brickwall Limiter.
-///
 /// Implements sub-millisecond lookahead true-peak limiting with an uncompromising
-/// safety ceiling (default -1.0 dBFS) to prevent gamer acoustic trauma.
 #[derive(Debug, Clone, Copy)]
 pub struct HearingSafetyLimiter {
     pub ceiling_db: f32,
@@ -508,9 +486,7 @@ impl HearingSafetyLimiter {
 }
 
 /// Esports Footstep & Subtle Detail Booster.
-///
 /// Implements selective upward dynamic range expansion for quiet cues between -50 dBFS and -25 dBFS,
-/// giving competitive gamers distinct tactical awareness of subtle audio events.
 #[derive(Debug, Clone, Copy)]
 pub struct FootstepDetailBooster {
     pub low_threshold_db: f32,
@@ -531,8 +507,6 @@ impl FootstepDetailBooster {
 
     /// Evaluates upward boost curve:
     /// Below low threshold (-48 dB): max boost (+7.5 dB).
-    /// Between low and high (-48 to -24 dB): linear ramp down from +7.5 dB to 0.0 dB.
-    /// Above high threshold (-24 dB): 0.0 dB boost (transparent pass-through).
     pub fn calculate_boost_db(&self, level_db: f32) -> f32 {
         if !self.enabled || level_db <= -90.0 {
             return 0.0;
@@ -670,9 +644,7 @@ impl GameAudioDrcEngine {
     }
 }
 
-// =============================================================================
 // 5. Subsystem Verification Suite & Boot Sentinel
-// =============================================================================
 
 /// Verification self-test suite for Kernel-Direct Real-Time In-Game Audio Dynamic Range Compressor & Hearing Safety Limiter (TASK-KNT-124).
 pub fn test_audio_compressor_subsystem() -> bool {
@@ -776,9 +748,7 @@ pub fn test_audio_compressor_subsystem() -> bool {
     true
 }
 
-// -----------------------------------------------------------------------------
 // Unit Tests
-// -----------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -819,7 +789,6 @@ mod tests {
 
         // Well above threshold (e.g. -6 dB): input is 12 dB above threshold
         // Compressed output = -18 + 12 / 4 = -15 dB
-        // Gain reduction = -15 - (-6) = -9 dB
         let gr_high = params.calculate_gain_reduction_db(-6.0);
         assert!((gr_high - (-9.0)).abs() < 0.1);
 

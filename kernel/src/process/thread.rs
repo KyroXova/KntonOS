@@ -53,16 +53,6 @@ impl ThreadControlBlock {
 
         // Initialize stack frame for `switch_context` (win64 calling convention):
         // 10 64-bit entries (80 bytes total):
-        // [stack_top - 8]:  thread_bootstrap return address
-        // [stack_top - 16]: rbp (0)
-        // [stack_top - 24]: rbx (0)
-        // [stack_top - 32]: rdi (0)
-        // [stack_top - 40]: rsi (0)
-        // [stack_top - 48]: r12 (thread entry function pointer)
-        // [stack_top - 56]: r13 (0)
-        // [stack_top - 64]: r14 (0)
-        // [stack_top - 72]: r15 (0)
-        // [stack_top - 80]: rflags (0x202 = Interrupts Enabled)
         let rsp = stack_top - 80;
 
         unsafe {

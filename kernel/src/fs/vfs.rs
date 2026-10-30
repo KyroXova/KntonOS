@@ -1,7 +1,5 @@
 //! KntonOS Virtual File System (VFS) Core Abstractions
-//!
 //! Provides fundamental traits, types, error representations, and file operations
-//! for filesystem-agnostic path resolution and I/O.
 
 use alloc::sync::Arc;
 use super::inode::Inode;

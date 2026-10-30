@@ -1,7 +1,5 @@
 //! User Datagram Protocol (UDP, RFC 768) Framing and Socket Endpoint Registry.
-//!
 //! Provides connectionless UDP datagram transmission, header parsing, port demultiplexing,
-//! and a socket registry dispatching incoming packets to listening port endpoints.
 
 use alloc::vec::Vec;
 

@@ -1,13 +1,5 @@
 //! Real-Time Low-Latency Game Voice Chat & Acoustic Noise Cancellation (DSP / RNNoise-Style) Filter Engine.
-//!
 //! Provides bare-metal voice audio DSP for handheld gaming communications:
-//! - Circular microphone capture ring buffer (48 kHz 16-bit PCM).
-//! - 10ms low-latency voice frames (480 samples).
-//! - 16-band Bark-scale bandpass analysis filterbank for spectral decomposition.
-//! - Voice Activity Detection (VAD) with energy thresholds, zero-crossing rates, and speech probability scoring.
-//! - Spectral noise estimation and continuous background noise tracking with speech hangover hysteresis.
-//! - Real-time spectral subtraction (Wiener-style multi-band gain attenuation) suppressing acoustic noise.
-//! - Automatic Gain Control (AGC) with smooth envelope follower, vocal level leveling, and soft-saturation limiter.
 
 #![allow(dead_code)]
 
@@ -15,9 +7,7 @@ extern crate alloc;
 
 use crate::graphics::types::{cos_f32, sin_f32, sqrt_f32, TWO_PI};
 
-// -----------------------------------------------------------------------------
 // Voice Audio Constants
-// -----------------------------------------------------------------------------
 
 /// Voice chat sampling frequency in Hertz.
 pub const VOICE_SAMPLE_RATE: u32 = 48000;
@@ -51,9 +41,7 @@ pub const BARK_BAND_FREQUENCIES: [f32; NUM_SPECTRAL_BANDS] = [
     18000.0, // Band 15: Nyquist edge
 ];
 
-// -----------------------------------------------------------------------------
 // Floating Point Math Helpers (no_std natural log and exponential)
-// -----------------------------------------------------------------------------
 
 /// Computes the natural logarithm ln(x) for x > 0 using IEEE 754 decomposition and Taylor expansion.
 pub fn ln_f32(x: f32) -> f32 {
@@ -80,9 +68,7 @@ pub fn log10_f32(x: f32) -> f32 {
     ln_f32(x) * 0.43429448
 }
 
-// -----------------------------------------------------------------------------
 // Voice Channel Layout & PCM Frame
-// -----------------------------------------------------------------------------
 
 /// Voice capture channel layout configuration.
 #[repr(u8)]
@@ -161,9 +147,7 @@ impl VoicePcmFrame {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Circular Microphone Capture Ring Buffer
-// -----------------------------------------------------------------------------
 
 /// Circular SPSC microphone capture ring buffer handling continuous PCM streaming.
 pub struct VoiceCaptureRing {
@@ -249,9 +233,7 @@ impl VoiceCaptureRing {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Bandpass Analysis & Synthesis Filterbank
-// -----------------------------------------------------------------------------
 
 /// 2nd-Order Biquad IIR Bandpass Filter (Direct Form II Transposed).
 #[derive(Debug, Clone, Copy)]
@@ -364,9 +346,7 @@ impl VoiceFilterbank {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Voice Activity Detection (VAD) & Zero-Crossing Rate
-// -----------------------------------------------------------------------------
 
 /// Computes normalized Zero-Crossing Rate (ZCR) of an audio frame in [0.0, 1.0].
 pub fn compute_zero_crossing_rate(samples: &[f32; VOICE_FRAME_SAMPLES]) -> f32 {
@@ -516,9 +496,7 @@ impl VoiceActivityDetector {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Spectral Background Noise Estimator
-// -----------------------------------------------------------------------------
 
 /// Continuous spectral noise estimator tracking acoustic noise floor per Bark band.
 pub struct SpectralNoiseEstimator {
@@ -574,9 +552,7 @@ impl SpectralNoiseEstimator {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Real-Time Spectral Subtraction Noise Suppressor
-// -----------------------------------------------------------------------------
 
 /// Multi-band Wiener-style spectral subtraction acoustic noise suppressor.
 pub struct SpectralNoiseSuppressor {
@@ -647,9 +623,7 @@ impl SpectralNoiseSuppressor {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Automatic Gain Control (AGC) & Peak Limiter
-// -----------------------------------------------------------------------------
 
 /// Real-time Automatic Gain Control (AGC) maintaining consistent speech levels.
 pub struct AutomaticGainControl {
@@ -726,9 +700,7 @@ impl AutomaticGainControl {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Voice DSP Engine (Unified Processing Pipeline)
-// -----------------------------------------------------------------------------
 
 /// Comprehensive voice audio DSP pipeline integrating Capture, Filterbank, VAD,
 /// Noise Cancellation, and Automatic Gain Control.
@@ -799,9 +771,7 @@ impl VoiceDspEngine {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Unit Self-Tests for Commits 1, 2, and 3
-// -----------------------------------------------------------------------------
 
 /// Verify VoicePcmFrame conversions, capture ring buffer operations, and filterbank energy decomposition.
 pub fn test_voice_capture_ring_and_filterbank() -> bool {

@@ -1,8 +1,5 @@
 //! Real-Time 3D Positional Audio Spatializer & Emitter Mathematics.
-//!
 //! Provides 3D audio listener coordinate frame transformation, directional sound cone radiation,
-//! inverse-square acoustic distance attenuation, atmospheric air absorption, Doppler pitch shifting,
-//! and complete binaural stereo synthesis for headphone gaming.
 
 use crate::graphics::types::{sqrt_f32, Vec3, PI, HALF_PI};
 use super::hrtf::{
@@ -10,9 +7,7 @@ use super::hrtf::{
     IldFilter, SPEED_OF_SOUND,
 };
 
-// -----------------------------------------------------------------------------
 // Pure no_std Trigonometric & Math Helpers
-// -----------------------------------------------------------------------------
 
 /// Computes arctangent of `x` in radians using a high-precision polynomial.
 pub fn atan_f32(x: f32) -> f32 {
@@ -63,9 +58,7 @@ pub fn atan2_f32(y: f32, x: f32) -> f32 {
     }
 }
 
-// -----------------------------------------------------------------------------
 // 3D Audio Listener
-// -----------------------------------------------------------------------------
 
 /// 3D Audio Listener representing the player's head and ears in virtual 3D space.
 #[derive(Clone, Copy, Debug)]
@@ -113,9 +106,7 @@ impl AudioListener3D {
     }
 
     /// Transforms a 3D world-space coordinate into the listener's local cranial frame:
-    /// - X: Right (+X = right ear, -X = left ear)
-    /// - Y: Up (+Y = overhead, -Y = below)
-    /// - Z: Forward (+Z = directly in front, -Z = behind)
+    /// X: Right (+X = right ear, -X = left ear)
     pub fn world_to_local(&self, world_pos: Vec3) -> Vec3 {
         let delta = world_pos.sub(self.position);
         Vec3::new(
@@ -126,9 +117,7 @@ impl AudioListener3D {
     }
 
     /// Computes relative azimuth, elevation, and distance from listener to target.
-    /// - `azimuth`: Angle in radians [-PI, +PI]. (0 = front, +PI/2 = right, -PI/2 = left, +/-PI = rear).
-    /// - `elevation`: Angle in radians [-PI/2, +PI/2]. (0 = horizontal plane, +PI/2 = zenith, -PI/2 = nadir).
-    /// - `distance`: Distance in meters.
+    /// `azimuth`: Angle in radians [-PI, +PI]. (0 = front, +PI/2 = right, -PI/2 = left, +/-PI = rear).
     pub fn calculate_relative_direction(&self, world_pos: Vec3) -> (f32, f32, f32) {
         let local = self.world_to_local(world_pos);
         let dist = local.length();
@@ -148,9 +137,7 @@ impl AudioListener3D {
     }
 }
 
-// -----------------------------------------------------------------------------
 // 3D Audio Emitter
-// -----------------------------------------------------------------------------
 
 /// Distance attenuation model applied to 3D emitters.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -298,13 +285,10 @@ impl AudioEmitter3D {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Doppler Effect Frequency Shift
-// -----------------------------------------------------------------------------
 
 /// Computes the acoustic Doppler pitch shift multiplier based on relative velocities:
 /// `f_observed = f_source * (c - v_l) / (c - v_s)`
-/// Returns a frequency scaling factor in range [0.2, 5.0].
 pub fn calculate_doppler_factor(
     source_pos: Vec3,
     source_vel: Vec3,
@@ -391,9 +375,7 @@ impl DopplerResampler {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Binaural Audio Spatializer Voice & Engine
-// -----------------------------------------------------------------------------
 
 /// Individual active 3D spatialized voice processing a mono source into binaural stereo.
 #[derive(Clone, Copy)]
@@ -439,7 +421,6 @@ impl BinauralVoice {
 
     /// Processes a single mono audio sample through the 3D acoustic pipeline:
     /// Distance attenuation -> Directional cone -> Air absorption -> ITD delay line -> ILD filter -> HRTF FIR convolution.
-    /// Returns `(left_sample, right_sample)`.
     #[inline]
     pub fn process_sample(
         &mut self,
@@ -606,9 +587,7 @@ impl BinauralSpatializer {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Unit Tests
-// -----------------------------------------------------------------------------
 
 /// Unit test verifying 3D audio listener coordinate transformation and emitter distance attenuation.
 pub fn test_3d_emitter_positioning_and_attenuation() -> bool {

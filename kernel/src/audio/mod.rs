@@ -1,8 +1,5 @@
 //! Real-Time 3D Audio Spatializer & Binaural HRTF DSP Pipeline.
-//!
 //! Provides Head-Related Transfer Function (HRTF) convolution, Interaural Time Difference (ITD)
-//! fractional delay lines, Interaural Level Difference (ILD) head-shadow filtering,
-//! 3D emitter distance attenuation, Doppler pitch shifting, and binaural stereo synthesis.
 
 pub mod hrtf;
 pub mod spatializer;
@@ -251,8 +248,6 @@ pub fn test_audio_client_protocol_subsystem() -> bool {
 
 /// Comprehensive verification self-test suite for Real-Time Low-Latency Game Voice Chat
 /// & Acoustic Noise Cancellation (DSP / RNNoise-Style) Filter Engine.
-///
-/// Emits sentinel [KNT-AUDIO-VOICE-DSP-PASS] upon successful validation.
 pub fn test_voice_dsp_subsystem() -> bool {
     crate::serial_write_str("[KNT-AUDIO-VOICE-DSP-TEST] Running Real-Time Game Voice Chat & Acoustic Noise Cancellation verification suite...\r\n");
 

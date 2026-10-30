@@ -1,11 +1,5 @@
 //! Embedded Network Protocol Stack for KntonOS.
-//!
 //! Implements a zero-copy embedded network stack operating directly over VirtIO-Net:
-//! - ARP (RFC 826): Dynamic cache resolution and request/reply generation
-//! - IPv4 (RFC 791): 20-byte packet framing and RFC 791 one's complement checksumming
-//! - ICMP (RFC 792): Ping responder (Echo Request Type 8 -> Echo Reply Type 0)
-//! - UDP (RFC 768): Connectionless datagram framing and port endpoint demultiplexing
-//! - TCP (RFC 793): Connection-oriented stream sockets, state machine, and 3-way handshake
 
 pub mod af_unix;
 pub mod arp;
@@ -219,7 +213,6 @@ impl NetworkStack {
 
     /// Ingests and processes a raw Ethernet frame received from the network interface.
     /// If the frame requires an immediate protocol response (e.g. ARP Reply, ICMP Ping Reply, TCP ACK),
-    /// the serialized outgoing Ethernet frame is returned.
     pub fn process_frame(&mut self, frame: &[u8]) -> Option<Vec<u8>> {
         if frame.len() < ETH_HLEN {
             return None;
@@ -1256,12 +1249,7 @@ pub fn test_network_stack() -> bool {
 }
 
 /// Comprehensive verification self-test for Multi-Queue Network Packet Transmission & Zero-Copy DMA RX/TX Ring Engine.
-///
 /// Tests cacheline-aligned DMA RX/TX descriptor rings, hardware ownership bits, zero-copy packet slicing,
-/// Toeplitz RSS 4-tuple hashing and RX flow steering, per-core lockless TX submission queues,
-/// and priority QoS traffic scheduling (Urgent game traffic vs background bulk).
-///
-/// Emits sentinel [KNT-NET-MULTIQUEUE-PASS] upon successful validation.
 pub fn test_net_multiqueue_subsystem() -> bool {
     // 1. Verify zero-copy DMA RX/TX ring buffers, ownership flags, and wrapping
     if !verify_dma_ring_buffers() {
@@ -1280,7 +1268,6 @@ pub fn test_net_multiqueue_subsystem() -> bool {
 
     // 4. End-to-end integration test:
     // Configure multi-queue manager across 4 cores, steer incoming game and background flows,
-    // dispatch outbound multi-priority traffic across per-core TX rings, and verify zero-copy transmission.
     let mut rx_mgr = MultiQueueRxManager::new(4);
     let mut tx_scheduler = MultiQueueTxScheduler::new(4);
     let mut hw_tx_ring = DmaRingBuffer::<16>::new();

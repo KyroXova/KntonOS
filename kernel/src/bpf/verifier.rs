@@ -1,13 +1,5 @@
 //! In-Kernel Static Bytecode Verifier & CFG Bounds Checker.
-//!
 //! Validates untrusted eBPF bytecode before execution in the kernel:
-//! - Control Flow Graph (CFG) analysis: enforces Directed Acyclic Graph (DAG) with forward jumps only,
-//!   preventing infinite loops and ensuring strict termination.
-//! - Instruction bounds: validates all jump targets point to valid instruction indices.
-//! - Stack safety: enforces 512-byte per-invocation stack frame bounds (offsets [-512, 0]).
-//! - Register tracking: verifies registers are initialized before read access (R1 context pointer
-//!   and R10 frame pointer start initialized; R0 must be set before exit).
-//! - Clean termination: guarantees the program contains an exit instruction reachable along all paths.
 
 use crate::bpf::insn::{
     BpfInsn, BPF_CLASS_ALU, BPF_CLASS_ALU64, BPF_CLASS_JMP, BPF_CLASS_JMP32, 

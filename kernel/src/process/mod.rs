@@ -82,9 +82,7 @@ pub fn test_process_subsystem() -> bool {
 pub fn test_resilience_subsystem() -> bool {
     serial_write_str("[KNT-PROC-RESIL] Testing resilient service partitions and crash recovery...\r\n");
 
-    // -------------------------------------------------------------------------
     // 1. Test Externalized State Partition & Double-Buffered Checkpointing
-    // -------------------------------------------------------------------------
     {
         let mut part = StatePartition::new("knton.shm.compositor");
         if part.header.name_as_str() != "knton.shm.compositor" {
@@ -141,9 +139,7 @@ pub fn test_resilience_subsystem() -> bool {
         }
     }
 
-    // -------------------------------------------------------------------------
     // 2. Test In-Place Crash Interception & Thread/PCB Recycling (Zero-Teardown)
-    // -------------------------------------------------------------------------
     {
         fn dummy_resurrected_worker() {}
 
@@ -209,9 +205,7 @@ pub fn test_resilience_subsystem() -> bool {
         }
     }
 
-    // -------------------------------------------------------------------------
     // 3. Test Deterministic Sub-15ms Resurrection & State Re-Attachment Engine
-    // -------------------------------------------------------------------------
     {
         fn compositor_entry() {}
 

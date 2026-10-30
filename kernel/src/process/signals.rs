@@ -1,7 +1,5 @@
 //! POSIX Signal Definitions, Signal Masks, and SigAction Structures.
-//!
 //! Implements POSIX.1-2008 compatible signal numbers, bitmask sets (sigset_t),
-//! sigaction disposition tables, and pending signal queues.
 
 pub const SIGHUP: usize = 1;
 pub const SIGINT: usize = 2;

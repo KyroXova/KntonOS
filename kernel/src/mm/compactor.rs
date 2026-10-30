@@ -1,12 +1,5 @@
 //! Physical Memory Compactor & Two-Pointer Migration Scanner.
-//!
 //! Implements memory compaction for buddy and slab allocators:
-//! - Physical memory fragmentation index calculation (0.0 = contiguous, 1.0 = fragmented).
-//! - Movable page frame identification (unpinned userland/anonymous frames vs pinned kernel/DMA).
-//! - Two-pointer migration scanner:
-//!   * `migrate_pfn` scans upwards from the bottom of the zone searching for movable pages.
-//!   * `free_pfn` scans downwards from the top of the zone searching for free target frames.
-//! - Pairs candidates for atomic physical frame migration, defragmentation, and swapping.
 
 use core::sync::atomic::{fence, Ordering};
 use super::thp::PAGE_SIZE_4KB;
@@ -227,7 +220,6 @@ impl CompactionZone {
 
     /// Calculates external memory fragmentation index for a requested contiguous block order.
     /// `target_block_pages`: Contiguous chunk size (e.g. 512 pages for 2MB huge page).
-    /// Returns index from 0.0 (no fragmentation, completely contiguous) to 1.0 (severe fragmentation).
     pub fn calculate_fragmentation_index(&self, target_block_pages: usize) -> f32 {
         let (free_total, _, _) = self.count_frame_types();
         if free_total == 0 {
@@ -260,9 +252,7 @@ impl CompactionZone {
     }
 
     /// Performs one step of the two-pointer compaction scanner:
-    /// - Advances `migrate_pfn` upwards to locate the next movable page.
-    /// - Advances `free_pfn` downwards to locate the next free destination frame.
-    /// Returns `Some(MigrationPair)` if a candidate pair is found where `migrate_pfn < free_pfn`.
+    /// Advances `migrate_pfn` upwards to locate the next movable page.
     pub fn scan_next_migration_pair(&mut self) -> Option<MigrationPair> {
         if self.scanner.completed {
             return None;
@@ -462,9 +452,7 @@ impl CompactionZone {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Unit Tests
-// -----------------------------------------------------------------------------
 
 /// Unit test verifying physical memory fragmentation index and two-pointer scanner.
 pub fn test_two_pointer_compactor_scanner() -> bool {

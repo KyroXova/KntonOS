@@ -1,5 +1,4 @@
 //! Memory-Mapped Initramfs Root Filesystem Driver
-//!
 //! Exposes a read-only hierarchical filesystem backed by an in-memory UStar archive.
 
 use alloc::collections::BTreeMap;

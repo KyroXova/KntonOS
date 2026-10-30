@@ -1,7 +1,5 @@
 //! In-Kernel eBPF-Style Bytecode Packet & Event Filter Subsystem.
-//!
 //! Provides a safe in-kernel virtual machine, static bytecode verifier, and helper execution
-//! engine for dynamic packet filtering, tracepoint evaluation, and event instrumentation.
 
 pub mod insn;
 
@@ -29,7 +27,6 @@ pub use vm::{
     BPF_FUNC_KTIME_GET_NS, BPF_FUNC_PACKET_LOAD_U16, BPF_FUNC_PACKET_LOAD_U32,
     BPF_FUNC_PACKET_LOAD_U8, BPF_FUNC_TRACE_PRINTK,
 };
-
 
 /// Comprehensive verification self-test suite for In-Kernel eBPF Packet & Event Filter Subsystem.
 pub fn test_bpf_filter_subsystem() -> bool {
@@ -61,12 +58,6 @@ pub fn test_bpf_filter_subsystem() -> bool {
 
     // Bytecode program:
     // R1 = load_u16(offset = 0)  [EtherType]
-    // if R1 != 0x0800 goto drop
-    // R0 = 1 (ACCEPT)
-    // exit
-    // drop:
-    // R0 = 0 (DROP)
-    // exit
     let firewall_prog = [
         BpfInsn::mov64_imm(1, 0),                       // R1 = 0
         BpfInsn::call_helper(BPF_FUNC_PACKET_LOAD_U16), // R0 = load_u16(0)

@@ -1,7 +1,5 @@
 //! SHA-256 Cryptographic Hash Engine (FIPS 180-4 / RFC 6234) & HMAC-SHA256.
-//!
 //! Provides a zero-dependency, pure-Rust implementation of the SHA-256 message
-//! digest algorithm and Keyed-Hash Message Authentication Code (HMAC-SHA256).
 
 pub const SHA256_BLOCK_SIZE: usize = 64;
 pub const SHA256_DIGEST_SIZE: usize = 32;

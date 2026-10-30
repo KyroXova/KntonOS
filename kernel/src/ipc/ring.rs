@@ -1,8 +1,5 @@
 //! Lockless Single-Producer Single-Consumer (SPSC) Shared Memory Ring Buffer.
-//!
 //! Provides high-throughput, low-latency inter-process and inter-core communication
-//! with cacheline-isolated atomic head/tail pointers, zero-copy packet framing,
-//! and circular wrapping for arbitrary variable-length payloads.
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -505,9 +502,7 @@ pub fn test_spsc_ring() -> bool {
     true
 }
 
-// -------------------------------------------------------------------------------------------------
 // Dual-Ring Bidirectional Shared-Memory Channel (knton-ipc-ring)
-// -------------------------------------------------------------------------------------------------
 
 pub const DUAL_RING_MAGIC: u64 = 0x4452_494E_4743_484E; // "DRINGCHN"
 pub const DUAL_RING_VERSION: u32 = 1;
@@ -542,9 +537,7 @@ pub struct DualRingChannelHeader {
 }
 
 /// Full-duplex bidirectional circular shared-memory IPC channel.
-///
 /// Features dedicated TX and RX rings between two peers, eliminating
-/// lock contention and cache bouncing across CPU cores.
 #[repr(C, align(64))]
 pub struct DualRingChannel<const CAP: usize> {
     pub header: DualRingChannelHeader,
@@ -835,9 +828,7 @@ pub fn test_dual_ring_channel() -> bool {
     true
 }
 
-// -------------------------------------------------------------------------------------------------
 // Zero-Copy Shared-Memory Packet Descriptors & Batch Ring API
-// -------------------------------------------------------------------------------------------------
 
 /// Transfer ownership flag: indicates the descriptor currently belongs to the consumer.
 pub const DESC_OWNERSHIP_CONSUMER: u32 = 1 << 0;
@@ -849,9 +840,7 @@ pub const DESC_FLAG_EOP: u32 = 1 << 1;
 pub const DESC_FLAG_ZERO_COPY_REF: u32 = 1 << 2;
 
 /// Fixed-size 32-byte zero-copy shared-memory packet descriptor.
-///
 /// Enables descriptors to transfer buffer ownership across address spaces without
-/// copying the actual payload data.
 #[repr(C, align(32))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PacketDescriptor {

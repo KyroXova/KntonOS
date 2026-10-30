@@ -1,14 +1,9 @@
 //! Autonomous CPU C-State Residency Governor & Break-Even Latency Analysis.
-//!
 //! Evaluates processor idle duration predictions, break-even residency thresholds,
-//! and energy savings vs entry/exit wake latency budgets to autonomously select optimal
-//! x86 C-states (C0, C1, C1E, C6) via MWAIT / MONITOR with fallbacks.
 
 use alloc::vec::Vec;
 
-// -----------------------------------------------------------------------------
 // C-State Definitions & Architectural Parameters
-// -----------------------------------------------------------------------------
 
 /// Standard x86 Processor Power C-States.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -79,9 +74,7 @@ impl CStateParameters {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Autonomous C-State Governor
-// -----------------------------------------------------------------------------
 
 /// C-State selection recommendation and diagnostics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -191,14 +184,10 @@ impl CStateGovernor {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Hardware MWAIT / MONITOR C-State Entry Primitive
-// -----------------------------------------------------------------------------
 
 /// Puts current core to sleep in specified C-state via MONITOR / MWAIT instructions with HLT fallback.
-///
 /// # Safety
-/// Caller must ensure interrupts are enabled or LAPIC timer is armed so core can wake up.
 pub unsafe fn enter_cstate(c_state: &CStateSelection, monitor_target: *const u8) {
     if c_state.target_state == CpuCState::C0 {
         return;
@@ -221,9 +210,7 @@ pub unsafe fn enter_cstate(c_state: &CStateSelection, monitor_target: *const u8)
     );
 }
 
-// -----------------------------------------------------------------------------
 // Unit Tests & Verification
-// -----------------------------------------------------------------------------
 
 /// Unit test verifying autonomous C-state residency governor and break-even latency analysis.
 pub fn verify_cstate_governor_and_latency() -> bool {
@@ -243,8 +230,6 @@ pub fn verify_cstate_governor_and_latency() -> bool {
 
     // Impending timer event in 50,000 ns (50 µs), latency budget 20 µs
     // Predicted = 5,000 ns.
-    // C1: exit 1 µs, target 2 µs <= 5,000 ns => Selected
-    // C1E: exit 10 µs, target 25 µs > 5,000 ns => Not selected
     let s2 = gov.select_cstate(50_000, 20_000);
     if s2.target_state != CpuCState::C1 || s2.mwait_hint != 0x00 {
         return false;
@@ -257,8 +242,6 @@ pub fn verify_cstate_governor_and_latency() -> bool {
 
     // Predicted = 50 µs.
     // Latency budget 5 µs (strict real-time constraint):
-    // C1E exit latency = 10 µs > 5 µs => rejected!
-    // Falls back to C1 (exit latency 1 µs <= 5 µs, break-even 2 µs <= 50 µs)
     let s3 = gov.select_cstate(100_000, 5_000);
     if s3.target_state != CpuCState::C1 {
         return false;
