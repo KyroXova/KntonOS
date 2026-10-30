@@ -235,6 +235,23 @@ pub struct AudioClientChannel {
     pub muted: bool,
     /// Stream priority (0 = lowest, 255 = critical emergency audio).
     pub priority: u8,
+    /// Count of consecutive read cycles where the client was starved.
+    pub consecutive_underruns: u32,
+    /// Stream throughput health state.
+    pub health: ClientStreamHealth,
+}
+
+/// Health and throughput status of a client audio stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientStreamHealth {
+    /// Normal streaming with sufficient buffer headroom.
+    Healthy,
+    /// Client buffer is running low (< 1 period remaining).
+    Warning,
+    /// Client buffer is starved / underrun for consecutive cycles.
+    Starved,
+    /// Client has ceased sending frames and has been quiesced/disconnected.
+    Disconnected,
 }
 
 impl AudioClientChannel {
@@ -254,6 +271,8 @@ impl AudioClientChannel {
             pan: 0.0,
             muted: false,
             priority: 128,
+            consecutive_underruns: 0,
+            health: ClientStreamHealth::Healthy,
         }
     }
 
@@ -270,6 +289,234 @@ impl AudioClientChannel {
         let right_gain = self.volume * (0.5 * (1.0 + pan_clamped));
 
         (left_gain, right_gain)
+    }
+}
+
+/// Sub-millisecond audio frame pacing engine for real-time mixer cycles.
+pub struct AudioFramePacer {
+    period_frames: usize,
+    period_duration_ns: u64,
+    next_deadline_ns: u64,
+    period_count: u64,
+    total_starvations: u64,
+    max_jitter_ns: u64,
+}
+
+impl AudioFramePacer {
+    /// Creates an audio frame pacer for `period_frames` buffer quantum (e.g. 48 frames = 1ms @ 48kHz).
+    pub fn new(period_frames: usize, start_time_ns: u64) -> Self {
+        let period_duration_ns =
+            (period_frames as u64 * 1_000_000_000) / AUDIO_SAMPLE_RATE_HZ as u64;
+        Self {
+            period_frames,
+            period_duration_ns,
+            next_deadline_ns: start_time_ns + period_duration_ns,
+            period_count: 0,
+            total_starvations: 0,
+            max_jitter_ns: 0,
+        }
+    }
+
+    /// Evaluates if the current time has reached or passed the period deadline.
+    #[inline]
+    pub fn is_deadline_reached(&self, now_ns: u64) -> bool {
+        now_ns >= self.next_deadline_ns
+    }
+
+    /// Advances to the next audio period, recording timing jitter.
+    pub fn advance_period(&mut self, now_ns: u64) {
+        let jitter = if now_ns > self.next_deadline_ns {
+            now_ns - self.next_deadline_ns
+        } else {
+            self.next_deadline_ns - now_ns
+        };
+
+        if jitter > self.max_jitter_ns {
+            self.max_jitter_ns = jitter;
+        }
+
+        self.period_count += 1;
+        self.next_deadline_ns += self.period_duration_ns;
+    }
+
+    /// Configured audio quantum in frames.
+    #[inline]
+    pub fn period_frames(&self) -> usize {
+        self.period_frames
+    }
+
+    /// Duration of a single audio period in nanoseconds.
+    #[inline]
+    pub fn period_duration_ns(&self) -> u64 {
+        self.period_duration_ns
+    }
+
+    /// Next presentation deadline in nanoseconds.
+    #[inline]
+    pub fn next_deadline_ns(&self) -> u64 {
+        self.next_deadline_ns
+    }
+
+    /// Increments starvation counter.
+    #[inline]
+    pub fn record_starvation(&mut self) {
+        self.total_starvations += 1;
+    }
+
+    /// Total starvations encountered across period cycles.
+    #[inline]
+    pub fn total_starvations(&self) -> u64 {
+        self.total_starvations
+    }
+
+    /// Total audio periods completed.
+    #[inline]
+    pub fn period_count(&self) -> u64 {
+        self.period_count
+    }
+
+    /// Maximum timing jitter observed across period cycles.
+    #[inline]
+    pub fn max_jitter_ns(&self) -> u64 {
+        self.max_jitter_ns
+    }
+}
+
+/// Central registry managing up to 16 concurrent audio client streams.
+pub struct AudioClientManager {
+    clients: [Option<AudioClientChannel>; MAX_AUDIO_CLIENTS],
+    pacer: AudioFramePacer,
+    next_client_id: u32,
+    active_client_count: usize,
+}
+
+impl AudioClientManager {
+    /// Creates a new audio client manager.
+    pub fn new(period_frames: usize, start_time_ns: u64) -> Self {
+        const NONE_CLIENT: Option<AudioClientChannel> = None;
+        Self {
+            clients: [NONE_CLIENT; MAX_AUDIO_CLIENTS],
+            pacer: AudioFramePacer::new(period_frames, start_time_ns),
+            next_client_id: 1,
+            active_client_count: 0,
+        }
+    }
+
+    /// Registers a new audio client, returning its unique `client_id`.
+    pub fn register_client(&mut self, name: &str) -> Option<u32> {
+        for slot in &mut self.clients {
+            if slot.is_none() {
+                let id = self.next_client_id;
+                self.next_client_id += 1;
+                *slot = Some(AudioClientChannel::new(id, name));
+                self.active_client_count += 1;
+                return Some(id);
+            }
+        }
+        None
+    }
+
+    /// Unregisters and disconnects an audio client by its `client_id`.
+    pub fn unregister_client(&mut self, client_id: u32) -> bool {
+        for slot in &mut self.clients {
+            if let Some(ref c) = slot {
+                if c.client_id == client_id {
+                    *slot = None;
+                    self.active_client_count = self.active_client_count.saturating_sub(1);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Pulls frames from a specific client for the current mixer period.
+    /// Detects starvation and manages progressive health degradation.
+    pub fn pull_client_frames(
+        &mut self,
+        client_id: u32,
+        output: &mut [AudioFrame],
+    ) -> (usize, ClientStreamHealth) {
+        let channel = match self.get_client_mut(client_id) {
+            Some(c) => c,
+            None => {
+                for f in output.iter_mut() {
+                    *f = AudioFrame::ZERO;
+                }
+                return (0, ClientStreamHealth::Disconnected);
+            }
+        };
+
+        let requested = output.len();
+        let read = channel.ring.read_frames(output);
+
+        if read < requested {
+            channel.consecutive_underruns += 1;
+            channel.health = if channel.consecutive_underruns >= 5 {
+                ClientStreamHealth::Starved
+            } else {
+                ClientStreamHealth::Warning
+            };
+        } else {
+            channel.consecutive_underruns = 0;
+            channel.health = ClientStreamHealth::Healthy;
+        }
+
+        (read, channel.health)
+    }
+
+    /// Obtains an immutable reference to a client channel.
+    pub fn get_client(&self, client_id: u32) -> Option<&AudioClientChannel> {
+        for slot in &self.clients {
+            if let Some(ref c) = slot {
+                if c.client_id == client_id {
+                    return Some(c);
+                }
+            }
+        }
+        None
+    }
+
+    /// Obtains a mutable reference to a client channel.
+    pub fn get_client_mut(&mut self, client_id: u32) -> Option<&mut AudioClientChannel> {
+        for slot in &mut self.clients {
+            if let Some(ref mut c) = slot {
+                if c.client_id == client_id {
+                    return Some(c);
+                }
+            }
+        }
+        None
+    }
+
+    /// Access the frame pacer.
+    #[inline]
+    pub fn pacer(&self) -> &AudioFramePacer {
+        &self.pacer
+    }
+
+    /// Access the frame pacer mutably.
+    #[inline]
+    pub fn pacer_mut(&mut self) -> &mut AudioFramePacer {
+        &mut self.pacer
+    }
+
+    /// Total active clients.
+    #[inline]
+    pub fn active_client_count(&self) -> usize {
+        self.active_client_count
+    }
+
+    /// Direct access to client slots for mixer iteration.
+    #[inline]
+    pub fn client_slots(&self) -> &[Option<AudioClientChannel>; MAX_AUDIO_CLIENTS] {
+        &self.clients
+    }
+
+    /// Direct mutable access to client slots for mixer iteration.
+    #[inline]
+    pub fn client_slots_mut(&mut self) -> &mut [Option<AudioClientChannel>; MAX_AUDIO_CLIENTS] {
+        &mut self.clients
     }
 }
 
@@ -358,6 +605,95 @@ pub fn test_audio_client_ring_and_channel() -> bool {
     channel.muted = true;
     let (gl_mute, gr_mute) = channel.compute_stereo_gains();
     if gl_mute != 0.0 || gr_mute != 0.0 {
+        return false;
+    }
+
+    true
+}
+
+/// Unit test verifying sub-millisecond audio frame pacing and client starvation / underrun recovery.
+pub fn test_audio_frame_pacing_and_underrun_handler() -> bool {
+    // 1. Test AudioFramePacer (48 frames @ 48kHz = exactly 1,000,000 ns = 1 ms)
+    let mut pacer = AudioFramePacer::new(48, 0);
+
+    if pacer.period_frames() != 48
+        || pacer.period_duration_ns() != 1_000_000
+        || pacer.next_deadline_ns() != 1_000_000
+        || pacer.period_count() != 0
+    {
+        return false;
+    }
+
+    // 999,999 ns -> deadline not reached
+    if pacer.is_deadline_reached(999_999) {
+        return false;
+    }
+
+    // 1,000,000 ns -> deadline reached
+    if !pacer.is_deadline_reached(1_000_000) {
+        return false;
+    }
+
+    // Advance period at 1,000,050 ns (50 ns jitter)
+    pacer.advance_period(1_000_050);
+    if pacer.period_count() != 1 || pacer.next_deadline_ns() != 2_000_000 {
+        return false;
+    }
+    if pacer.max_jitter_ns() != 50 {
+        return false;
+    }
+
+    // 2. Test AudioClientManager registration and progressive starvation tracking
+    let mut manager = AudioClientManager::new(48, 0);
+
+    let client_id = match manager.register_client("voice_chat") {
+        Some(id) => id,
+        None => return false,
+    };
+
+    if manager.active_client_count() != 1 {
+        return false;
+    }
+
+    // Attempt to pull 48 frames when empty: ring returns 0 frames, underrun logged, health = Warning
+    let mut period_buffer = [AudioFrame::ZERO; 48];
+    let (read_count, health) = manager.pull_client_frames(client_id, &mut period_buffer);
+    if read_count != 0 || health != ClientStreamHealth::Warning {
+        return false;
+    }
+
+    // Simulate 4 more starved periods (total 5) -> transitions to Starved state
+    for _ in 0..4 {
+        manager.pull_client_frames(client_id, &mut period_buffer);
+    }
+
+    let channel = manager.get_client(client_id).unwrap();
+    if channel.health != ClientStreamHealth::Starved || channel.consecutive_underruns != 5 {
+        return false;
+    }
+
+    // Client resumes transmission: writes 96 frames
+    let test_data = [AudioFrame::new(0.8, 0.8); 96];
+    manager
+        .get_client_mut(client_id)
+        .unwrap()
+        .ring
+        .write_frames(&test_data);
+
+    // Pull 48 frames -> fully satisfied, health immediately recovers to Healthy
+    let (recovered_read, recovered_health) =
+        manager.pull_client_frames(client_id, &mut period_buffer);
+    if recovered_read != 48 || recovered_health != ClientStreamHealth::Healthy {
+        return false;
+    }
+
+    let recovered_channel = manager.get_client(client_id).unwrap();
+    if recovered_channel.consecutive_underruns != 0 {
+        return false;
+    }
+
+    // Unregister client
+    if !manager.unregister_client(client_id) || manager.active_client_count() != 0 {
         return false;
     }
 
