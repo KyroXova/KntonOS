@@ -17,9 +17,9 @@ These branches are managed by their respective developers with granular commit l
 
 | Contributor identity | Branch | Local workspace | Status |
 | --- | --- | --- | --- |
-| Ada Chen | `workspace/ada-chen` | `E:\Git Lab's\kntonOS-ada-chen` | Idle (Holding for cleanup session) |
-| Jules Martin | `workspace/jules-martin` | `E:\Git Lab's\kntonOS-jules-martin` | Idle (Holding for cleanup session) |
-| Priya Nair | `workspace/priya-nair` | `E:\Git Lab's\kntonOS-priya-nair` | Idle (Holding for cleanup session) |
+| Ada Chen | `workspace/ada-chen` | `E:\Git Lab's\kntonOS-ada-chen` | Idle (Cleanup Session Completed & Integrated) |
+| Jules Martin | `workspace/jules-martin` | `E:\Git Lab's\kntonOS-jules-martin` | Idle (Cleanup Session Completed & Integrated) |
+| Priya Nair | `workspace/priya-nair` | `E:\Git Lab's\kntonOS-priya-nair` | Idle (Cleanup Session Completed & Integrated) |
 
 ## Task index
 
