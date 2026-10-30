@@ -14,6 +14,7 @@ pub mod touch;
 pub mod gesture;
 pub mod touchpad;
 pub mod trackball;
+pub mod hall_effect;
 
 pub use imu::*;
 pub use gamepad::*;
@@ -29,6 +30,7 @@ pub use touch::*;
 pub use gesture::*;
 pub use touchpad::*;
 pub use trackball::*;
+pub use hall_effect::*;
 
 use crate::serial_write_str;
 
@@ -638,5 +640,31 @@ pub fn test_touchpad_trackball_subsystem() -> bool {
     }
 
     serial_write_str("[KNT-INPUT-TOUCHPAD-PASS] Capacitive touchpad and virtual trackball emulation verified\r\n");
+    true
+}
+
+/// Verification self-test suite for Handheld PC Hall Effect Magnetic Joystick & Trigger Calibration Engine.
+pub fn test_hall_effect_subsystem() -> bool {
+    serial_write_str("[KNT-INPUT] Testing handheld Hall effect magnetic joystick & trigger calibration engine...\r\n");
+
+    // 1. Verify Hall Effect ADC Raw Readings, Sensor Channels & Temperature Drift Compensation
+    if !verify_calibration_and_adc_profiles() {
+        serial_write_str("[KNT-PANIC] Hall effect calibration and ADC profile verification failed!\r\n");
+        return false;
+    }
+
+    // 2. Verify Circularity Normalization (True Circular vs Squaring), Error Metrics & Anti-Deadzone
+    if !verify_circularity_and_anti_deadzone() {
+        serial_write_str("[KNT-PANIC] Hall effect circularity and anti-deadzone verification failed!\r\n");
+        return false;
+    }
+
+    // 3. Verify Trigger Travel Curves (Linear, Exponential, Hair-Trigger, Dual-Stage) & Dynamic Self-Centering
+    if !verify_trigger_curves_and_dynamic_centering() {
+        serial_write_str("[KNT-PANIC] Hall effect trigger curves and dynamic self-centering verification failed!\r\n");
+        return false;
+    }
+
+    serial_write_str("[KNT-INPUT-HALL-PASS] Handheld Hall effect joystick and trigger calibration engine verified\r\n");
     true
 }
