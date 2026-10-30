@@ -608,6 +608,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] Crash telemetry core dump and minidump restorer self-test failed!\r\n");
     }
 
+    // Verify Kernel-Direct Micro-Checkpoint Fast State Snapshot & Instant Resumption Engine (TASK-KNT-121)
+    if !sys::test_micro_checkpoint_subsystem() {
+        serial_write_str("[KNT-PANIC] Micro-checkpoint state snapshot and instant resumption self-test failed!\r\n");
+    }
+
     // Spawn and execute initial Win32 PE64 userland process (/bin/init.exe)
     if !pe::run_init_process() {
         serial_write_str("[KNT-PANIC] Initial Win32 user process execution failed!\r\n");

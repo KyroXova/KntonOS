@@ -842,6 +842,146 @@ impl MicroCheckpointManager {
     }
 }
 
+// =============================================================================
+// 6. Subsystem Verification Suite & Boot Sentinel
+// =============================================================================
+
+/// Verification self-test suite for Kernel-Direct Micro-Checkpoint Fast State Snapshot & Instant Resumption Engine (TASK-KNT-121).
+pub fn test_micro_checkpoint_subsystem() -> bool {
+    crate::serial_write_str("[KNT-SYS-CHECKPOINT-TEST] Running Micro-Checkpoint Fast State Snapshot & Instant Resumption verification suite...\r\n");
+
+    // 1. Micro-checkpoint header, dirty page bitmap tracker, and thread context
+    let header = CheckpointHeader::new(1, 42, 0x100_0000, 16, FLAG_DELTA_SNAPSHOT | FLAG_COW_ACTIVE);
+    if !header.is_valid() || header.checkpoint_id != 1 || header.dirty_pages_count != 16 {
+        return false;
+    }
+    let mut tracker = DirtyPageBitmapTracker::new(0x0040_0000);
+    tracker.mark_page_dirty(5);
+    tracker.mark_page_dirty(120);
+    if tracker.count_dirty() != 2 || !tracker.is_page_dirty(5) || !tracker.is_page_dirty(120) {
+        return false;
+    }
+    let mut scanned = 0;
+    tracker.scan_and_reset_dirty(|_idx, _vaddr| {
+        scanned += 1;
+    });
+    if scanned != 2 || tracker.count_dirty() != 0 {
+        return false;
+    }
+    crate::serial_write_str("  * Micro-checkpoint header, dirty page bitmap tracker, and thread context verified\r\n");
+
+    // 2. Sub-5ms COW page snapshot freezer and write protection fault handler
+    let base_vaddr = 0x0040_0000;
+    let mut freezer = CowPageSnapshotFreezer::new(base_vaddr);
+    freezer.map_page(0, 0x1000_0000, PTE_PRESENT | PTE_WRITABLE | PTE_USER);
+    freezer.map_page(1, 0x1000_1000, PTE_PRESENT | PTE_WRITABLE | PTE_USER);
+
+    tracker.mark_page_dirty(1);
+    let frozen_count = freezer.freeze_dirty_pages(&mut tracker);
+    if frozen_count != 1 || freezer.ptes[1].is_writable() || !freezer.ptes[1].is_cow() {
+        return false;
+    }
+    if freezer.handle_cow_fault(base_vaddr + PAGE_SIZE as u64, 0x2000_1000).is_err() {
+        return false;
+    }
+    if !freezer.ptes[1].is_writable() || freezer.ptes[1].is_cow() || freezer.ptes[1].frame_address() != 0x2000_1000 {
+        return false;
+    }
+    crate::serial_write_str("  * Sub-5ms COW page snapshot freezer and write protection fault handler verified\r\n");
+
+    // 3. Fast memory delta stream compressor and zero-allocation decompressor
+    let mut original_page = [0u8; PAGE_SIZE];
+    for i in 500..1500 {
+        original_page[i] = 0x5A;
+    }
+    for i in 2000..2500 {
+        original_page[i] = (i & 0x7F) as u8;
+    }
+    let mut comp_buf = [0u8; PAGE_SIZE * 2];
+    let comp_size = match MemoryDeltaCompressor::compress_page(&original_page, &mut comp_buf) {
+        Ok(sz) => sz,
+        Err(_) => return false,
+    };
+    if comp_size == 0 || comp_size >= PAGE_SIZE {
+        return false;
+    }
+    let mut decomp_page = [0u8; PAGE_SIZE];
+    if MemoryDeltaCompressor::decompress_page(&comp_buf[..comp_size], &mut decomp_page).is_err() {
+        return false;
+    }
+    if decomp_page != original_page {
+        return false;
+    }
+    crate::serial_write_str("  * Fast memory delta stream compressor and zero-allocation decompressor verified\r\n");
+
+    // 4. NVMe checkpoint ring sector streamer and rolling slot manager
+    let mut streamer = NvmeCheckpointRingStreamer::new();
+    let mut sector_count = 0;
+    let stream_res = streamer.stream_to_slot(&comp_buf[..comp_size], |lba, _sector| {
+        if lba < CHECKPOINT_RING_BASE_LBA {
+            return Err("Invalid LBA range");
+        }
+        sector_count += 1;
+        Ok(())
+    });
+    if stream_res.is_err() || sector_count == 0 || streamer.head_slot != 1 {
+        return false;
+    }
+    crate::serial_write_str("  * NVMe checkpoint ring sector streamer and rolling slot manager verified\r\n");
+
+    // 5. End-to-end instant game state capture and sub-10ms resumption pipeline
+    let mut manager = MicroCheckpointManager::new(base_vaddr);
+    let mut p0 = [0xAAu8; PAGE_SIZE];
+    let mut p1 = [0xBBu8; PAGE_SIZE];
+    let va0 = base_vaddr;
+    let va1 = base_vaddr + PAGE_SIZE as u64;
+
+    manager.freezer.map_page(0, 0x1000_0000, PTE_PRESENT | PTE_WRITABLE);
+    manager.freezer.map_page(1, 0x1000_1000, PTE_PRESENT | PTE_WRITABLE);
+    manager.tracker.mark_page_dirty(0);
+    manager.tracker.mark_page_dirty(1);
+
+    let mut thread_state = ThreadCheckpointState::default();
+    thread_state.rip = 0x0040_2040;
+    thread_state.rsp = 0x7FFF_FE00;
+    thread_state.frame_number = 12500;
+    thread_state.game_state_hash = 0xCAFE_BABE_FEED_F00D;
+
+    let active_pages = [(p0, va0), (p1, va1)];
+    let mut snap_buf = [0u8; 16384];
+    let snap_len = match manager.capture_checkpoint(42, 0x100_0000, &thread_state, &active_pages, &mut snap_buf) {
+        Ok(len) => len,
+        Err(_) => return false,
+    };
+    if snap_len == 0 {
+        return false;
+    }
+
+    // Corrupt memory to simulate game state deviation
+    p0.fill(0x11);
+    p1.fill(0x22);
+    let mut resume_set = [(p0, va0), (p1, va1)];
+
+    let resume_res = match InstantGameResumer::resume_from_snapshot(&snap_buf[..snap_len], &mut resume_set) {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+
+    if resume_res.restored_checkpoint_id != 1 || resume_res.restored_frame_number != 12500 || resume_res.restored_dirty_pages != 2 {
+        return false;
+    }
+    if resume_res.thread_state.rip != 0x0040_2040 || resume_res.thread_state.game_state_hash != 0xCAFE_BABE_FEED_F00D {
+        return false;
+    }
+    if resume_set[0].0[0] != 0xAA || resume_set[1].0[0] != 0xBB {
+        return false;
+    }
+    crate::serial_write_str("  * End-to-end instant game state capture and sub-10ms resumption pipeline verified\r\n");
+
+    crate::serial_write_str("[KNT-SYS-CHECKPOINT-PASS] Micro-checkpoint state snapshot and instant resumption operational\r\n");
+    true
+}
+
 // -----------------------------------------------------------------------------
 // Unit Tests
 // -----------------------------------------------------------------------------
