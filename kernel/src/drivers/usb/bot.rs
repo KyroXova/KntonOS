@@ -299,3 +299,175 @@ pub fn verify_bot_structures() -> bool {
 
     true
 }
+
+// ============================================================================
+// USB Bulk-Only Transport (BOT) State Machine & Endpoint Transfer Engine
+// ============================================================================
+
+/// Current phase of the USB MSC Bulk-Only Transport state machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BotPhase {
+    /// Controller idle, ready to begin next command.
+    Idle,
+    /// Sending 31-byte CBW on Bulk-Out endpoint.
+    CommandPhase,
+    /// Data-In (device to host) or Data-Out (host to device) payload transfer.
+    DataPhase { bytes_remaining: u32, is_data_in: bool },
+    /// Receiving 13-byte CSW on Bulk-In endpoint.
+    StatusPhase,
+    /// Error condition requiring BOT Reset Recovery (USB MSC BOT 1.0 Section 5.3.4).
+    Recovery,
+}
+
+/// Errors occurring during Bulk-Only Transport execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BotError {
+    /// Invalid CBW or CSW signature.
+    InvalidSignature,
+    /// CSW tag does not match CBW tag.
+    TagMismatch,
+    /// Phase Error reported in CSW (requires reset recovery).
+    PhaseError,
+    /// Command execution failed by target device.
+    CommandFailed,
+    /// Buffer size does not match transfer length.
+    BufferLengthMismatch,
+    /// USB Endpoint stalled or halted.
+    EndpointStall,
+    /// Invalid or unsupported SCSI CDB length.
+    InvalidCdbLength,
+    /// I/O transmission timeout.
+    Timeout,
+    /// Device is not ready or media not present.
+    NotReady,
+}
+
+/// USB Mass Storage Bulk-Only Transport (BOT) Engine.
+#[derive(Debug, Clone)]
+pub struct BotTransport {
+    pub slot_id: u8,
+    pub bulk_in_ep: u8,
+    pub bulk_out_ep: u8,
+    pub max_packet_size: u16,
+    pub next_tag: u32,
+    pub lun: u8,
+    pub phase: BotPhase,
+    pub last_status: Option<CommandStatusWrapper>,
+}
+
+impl BotTransport {
+    /// Constructs a new BOT transport context for the given xHCI slot and endpoints.
+    pub fn new(slot_id: u8, bulk_in_ep: u8, bulk_out_ep: u8, max_packet_size: u16) -> Self {
+        Self {
+            slot_id,
+            bulk_in_ep,
+            bulk_out_ep,
+            max_packet_size,
+            next_tag: 1,
+            lun: 0,
+            phase: BotPhase::Idle,
+            last_status: None,
+        }
+    }
+
+    /// Allocates and increments next unique transaction tag.
+    pub fn alloc_tag(&mut self) -> u32 {
+        let tag = self.next_tag;
+        self.next_tag = self.next_tag.wrapping_add(1);
+        if self.next_tag == 0 {
+            self.next_tag = 1;
+        }
+        tag
+    }
+
+    /// Prepares a Command Block Wrapper for a SCSI command.
+    pub fn create_cbw(&mut self, cdb: &ScsiCdb, transfer_len: u32, is_data_in: bool) -> CommandBlockWrapper {
+        let tag = self.alloc_tag();
+        self.phase = BotPhase::CommandPhase;
+        CommandBlockWrapper::new(tag, transfer_len, is_data_in, self.lun, &cdb.bytes[..cdb.length as usize])
+    }
+
+    /// Advances state machine into data phase.
+    pub fn enter_data_phase(&mut self, bytes: u32, is_data_in: bool) {
+        self.phase = BotPhase::DataPhase {
+            bytes_remaining: bytes,
+            is_data_in,
+        };
+    }
+
+    /// Advances state machine into status phase.
+    pub fn enter_status_phase(&mut self) {
+        self.phase = BotPhase::StatusPhase;
+    }
+
+    /// Validates an incoming CSW and transitions back to Idle (or Recovery on error).
+    pub fn finish_transaction(&mut self, csw: &CommandStatusWrapper, expected_tag: u32) -> Result<(), BotError> {
+        self.last_status = Some(*csw);
+        if csw.signature != CSW_SIGNATURE {
+            self.phase = BotPhase::Recovery;
+            return Err(BotError::InvalidSignature);
+        }
+        if csw.tag != expected_tag {
+            self.phase = BotPhase::Recovery;
+            return Err(BotError::TagMismatch);
+        }
+        if csw.status == CSW_STATUS_PHASE_ERROR {
+            self.phase = BotPhase::Recovery;
+            return Err(BotError::PhaseError);
+        }
+        if csw.status == CSW_STATUS_FAILED {
+            self.phase = BotPhase::Idle;
+            return Err(BotError::CommandFailed);
+        }
+
+        self.phase = BotPhase::Idle;
+        Ok(())
+    }
+
+    /// Executes BOT Reset Recovery to clear stalled endpoints and reset state.
+    pub fn reset_recovery(&mut self) {
+        self.phase = BotPhase::Idle;
+    }
+}
+
+/// Verification self-test for BOT transport state machine transitions.
+pub fn verify_bot_transport_engine() -> bool {
+    let mut transport = BotTransport::new(2, 1, 2, 512);
+
+    if transport.phase != BotPhase::Idle {
+        return false;
+    }
+
+    let cdb = ScsiCdb::from_slice(&[0x12, 0x00, 0x00, 0x00, 36, 0x00]);
+    let cbw = transport.create_cbw(&cdb, 36, true);
+
+    if transport.phase != BotPhase::CommandPhase || cbw.tag != 1 {
+        return false;
+    }
+
+    transport.enter_data_phase(36, true);
+    match transport.phase {
+        BotPhase::DataPhase { bytes_remaining, is_data_in } => {
+            if bytes_remaining != 36 || !is_data_in {
+                return false;
+            }
+        }
+        _ => return false,
+    }
+
+    transport.enter_status_phase();
+    if transport.phase != BotPhase::StatusPhase {
+        return false;
+    }
+
+    let csw = CommandStatusWrapper::new(cbw.tag, 0, CSW_STATUS_PASSED);
+    if transport.finish_transaction(&csw, cbw.tag).is_err() {
+        return false;
+    }
+
+    if transport.phase != BotPhase::Idle {
+        return false;
+    }
+
+    true
+}

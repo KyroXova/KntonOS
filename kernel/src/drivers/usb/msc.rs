@@ -9,7 +9,10 @@
 //! - READ 10 (0x28) / WRITE 10 (0x2A)
 
 use alloc::string::String;
-use crate::drivers::usb::bot::ScsiCdb;
+use crate::drivers::usb::bot::{
+    BotError, BotTransport, CommandBlockWrapper, CommandStatusWrapper, ScsiCdb,
+    CSW_STATUS_PASSED,
+};
 
 // --- SCSI Command Operation Codes ---
 pub const SCSI_CMD_TEST_UNIT_READY: u8 = 0x00;
@@ -322,6 +325,201 @@ pub fn verify_scsi_commands() -> bool {
     }
     let exp_write_lba = 0x0004_1234u32.to_be_bytes();
     if write_cdb.bytes[2..6] != exp_write_lba || write_cdb.bytes[7..9] != 16u16.to_be_bytes() {
+        return false;
+    }
+
+    true
+}
+
+// ============================================================================
+// USB MSC Block Device Abstraction & Sector DMA Engine
+// ============================================================================
+
+/// Block Storage Device abstraction for USB Mass Storage Class Drives (e.g., /dev/sdb).
+#[derive(Debug, Clone)]
+pub struct UsbMscBlockDevice {
+    pub transport: BotTransport,
+    pub vendor: String,
+    pub product: String,
+    pub revision: String,
+    pub block_count: u64,
+    pub block_size: u32,
+    pub is_removable: bool,
+    pub is_initialized: bool,
+}
+
+impl UsbMscBlockDevice {
+    /// Constructs a new USB Mass Storage Block Device attached to the given BOT transport.
+    pub fn new(transport: BotTransport) -> Self {
+        Self {
+            transport,
+            vendor: String::new(),
+            product: String::new(),
+            revision: String::new(),
+            block_count: 0,
+            block_size: 512,
+            is_removable: true,
+            is_initialized: false,
+        }
+    }
+
+    /// Attaches parsed SCSI INQUIRY and READ CAPACITY 10 parameters to this block device.
+    pub fn attach_identified_media(&mut self, inq: &ScsiInquiryData, cap: &ScsiReadCapacity10Data) {
+        self.vendor = inq.vendor_str();
+        self.product = inq.product_str();
+        self.revision = inq.revision_str();
+        self.is_removable = inq.is_removable;
+        self.block_count = cap.total_blocks();
+        self.block_size = cap.block_length;
+        self.is_initialized = true;
+    }
+
+    #[inline(always)]
+    pub fn capacity_bytes(&self) -> u64 {
+        self.block_count.saturating_mul(self.block_size as u64)
+    }
+
+    #[inline(always)]
+    pub fn block_count(&self) -> u64 {
+        self.block_count
+    }
+
+    #[inline(always)]
+    pub fn block_size(&self) -> u32 {
+        self.block_size
+    }
+
+    /// Prepares a SCSI READ (10) command transaction.
+    pub fn build_read_transaction(&mut self, lba: u32, count: u16) -> (CommandBlockWrapper, ScsiCdb) {
+        let cdb = ScsiCommand::read_10(lba, count);
+        let transfer_len = (count as u32) * self.block_size;
+        let cbw = self.transport.create_cbw(&cdb, transfer_len, true);
+        (cbw, cdb)
+    }
+
+    /// Prepares a SCSI WRITE (10) command transaction.
+    pub fn build_write_transaction(&mut self, lba: u32, count: u16) -> (CommandBlockWrapper, ScsiCdb) {
+        let cdb = ScsiCommand::write_10(lba, count);
+        let transfer_len = (count as u32) * self.block_size;
+        let cbw = self.transport.create_cbw(&cdb, transfer_len, false);
+        (cbw, cdb)
+    }
+
+    /// Simulates sector read transfer against backing storage (loopback test & driver validation).
+    pub fn execute_simulated_read(
+        &mut self,
+        backing_store: &[u8],
+        lba: u32,
+        count: u16,
+        dest: &mut [u8],
+    ) -> Result<CommandStatusWrapper, BotError> {
+        let (cbw, _cdb) = self.build_read_transaction(lba, count);
+        let expected_bytes = (count as usize) * (self.block_size as usize);
+        if dest.len() < expected_bytes {
+            return Err(BotError::BufferLengthMismatch);
+        }
+
+        self.transport.enter_data_phase(cbw.data_transfer_length, true);
+        let offset = (lba as usize) * (self.block_size as usize);
+        if offset + expected_bytes > backing_store.len() {
+            return Err(BotError::BufferLengthMismatch);
+        }
+
+        dest[..expected_bytes].copy_from_slice(&backing_store[offset..offset + expected_bytes]);
+
+        self.transport.enter_status_phase();
+        let csw = CommandStatusWrapper::new(cbw.tag, 0, CSW_STATUS_PASSED);
+        self.transport.finish_transaction(&csw, cbw.tag)?;
+
+        Ok(csw)
+    }
+
+    /// Simulates sector write transfer into backing storage (loopback test & driver validation).
+    pub fn execute_simulated_write(
+        &mut self,
+        backing_store: &mut [u8],
+        lba: u32,
+        count: u16,
+        src: &[u8],
+    ) -> Result<CommandStatusWrapper, BotError> {
+        let (cbw, _cdb) = self.build_write_transaction(lba, count);
+        let expected_bytes = (count as usize) * (self.block_size as usize);
+        if src.len() < expected_bytes {
+            return Err(BotError::BufferLengthMismatch);
+        }
+
+        self.transport.enter_data_phase(cbw.data_transfer_length, false);
+        let offset = (lba as usize) * (self.block_size as usize);
+        if offset + expected_bytes > backing_store.len() {
+            return Err(BotError::BufferLengthMismatch);
+        }
+
+        backing_store[offset..offset + expected_bytes].copy_from_slice(&src[..expected_bytes]);
+
+        self.transport.enter_status_phase();
+        let csw = CommandStatusWrapper::new(cbw.tag, 0, CSW_STATUS_PASSED);
+        self.transport.finish_transaction(&csw, cbw.tag)?;
+
+        Ok(csw)
+    }
+}
+
+/// Verification self-test for USB MSC block device engine and SCSI READ/WRITE DMA transactions.
+pub fn verify_usb_msc_engine() -> bool {
+    let transport = BotTransport::new(1, 1, 2, 512);
+    let mut dev = UsbMscBlockDevice::new(transport);
+
+    let mut inq_buf = [0u8; 36];
+    inq_buf[0] = SCSI_DEV_TYPE_DIRECT_ACCESS;
+    inq_buf[1] = 0x80;
+    inq_buf[8..16].copy_from_slice(b"KntonOS ");
+    inq_buf[16..32].copy_from_slice(b"USB Flash Drive ");
+    inq_buf[32..36].copy_from_slice(b"1.00");
+    let inq = match ScsiInquiryData::parse(&inq_buf) {
+        Some(i) => i,
+        None => return false,
+    };
+
+    let mut rc_buf = [0u8; 8];
+    rc_buf[0..4].copy_from_slice(&0x000F_FFFFu32.to_be_bytes()); // 1,048,576 blocks (512 MiB)
+    rc_buf[4..8].copy_from_slice(&512u32.to_be_bytes());
+    let cap = match ScsiReadCapacity10Data::parse(&rc_buf) {
+        Some(c) => c,
+        None => return false,
+    };
+
+    dev.attach_identified_media(&inq, &cap);
+
+    if !dev.is_initialized || dev.vendor != "KntonOS" || dev.product != "USB Flash Drive" {
+        return false;
+    }
+    if dev.block_count() != 1_048_576 || dev.block_size() != 512 {
+        return false;
+    }
+    if dev.capacity_bytes() != 536_870_912 {
+        return false;
+    }
+
+    // 16 KiB backing store simulation
+    let mut backing_store = [0u8; 16384];
+
+    // Write 2 sectors (1024 bytes) at LBA 4
+    let mut write_data = [0u8; 1024];
+    for i in 0..1024 {
+        write_data[i] = ((i * 17 + 43) & 0xFF) as u8;
+    }
+
+    if dev.execute_simulated_write(&mut backing_store, 4, 2, &write_data).is_err() {
+        return false;
+    }
+
+    // Read back 2 sectors at LBA 4
+    let mut read_data = [0u8; 1024];
+    if dev.execute_simulated_read(&backing_store, 4, 2, &mut read_data).is_err() {
+        return false;
+    }
+
+    if read_data != write_data {
         return false;
     }
 

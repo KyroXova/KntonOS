@@ -6,7 +6,8 @@ pub mod msc;
 pub mod xhci;
 
 pub use bot::{
-    verify_bot_structures, CommandBlockWrapper, CommandStatusWrapper, ScsiCdb, CBW_FLAG_DATA_IN,
+    verify_bot_structures, verify_bot_transport_engine, BotError, BotPhase, BotTransport,
+    CommandBlockWrapper, CommandStatusWrapper, ScsiCdb, CBW_FLAG_DATA_IN,
     CBW_FLAG_DATA_OUT, CBW_LENGTH, CBW_SIGNATURE, CSW_LENGTH, CSW_SIGNATURE, CSW_STATUS_FAILED,
     CSW_STATUS_PASSED, CSW_STATUS_PHASE_ERROR, USB_CLASS_MASS_STORAGE, USB_PROTOCOL_BOT,
     USB_SUBCLASS_SCSI,
@@ -16,6 +17,14 @@ pub use hid::{
     EndpointDescriptor, HidDescriptor, HidKeyboardReport, HidMouseReport, InterfaceDescriptor,
     UsbConfigurationBundle, USB_CLASS_HID, USB_PROTOCOL_KEYBOARD, USB_PROTOCOL_MOUSE,
     USB_SUBCLASS_BOOT,
+};
+pub use msc::{
+    verify_scsi_commands, verify_usb_msc_engine, ScsiCommand, ScsiInquiryData,
+    ScsiReadCapacity10Data, ScsiSenseData, UsbMscBlockDevice, SCSI_CMD_INQUIRY,
+    SCSI_CMD_MODE_SENSE_6, SCSI_CMD_READ_10, SCSI_CMD_READ_CAPACITY_10, SCSI_CMD_REQUEST_SENSE,
+    SCSI_CMD_START_STOP_UNIT, SCSI_CMD_TEST_UNIT_READY, SCSI_CMD_WRITE_10, SCSI_DEV_TYPE_CD_DVD,
+    SCSI_DEV_TYPE_DIRECT_ACCESS, SCSI_DEV_TYPE_OPTICAL_MEMORY, SCSI_DEV_TYPE_UNKNOWN,
+    SCSI_INQUIRY_ALLOCATION_LEN, SCSI_READ_CAPACITY_10_LEN, SCSI_REQUEST_SENSE_LEN,
 };
 pub use xhci::{
     CommandRing, Dcbaa, DeviceContext, EndpointContext, ErstEntry, EventRing, InputContext,
