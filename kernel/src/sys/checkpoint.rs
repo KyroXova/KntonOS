@@ -300,7 +300,266 @@ pub fn compute_adler32(data: &[u8]) -> u32 {
 }
 
 // -----------------------------------------------------------------------------
-// Unit Tests for Commit 1
+// 3. Sub-5ms COW Page Snapshot Freezer & x86-64 PTE Management
+// -----------------------------------------------------------------------------
+
+/// x86-64 Page Table Entry (PTE) flag bits.
+pub const PTE_PRESENT: u64 = 1 << 0;
+pub const PTE_WRITABLE: u64 = 1 << 1;
+pub const PTE_USER: u64 = 1 << 2;
+pub const PTE_ACCESSED: u64 = 1 << 5;
+pub const PTE_DIRTY: u64 = 1 << 6;
+pub const PTE_COW: u64 = 1 << 9; // OS-reserved software bit for Copy-On-Write
+
+/// Model of an x86-64 Page Table Entry (PTE).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct PteEntry(pub u64);
+
+impl PteEntry {
+    pub const fn empty() -> Self {
+        Self(0)
+    }
+
+    pub const fn new(frame_address: u64, flags: u64) -> Self {
+        Self((frame_address & 0x000F_FFFF_FFFF_F000) | (flags & 0xFFF))
+    }
+
+    pub fn is_present(&self) -> bool {
+        (self.0 & PTE_PRESENT) != 0
+    }
+
+    pub fn is_writable(&self) -> bool {
+        (self.0 & PTE_WRITABLE) != 0
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        (self.0 & PTE_DIRTY) != 0
+    }
+
+    pub fn is_cow(&self) -> bool {
+        (self.0 & PTE_COW) != 0
+    }
+
+    pub fn frame_address(&self) -> u64 {
+        self.0 & 0x000F_FFFF_FFFF_F000
+    }
+
+    /// Sets write protection and activates COW mode for sub-5ms freeze.
+    pub fn mark_cow(&mut self) {
+        self.0 &= !PTE_WRITABLE; // Clear Write bit (read-only)
+        self.0 |= PTE_COW;       // Mark COW active
+        self.0 &= !PTE_DIRTY;    // Clear Dirty bit to track next modifications
+    }
+
+    /// Clears COW mode and re-enables direct writing on new physical frame.
+    pub fn resolve_cow(&mut self, new_frame: u64) {
+        let flags = (self.0 & 0xFFF & !PTE_COW) | PTE_WRITABLE | PTE_DIRTY;
+        self.0 = (new_frame & 0x000F_FFFF_FFFF_F000) | flags;
+    }
+}
+
+/// Frozen page record captured during the sub-5ms micro-freeze window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrozenPageRecord {
+    pub virtual_address: u64,
+    pub original_frame: u64,
+    pub page_index: usize,
+}
+
+/// Sub-5ms Copy-On-Write (COW) Page Snapshot Freezer.
+pub struct CowPageSnapshotFreezer {
+    pub base_virtual_address: u64,
+    pub ptes: [PteEntry; MAX_CHECKPOINT_PAGES],
+    pub frozen_records: [Option<FrozenPageRecord>; 128],
+    pub frozen_count: usize,
+}
+
+impl CowPageSnapshotFreezer {
+    pub const fn new(base_virtual_address: u64) -> Self {
+        Self {
+            base_virtual_address,
+            ptes: [PteEntry::empty(); MAX_CHECKPOINT_PAGES],
+            frozen_records: [None; 128],
+            frozen_count: 0,
+        }
+    }
+
+    /// Maps a simulated page in the tracking range with initial frame and flags.
+    pub fn map_page(&mut self, page_idx: usize, frame_addr: u64, flags: u64) {
+        if page_idx < MAX_CHECKPOINT_PAGES {
+            self.ptes[page_idx] = PteEntry::new(frame_addr, flags);
+        }
+    }
+
+    /// Executes the sub-5ms COW freeze: scans dirty pages from the tracker,
+    /// sets them to Read-Only + COW in page tables, records their original frames,
+    /// and resets the dirty flags.
+    pub fn freeze_dirty_pages(&mut self, tracker: &mut DirtyPageBitmapTracker) -> usize {
+        self.frozen_count = 0;
+        let ptes = &mut self.ptes;
+        let frozen_records = &mut self.frozen_records;
+        let frozen_count = &mut self.frozen_count;
+
+        tracker.scan_and_reset_dirty(|page_idx, vaddr| {
+            if page_idx < MAX_CHECKPOINT_PAGES && *frozen_count < 128 {
+                let pte = &mut ptes[page_idx];
+                if pte.is_present() {
+                    let orig_frame = pte.frame_address();
+                    pte.mark_cow();
+
+                    frozen_records[*frozen_count] = Some(FrozenPageRecord {
+                        virtual_address: vaddr,
+                        original_frame: orig_frame,
+                        page_index: page_idx,
+                    });
+                    *frozen_count += 1;
+                }
+            }
+        });
+
+        self.frozen_count
+    }
+
+    /// Handles a Copy-On-Write Page Fault (#PF) when the game writes to a frozen page.
+    pub fn handle_cow_fault(&mut self, fault_vaddr: u64, new_frame_alloc: u64) -> Result<(), &'static str> {
+        if fault_vaddr < self.base_virtual_address {
+            return Err("Address outside tracking range");
+        }
+
+        let offset = fault_vaddr - self.base_virtual_address;
+        let page_idx = (offset / (PAGE_SIZE as u64)) as usize;
+        if page_idx >= MAX_CHECKPOINT_PAGES {
+            return Err("Page index out of bounds");
+        }
+
+        let pte = &mut self.ptes[page_idx];
+        if !pte.is_present() {
+            return Err("Page not present");
+        }
+        if !pte.is_cow() {
+            return Err("Page is not marked COW");
+        }
+
+        // Resolve COW: re-point PTE to new physical frame with Write enabled
+        pte.resolve_cow(new_frame_alloc);
+        Ok(())
+    }
+}
+
+// -----------------------------------------------------------------------------
+// 4. Memory Delta Stream Compressor (LZ4/RLE Streaming)
+// -----------------------------------------------------------------------------
+
+/// High-speed zero-allocation memory delta stream compressor.
+pub struct MemoryDeltaCompressor;
+
+impl MemoryDeltaCompressor {
+    /// Compresses a 4096-byte page using fast Run-Length and Byte Token encoding.
+    ///
+    /// Encodes repeating byte runs (e.g. 0x00 runs in sparse heaps) and literal blocks.
+    /// Maximum output will never exceed output buffer capacity (returns Err if buffer too small).
+    pub fn compress_page(src: &[u8; PAGE_SIZE], dst: &mut [u8]) -> Result<usize, &'static str> {
+        let mut src_idx = 0;
+        let mut dst_idx = 0;
+
+        while src_idx < PAGE_SIZE {
+            let current_byte = src[src_idx];
+
+            // 1. Scan for run of identical bytes
+            let mut run_len = 1;
+            while src_idx + run_len < PAGE_SIZE && src[src_idx + run_len] == current_byte && run_len < 127 {
+                run_len += 1;
+            }
+
+            if run_len >= 3 {
+                // Emit Run Token: high bit 1 | (run_len as u8), followed by byte value
+                if dst_idx + 2 > dst.len() {
+                    return Err("Destination buffer overflow during compression");
+                }
+                dst[dst_idx] = 0x80 | (run_len as u8);
+                dst[dst_idx + 1] = current_byte;
+                dst_idx += 2;
+                src_idx += run_len;
+            } else {
+                // Emit Literal Block
+                let lit_start = src_idx;
+                let mut lit_len = 0;
+                while src_idx < PAGE_SIZE && lit_len < 127 {
+                    // Check if a run of >= 3 begins
+                    if src_idx + 2 < PAGE_SIZE && src[src_idx] == src[src_idx + 1] && src[src_idx] == src[src_idx + 2] {
+                        break;
+                    }
+                    lit_len += 1;
+                    src_idx += 1;
+                }
+
+                if lit_len > 0 {
+                    if dst_idx + 1 + lit_len > dst.len() {
+                        return Err("Destination buffer overflow during compression");
+                    }
+                    // Literal token: high bit 0 | lit_len
+                    dst[dst_idx] = lit_len as u8;
+                    dst_idx += 1;
+                    dst[dst_idx..dst_idx + lit_len].copy_from_slice(&src[lit_start..lit_start + lit_len]);
+                    dst_idx += lit_len;
+                }
+            }
+        }
+
+        Ok(dst_idx)
+    }
+
+    /// Decompresses a compressed delta stream back into an exact 4096-byte memory page.
+    pub fn decompress_page(src: &[u8], dst: &mut [u8; PAGE_SIZE]) -> Result<usize, &'static str> {
+        let mut src_idx = 0;
+        let mut dst_idx = 0;
+
+        while src_idx < src.len() && dst_idx < PAGE_SIZE {
+            let token = src[src_idx];
+            src_idx += 1;
+
+            if (token & 0x80) != 0 {
+                // Run Token
+                let run_len = (token & 0x7F) as usize;
+                if src_idx >= src.len() {
+                    return Err("Truncated run token in compressed stream");
+                }
+                let val = src[src_idx];
+                src_idx += 1;
+
+                if dst_idx + run_len > PAGE_SIZE {
+                    return Err("Page boundary overflow during decompression");
+                }
+                for i in 0..run_len {
+                    dst[dst_idx + i] = val;
+                }
+                dst_idx += run_len;
+            } else {
+                // Literal Token
+                let lit_len = token as usize;
+                if src_idx + lit_len > src.len() {
+                    return Err("Truncated literal block in compressed stream");
+                }
+                if dst_idx + lit_len > PAGE_SIZE {
+                    return Err("Page boundary overflow during decompression");
+                }
+                dst[dst_idx..dst_idx + lit_len].copy_from_slice(&src[src_idx..src_idx + lit_len]);
+                src_idx += lit_len;
+                dst_idx += lit_len;
+            }
+        }
+
+        if dst_idx != PAGE_SIZE {
+            return Err("Decompressed page size mismatch (corrupted stream)");
+        }
+
+        Ok(dst_idx)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Unit Tests
 // -----------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -363,5 +622,78 @@ mod tests {
         assert_eq!(scanned_count, 5);
         assert_eq!(tracker.count_dirty(), 0);
         assert_eq!(scanned_pages, alloc::vec![0, 10, 63, 64, 8191]);
+    }
+    #[test]
+    pub fn test_cow_freezer_and_pte_operations() {
+        let base_vaddr = 0x0040_0000;
+        let mut freezer = CowPageSnapshotFreezer::new(base_vaddr);
+        let mut tracker = DirtyPageBitmapTracker::new(base_vaddr);
+
+        // Map 4 pages: 0, 1, 2, 3 as Writable
+        for i in 0..4 {
+            freezer.map_page(i, 0x1000_0000 + (i as u64) * 0x1000, PTE_PRESENT | PTE_WRITABLE | PTE_USER);
+        }
+
+        // Mark pages 1 and 3 dirty
+        tracker.mark_page_dirty(1);
+        tracker.mark_page_dirty(3);
+
+        // Freeze dirty pages
+        let frozen_count = freezer.freeze_dirty_pages(&mut tracker);
+        assert_eq!(frozen_count, 2);
+        assert_eq!(tracker.count_dirty(), 0);
+
+        // Verify page 1 is now Read-Only and marked COW
+        let pte1 = freezer.ptes[1];
+        assert!(pte1.is_present());
+        assert!(!pte1.is_writable());
+        assert!(pte1.is_cow());
+        assert_eq!(pte1.frame_address(), 0x1000_1000);
+
+        // Verify page 0 remained writable
+        assert!(freezer.ptes[0].is_writable());
+        assert!(!freezer.ptes[0].is_cow());
+
+        // Simulate game writing to page 1 -> trigger COW fault
+        let fault_vaddr = base_vaddr + 1 * (PAGE_SIZE as u64);
+        let new_frame = 0x2000_1000;
+        let res = freezer.handle_cow_fault(fault_vaddr, new_frame);
+        assert!(res.is_ok());
+
+        // Verify page 1 is now re-pointed to new_frame with Writable enabled and COW cleared
+        let pte1_after = freezer.ptes[1];
+        assert!(pte1_after.is_writable());
+        assert!(!pte1_after.is_cow());
+        assert_eq!(pte1_after.frame_address(), new_frame);
+    }
+
+    #[test]
+    pub fn test_memory_delta_compressor() {
+        // Construct synthetic page with zero runs and literals
+        let mut original_page = [0u8; PAGE_SIZE];
+        // Zero block (0..1024)
+        // Repeating pattern 0xAA (1024..1536)
+        for i in 1024..1536 {
+            original_page[i] = 0xAA;
+        }
+        // Incrementing literals (1536..2048)
+        for i in 1536..2048 {
+            original_page[i] = (i & 0xFF) as u8;
+        }
+
+        let mut compressed_buf = [0u8; PAGE_SIZE * 2];
+        let comp_size = MemoryDeltaCompressor::compress_page(&original_page, &mut compressed_buf)
+            .expect("Compression failed");
+
+        // Compression should significantly reduce size (e.g. < 1200 bytes for 4096 bytes)
+        assert!(comp_size < 1200);
+
+        // Decompress and verify bitwise match
+        let mut restored_page = [0u8; PAGE_SIZE];
+        let decomp_size = MemoryDeltaCompressor::decompress_page(&compressed_buf[..comp_size], &mut restored_page)
+            .expect("Decompression failed");
+
+        assert_eq!(decomp_size, PAGE_SIZE);
+        assert_eq!(original_page, restored_page);
     }
 }
