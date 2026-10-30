@@ -256,3 +256,155 @@ pub fn verify_thermal_registers_and_tec_state() -> bool {
 
     true
 }
+/// Safety margin in °C maintained strictly above ambient dew point to avoid condensation.
+pub const DEW_POINT_SAFETY_MARGIN_C: f32 = 3.0;
+
+/// Approximates ambient air dew point in °C from ambient temperature and relative humidity.
+///
+/// Uses the Lawrence-Magnus psychrometric linear-rational approximation for fast no_std bare-metal execution:
+/// T_dew = T - ((100 - RH) / 5)
+#[inline]
+pub fn calculate_dew_point_c(ambient_temp_c: f32, relative_humidity_pct: f32) -> f32 {
+    let rh_clamped = relative_humidity_pct.clamp(1.0, 100.0);
+    ambient_temp_c - ((100.0 - rh_clamped) / 5.0)
+}
+
+/// Evaluates whether the Peltier cold plate is at risk of condensation.
+///
+/// Returns (is_at_risk, minimum_safe_cold_temp_c).
+pub fn evaluate_condensation_risk(telemetry: &MultiZoneThermalTelemetry) -> (bool, f32) {
+    let dew_point = calculate_dew_point_c(telemetry.ambient_air_c, telemetry.ambient_humidity_pct);
+    let min_safe_temp = dew_point + DEW_POINT_SAFETY_MARGIN_C;
+    let is_at_risk = telemetry.tec_cold_plate_c <= min_safe_temp;
+    (is_at_risk, min_safe_temp)
+}
+
+/// Closed-loop Proportional-Integral-Derivative (PID) thermal controller for the TEC module.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TecPidController {
+    /// Proportional gain factor.
+    pub kp: f32,
+    /// Integral gain factor.
+    pub ki: f32,
+    /// Derivative gain factor.
+    pub kd: f32,
+    /// Accumulated integral error.
+    pub integral_accum: f32,
+    /// Previous loop error for derivative calculation.
+    pub previous_error: f32,
+    /// Active target temperature setpoint in °C.
+    pub target_temp_c: f32,
+    /// Anti-windup integral clamp bound (+/-).
+    pub integral_windup_limit: f32,
+}
+
+impl TecPidController {
+    /// Creates a new tuned PID controller instance.
+    pub const fn new(kp: f32, ki: f32, kd: f32, target_temp_c: f32) -> Self {
+        Self {
+            kp,
+            ki,
+            kd,
+            integral_accum: 0.0,
+            previous_error: 0.0,
+            target_temp_c,
+            integral_windup_limit: 40.0,
+        }
+    }
+
+    /// Resets historical integral and derivative states.
+    pub fn reset(&mut self) {
+        self.integral_accum = 0.0;
+        self.previous_error = 0.0;
+    }
+
+    /// Updates the PID loop given the current temperature reading and time delta (dt in seconds).
+    ///
+    /// Returns the calculated TEC PWM duty cycle (0..100%).
+    pub fn update(
+        &mut self,
+        current_temp_c: f32,
+        dt_seconds: f32,
+        min_safe_temp_c: f32,
+    ) -> u8 {
+        // Enforce condensation avoidance: cold plate target cannot be set below safe dew point limit
+        let effective_target = if self.target_temp_c < min_safe_temp_c {
+            min_safe_temp_c
+        } else {
+            self.target_temp_c
+        };
+
+        let dt = if dt_seconds <= 0.001 { 0.01 } else { dt_seconds };
+        // Error: positive when hotter than target (demands cooling increase)
+        let error = current_temp_c - effective_target;
+
+        // Proportional term
+        let p = self.kp * error;
+
+        // Integral term with anti-windup clamping
+        self.integral_accum = (self.integral_accum + error * dt)
+            .clamp(-self.integral_windup_limit, self.integral_windup_limit);
+        let i = self.ki * self.integral_accum;
+
+        // Derivative term
+        let d = self.kd * ((error - self.previous_error) / dt);
+        self.previous_error = error;
+
+        let output = p + i + d;
+        output.clamp(0.0, 100.0) as u8
+    }
+}
+
+/// Verification helper for Commit 2 PID control and dew point condensation prevention.
+pub fn verify_pid_and_dew_point_prevention() -> bool {
+    // 1. Verify Dew Point Calculation
+    // Ambient 25.0°C, 50.0% RH -> Dew point = 25 - (50/5) = 15.0°C
+    let dew = calculate_dew_point_c(25.0, 50.0);
+    if (dew - 15.0).abs() > 0.01 {
+        return false;
+    }
+
+    // 2. Verify Condensation Risk Evaluation
+    // Telemetry with cold plate at 16.0°C (below min safe 15 + 3 = 18.0°C) -> Risk true
+    let risk_telem = MultiZoneThermalTelemetry::new(50.0, 45.0, 30.0, 16.0, 48.0, 25.0, 50.0);
+    let (is_risk, min_safe) = evaluate_condensation_risk(&risk_telem);
+    if !is_risk || (min_safe - 18.0).abs() > 0.01 {
+        return false;
+    }
+
+    // Safe cold plate at 22.0°C (> 18.0°C) -> Risk false
+    let safe_telem = MultiZoneThermalTelemetry::new(50.0, 45.0, 30.0, 22.0, 48.0, 25.0, 50.0);
+    let (is_safe_risk, _) = evaluate_condensation_risk(&safe_telem);
+    if is_safe_risk {
+        return false;
+    }
+
+    // 3. Verify PID Controller Response
+    let mut pid = TecPidController::new(2.0, 0.1, 0.5, 30.0);
+
+    // Initial state: current temp 60.0°C > target 30.0°C -> heavy cooling demand
+    let duty_hot = pid.update(60.0, 0.1, 15.0);
+    if duty_hot < 60 {
+        return false;
+    }
+
+    // Stabilized state: temp at 30.0°C -> duty drops
+    for _ in 0..10 {
+        pid.update(30.0, 0.1, 15.0);
+    }
+    let duty_stable = pid.update(30.0, 0.1, 15.0);
+    if duty_stable > 10 {
+        return false;
+    }
+
+    // Target below condensation safety limit (e.g. target requested 10.0°C, safe is 18.0°C)
+    let mut pid_cond = TecPidController::new(2.0, 0.1, 0.5, 10.0);
+    let _ = pid_cond.update(18.0, 0.1, 18.0);
+    // Since current temp is at min_safe (18.0°C), error against clamped effective target should be ~0
+    let duty_cond_clamped = pid_cond.update(18.0, 0.1, 18.0);
+    if duty_cond_clamped > 10 {
+        return false;
+    }
+
+    true
+}
