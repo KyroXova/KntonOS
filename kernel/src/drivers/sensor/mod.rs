@@ -2,9 +2,11 @@
 
 pub mod als;
 pub mod brightness;
+pub mod imu_fusion;
 
 pub use als::*;
 pub use brightness::*;
+pub use imu_fusion::*;
 
 /// Comprehensive verification self-test suite for Handheld Ambient Light Sensor (ALS)
 /// and HDR Auto-Brightness / Contrast Governor.
