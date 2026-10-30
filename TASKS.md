@@ -79,7 +79,13 @@ These branches are managed by their respective developers with granular commit l
 | TASK-KNT-052 | Transparent Huge Pages (THP 2MB) & AMD 3D V-Cache NUMA Topology Awareness | Done | Verified via QEMU harness | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-052-thp-numa.md) |
 | TASK-KNT-053 | Hardware Variable Refresh Rate (VRR / FreeSync) & Dynamic VBLANK Presentation Timing | Done | Verified via QEMU harness | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-053-vrr-timing.md) |
 | TASK-KNT-054 | Native Hardware Display Scanout Rotation & Panel Orientation Subsystem (Portrait Panel Zero-Overhead Scanout) | Done | Verified via QEMU harness | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-054-display-rotation.md) |
+| TASK-KNT-055 | High-Throughput Zero-Copy Shared-Memory IPC Ring (knton-ipc-ring) & Fast UMWAIT/TPAUSE Synchronization | Claimed | TASK-KNT-022 | Ada Chen / dev | [Card](docs/tasks/TASK-KNT-055-ipc-ring.md) |
+| TASK-KNT-056 | PCIe Function-Level Reset (FLR) & GPU Timeout Detection and Recovery (TDR) Subsystem | Claimed | TASK-KNT-050 | Jules Martin / dev | [Card](docs/tasks/TASK-KNT-056-pci-tdr.md) |
+| TASK-KNT-057 | State-Externalized Dual-Ring Resilient Service Partitions & Sub-15ms Crash Recovery Engine | Claimed | TASK-KNT-010 | Priya Nair / dev | [Card](docs/tasks/TASK-KNT-057-service-resilience.md) |
 
 ## Active reservations
 
 - `kernel/src/pkg/`: reserved by ArdenKestrel for TASK-KNT-045.
+- `kernel/src/ipc/ring.rs`, `kernel/src/ipc/umwait.rs`: reserved by Ada Chen for TASK-KNT-055.
+- `kernel/src/drivers/pci/flr.rs`, `kernel/src/drivers/gpu/tdr.rs`: reserved by Jules Martin for TASK-KNT-056.
+- `kernel/src/process/resilience.rs`, `kernel/src/process/checkpoint.rs`: reserved by Priya Nair for TASK-KNT-057.
