@@ -208,6 +208,246 @@ pub struct ThreadCrashContext {
     pub thread_context_size: u32,
 }
 
+// =============================================================================
+// 2. Lockless Crash Dump Writer & Direct NVMe Sector Streamer
+// =============================================================================
+
+pub const MINIDUMP_MAX_STREAMS: usize = 6;
+pub const NVME_SECTOR_SIZE: usize = 512;
+pub const CRASH_DUMP_RESERVED_LBA: u64 = 0x2000; // Dedicated NVMe crash zone
+
+/// Telemetry metadata captured at panic time without memory allocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub struct PanicTelemetryRecord {
+    pub magic: u32,             // 0x544E4B43 ("CKNT")
+    pub panic_code: u32,
+    pub timestamp_us: u64,
+    pub uptime_ticks: u64,
+    pub cr3_pml4_root: u64,
+    pub active_thread_id: u32,
+    pub active_process_id: u32,
+    pub panic_message: [u8; 64],
+}
+
+impl PanicTelemetryRecord {
+    pub fn new(code: u32, cr3: u64, tid: u32, pid: u32, msg: &[u8]) -> Self {
+        let mut msg_buf = [0u8; 64];
+        let n = msg.len().min(63);
+        msg_buf[..n].copy_from_slice(&msg[..n]);
+
+        Self {
+            magic: 0x544E4B43,
+            panic_code: code,
+            timestamp_us: 0,
+            uptime_ticks: 0,
+            cr3_pml4_root: cr3,
+            active_thread_id: tid,
+            active_process_id: pid,
+            panic_message: msg_buf,
+        }
+    }
+}
+
+/// Zero-allocation, lockless crash dump writer operating over a fixed memory buffer.
+pub struct LocklessCrashDumpWriter<'a> {
+    buffer: &'a mut [u8],
+    cursor: usize,
+    stream_dirs: [MinidumpDirectory; MINIDUMP_MAX_STREAMS],
+    stream_count: usize,
+}
+
+impl<'a> LocklessCrashDumpWriter<'a> {
+    pub fn new(buffer: &'a mut [u8]) -> Self {
+        let header_size = core::mem::size_of::<MinidumpHeader>();
+        let dir_size = core::mem::size_of::<MinidumpDirectory>() * MINIDUMP_MAX_STREAMS;
+        let initial_cursor = header_size + dir_size;
+
+        Self {
+            buffer,
+            cursor: initial_cursor,
+            stream_dirs: [MinidumpDirectory::default(); MINIDUMP_MAX_STREAMS],
+            stream_count: 0,
+        }
+    }
+
+    /// Appends raw bytes into the buffer and returns the start RVA.
+    pub fn append_bytes(&mut self, data: &[u8]) -> Result<u32, &'static str> {
+        let rva = self.cursor;
+        if rva + data.len() > self.buffer.len() {
+            return Err("Crash dump buffer capacity exceeded");
+        }
+        self.buffer[rva..rva + data.len()].copy_from_slice(data);
+        self.cursor += data.len();
+        let aligned = (self.cursor + 3) & !3;
+        self.cursor = aligned.min(self.buffer.len());
+        Ok(rva as u32)
+    }
+
+    /// Adds a typed data stream to the minidump directory.
+    pub fn add_stream(&mut self, stream_type: u32, rva: u32, size: u32) -> Result<(), &'static str> {
+        if self.stream_count >= MINIDUMP_MAX_STREAMS {
+            return Err("Max stream count reached");
+        }
+        self.stream_dirs[self.stream_count] = MinidumpDirectory::new(stream_type, rva, size);
+        self.stream_count += 1;
+        Ok(())
+    }
+
+    /// Writes full crash state: CPU context, exception record, stack memory, and telemetry.
+    pub fn capture_crash(
+        &mut self,
+        ctx: &CpuContextRecordX64,
+        exc_code: u32,
+        stack_mem: &[u8],
+        telemetry: &PanicTelemetryRecord,
+    ) -> Result<usize, &'static str> {
+        // 1. Write CPU Context
+        let ctx_bytes = unsafe {
+            core::slice::from_raw_parts(
+                ctx as *const _ as *const u8,
+                core::mem::size_of::<CpuContextRecordX64>(),
+            )
+        };
+        let ctx_rva = self.append_bytes(ctx_bytes)?;
+        self.add_stream(
+            MINIDUMP_STREAM_THREAD_LIST,
+            ctx_rva,
+            ctx_bytes.len() as u32,
+        )?;
+
+        // 2. Write Exception Record
+        let exc = MinidumpExceptionRecord::new(exc_code, ctx.cr2, ctx.rip);
+        let exc_bytes = unsafe {
+            core::slice::from_raw_parts(
+                &exc as *const _ as *const u8,
+                core::mem::size_of::<MinidumpExceptionRecord>(),
+            )
+        };
+        let exc_rva = self.append_bytes(exc_bytes)?;
+        self.add_stream(
+            MINIDUMP_STREAM_EXCEPTION,
+            exc_rva,
+            exc_bytes.len() as u32,
+        )?;
+
+        // 3. Write Stack Memory Slice
+        let stack_rva = self.append_bytes(stack_mem)?;
+        let mem_desc = MemoryDescriptor {
+            start_of_memory_range: ctx.rsp,
+            memory_rva: stack_rva,
+            data_size: stack_mem.len() as u32,
+        };
+        let desc_bytes = unsafe {
+            core::slice::from_raw_parts(
+                &mem_desc as *const _ as *const u8,
+                core::mem::size_of::<MemoryDescriptor>(),
+            )
+        };
+        let desc_rva = self.append_bytes(desc_bytes)?;
+        self.add_stream(
+            MINIDUMP_STREAM_MEMORY_LIST,
+            desc_rva,
+            desc_bytes.len() as u32,
+        )?;
+
+        // 4. Write Telemetry
+        let telem_bytes = unsafe {
+            core::slice::from_raw_parts(
+                telemetry as *const _ as *const u8,
+                core::mem::size_of::<PanicTelemetryRecord>(),
+            )
+        };
+        let telem_rva = self.append_bytes(telem_bytes)?;
+        self.add_stream(
+            MINIDUMP_STREAM_KNT_TELEMETRY,
+            telem_rva,
+            telem_bytes.len() as u32,
+        )?;
+
+        self.finalize()
+    }
+
+    /// Computes checksum and writes Header and Directory Table into the buffer.
+    pub fn finalize(&mut self) -> Result<usize, &'static str> {
+        let total_size = self.cursor;
+        let dir_offset = core::mem::size_of::<MinidumpHeader>();
+        let checksum = Self::compute_adler32(&self.buffer[dir_offset..total_size]);
+
+        let header = MinidumpHeader {
+            signature: MINIDUMP_SIGNATURE,
+            version: MINIDUMP_VERSION,
+            number_of_streams: self.stream_count as u32,
+            stream_directory_rva: dir_offset as u32,
+            checksum,
+            timestamp_sec: 1_700_000_000,
+            flags: 0,
+        };
+
+        let header_bytes = unsafe {
+            core::slice::from_raw_parts(
+                &header as *const _ as *const u8,
+                core::mem::size_of::<MinidumpHeader>(),
+            )
+        };
+        self.buffer[..header_bytes.len()].copy_from_slice(header_bytes);
+
+        let dir_bytes = unsafe {
+            core::slice::from_raw_parts(
+                self.stream_dirs.as_ptr() as *const u8,
+                core::mem::size_of::<MinidumpDirectory>() * self.stream_count,
+            )
+        };
+        self.buffer[dir_offset..dir_offset + dir_bytes.len()].copy_from_slice(dir_bytes);
+
+        Ok(total_size)
+    }
+
+    /// Fast Adler-32 checksum calculation.
+    pub fn compute_adler32(data: &[u8]) -> u32 {
+        let mut a: u32 = 1;
+        let mut b: u32 = 0;
+        for &byte in data {
+            a = (a + byte as u32) % 65521;
+            b = (b + a) % 65521;
+        }
+        (b << 16) | a
+    }
+}
+
+/// Raw NVMe Direct Sector Streaming Engine.
+pub struct RawNvmeCrashStreamer;
+
+impl RawNvmeCrashStreamer {
+    /// Formats and streams dump bytes into 512-byte aligned NVMe sectors.
+    pub fn stream_to_sectors<F>(
+        dump_data: &[u8],
+        base_lba: u64,
+        mut sector_sink: F,
+    ) -> Result<usize, &'static str>
+    where
+        F: FnMut(u64, &[u8; NVME_SECTOR_SIZE]) -> Result<(), &'static str>,
+    {
+        if dump_data.is_empty() {
+            return Err("Empty crash dump data");
+        }
+
+        let num_sectors = (dump_data.len() + NVME_SECTOR_SIZE - 1) / NVME_SECTOR_SIZE;
+        let mut sector_buf = [0u8; NVME_SECTOR_SIZE];
+
+        for i in 0..num_sectors {
+            let start = i * NVME_SECTOR_SIZE;
+            let end = (start + NVME_SECTOR_SIZE).min(dump_data.len());
+            sector_buf.fill(0);
+            sector_buf[..end - start].copy_from_slice(&dump_data[start..end]);
+
+            sector_sink(base_lba + i as u64, &sector_buf)?;
+        }
+
+        Ok(num_sectors)
+    }
+}
+
 // -----------------------------------------------------------------------------
 // Unit Tests for Commit 1
 // -----------------------------------------------------------------------------
@@ -238,5 +478,42 @@ mod tests {
         assert_eq!(exc.exception_code, STATUS_ACCESS_VIOLATION);
         assert_eq!(exc.exception_address, ctx.rip);
         assert_eq!(exc.exception_information[0], ctx.cr2);
+    }
+    #[test]
+    pub fn test_crash_dump_writer_and_nvme_streaming() {
+        let mut buffer = [0u8; 4096];
+        let mut writer = LocklessCrashDumpWriter::new(&mut buffer);
+
+        let mut ctx = CpuContextRecordX64::default();
+        ctx.rip = 0x0040_1000;
+        ctx.rsp = 0x7FFF_0000;
+        ctx.cr3 = 0x0100_0000;
+
+        let stack_data = [0x55u8; 128];
+        let telem = PanicTelemetryRecord::new(
+            STATUS_KERNEL_PANIC,
+            ctx.cr3,
+            1,
+            2,
+            b"Kernel Panic: Page fault in driver",
+        );
+
+        let written = writer.capture_crash(&ctx, STATUS_PAGE_FAULT, &stack_data, &telem).expect("Capture crash failed");
+        assert!(written > 0 && written <= 4096);
+
+        // Verify Header at offset 0
+        let header_ptr = writer.buffer.as_ptr() as *const MinidumpHeader;
+        let header = unsafe { &*header_ptr };
+        assert!(header.is_valid());
+        assert_eq!(header.number_of_streams, 4);
+
+        // Verify Direct NVMe Sector Streaming
+        let mut streamed_sectors = 0;
+        let res = RawNvmeCrashStreamer::stream_to_sectors(&writer.buffer[..written], CRASH_DUMP_RESERVED_LBA, |_lba, _sec| {
+            streamed_sectors += 1;
+            Ok(())
+        });
+        assert!(res.is_ok());
+        assert!(streamed_sectors >= 1);
     }
 }
