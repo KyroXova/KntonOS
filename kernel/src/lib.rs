@@ -219,6 +219,11 @@ pub extern "C" fn kmain() -> ! {
         serial_write_str("[KNT-PANIC] DVFS governor and voltage stepping self-test failed!\r\n");
     }
 
+    // Initialize and verify Kernel-Direct Hardware Video Decode & Zero-Copy Presentation Streamer
+    if !video::test_video_decode_subsystem() {
+        serial_write_str("[KNT-PANIC] Hardware video decode and presentation streamer self-test failed!\r\n");
+    }
+
     // Initialize Virtual File System & mount demo initramfs
     fs::init();
     if !fs::test_vfs_subsystem() {

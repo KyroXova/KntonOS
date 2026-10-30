@@ -484,16 +484,16 @@ impl VideoDecodeQueue {
 /// Hardware-accelerated video decode engine managing codec state, parameter parsing,
 /// and GPU decode command buffer submissions.
 pub struct HardwareVideoDecoder {
-    codec: VideoCodec,
-    h264_sps: Option<H264Sps>,
-    h264_pps: Option<H264Pps>,
-    hevc_sps: Option<HevcSps>,
-    hevc_pps: Option<HevcPps>,
-    av1_seq: Option<Av1SequenceHeader>,
-    queue: VideoDecodeQueue,
-    fence: DecodeFence,
-    next_packet_id: u64,
-    next_fence_value: u64,
+    pub codec: VideoCodec,
+    pub h264_sps: Option<H264Sps>,
+    pub h264_pps: Option<H264Pps>,
+    pub hevc_sps: Option<HevcSps>,
+    pub hevc_pps: Option<HevcPps>,
+    pub av1_seq: Option<Av1SequenceHeader>,
+    pub queue: VideoDecodeQueue,
+    pub fence: DecodeFence,
+    pub next_packet_id: u64,
+    pub next_fence_value: u64,
 }
 
 impl HardwareVideoDecoder {

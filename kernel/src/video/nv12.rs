@@ -860,97 +860,98 @@ impl VideoSurfaceManager {
 
 /// Verify NV12 and P010 surface layout calculations, pitch alignment, and pixel read/write operations.
 pub fn test_nv12_p010_allocator_and_dpb() -> bool {
-    // 1. Test NV12 allocation with 256-byte pitch alignment (e.g. 1920x1080)
+    // 1. Test NV12 allocation with 256-byte pitch alignment (e.g. 160x90 test resolution)
     let mut nv12_surf = match VideoSurface::new(
         0,
         VideoSurfaceFormat::Nv12,
         VideoSurfaceTiling::Linear,
-        1920,
-        1080,
+        160,
+        90,
         256,
     ) {
         Ok(s) => s,
         Err(_) => return false,
     };
 
-    if nv12_surf.luma_pitch != 2048 {
+    if nv12_surf.luma_pitch != 256 {
         return false;
     }
-    if nv12_surf.chroma_pitch != 2048 {
+    if nv12_surf.chroma_pitch != 256 {
         return false;
     }
     if nv12_surf.luma_offset != 0 {
         return false;
     }
-    if nv12_surf.chroma_offset != 2048 * 1080 {
+    if nv12_surf.chroma_offset != 256 * 90 {
         return false;
     }
-    if nv12_surf.total_size != 2048 * 1080 + 2048 * 540 {
+    if nv12_surf.total_size != 256 * 90 + 256 * 45 {
         return false;
     }
 
     // Write and read luma & chroma pixels
-    nv12_surf.write_luma(100, 200, 235); // Video white in limited range
-    nv12_surf.write_luma(101, 200, 16);  // Video black
-    nv12_surf.write_chroma(50, 100, 128, 128); // Neutral chroma
+    nv12_surf.write_luma(50, 40, 235); // Video white in limited range
+    nv12_surf.write_luma(51, 40, 16);  // Video black
+    nv12_surf.write_chroma(25, 20, 128, 128); // Neutral chroma
 
-    if nv12_surf.read_luma(100, 200) != 235 {
+    if nv12_surf.read_luma(50, 40) != 235 {
         return false;
     }
-    if nv12_surf.read_luma(101, 200) != 16 {
+    if nv12_surf.read_luma(51, 40) != 16 {
         return false;
     }
-    if nv12_surf.read_chroma(50, 100) != (128, 128) {
+    if nv12_surf.read_chroma(25, 20) != (128, 128) {
         return false;
     }
 
-    // 2. Test P010 10-bit HDR allocation with 128-byte pitch alignment (e.g. 3840x2160 4K)
+    // 2. Test P010 10-bit HDR allocation with 128-byte pitch alignment (e.g. 160x90)
+    // 160 * 2 = 320 bytes -> aligned to 128-byte boundary = 384 bytes pitch.
     let mut p010_surf = match VideoSurface::new(
         1,
         VideoSurfaceFormat::P010,
         VideoSurfaceTiling::Linear,
-        3840,
-        2160,
+        160,
+        90,
         128,
     ) {
         Ok(s) => s,
         Err(_) => return false,
     };
 
-    if p010_surf.luma_pitch != 7680 {
+    if p010_surf.luma_pitch != 384 {
         return false;
     }
-    if p010_surf.total_size != 7680 * 2160 + 7680 * 1080 {
+    if p010_surf.total_size != 384 * 90 + 384 * 45 {
         return false;
     }
 
     // Test 10-bit dynamic range (0 to 1023)
-    p010_surf.write_luma(500, 800, 940); // 10-bit HDR peak luma
-    p010_surf.write_chroma(250, 400, 512, 600);
+    p010_surf.write_luma(80, 50, 940); // 10-bit HDR peak luma
+    p010_surf.write_chroma(40, 25, 512, 600);
 
-    if p010_surf.read_luma(500, 800) != 940 {
+    if p010_surf.read_luma(80, 50) != 940 {
         return false;
     }
-    if p010_surf.read_chroma(250, 400) != (512, 600) {
+    if p010_surf.read_chroma(40, 25) != (512, 600) {
         return false;
     }
 
     // 3. Test DPB reference frame ring and LRU eviction
     let mut manager = VideoSurfaceManager::new(4); // Max 4 reference frames
 
-    let id0 = match manager.allocate_surface(1280, 720, VideoSurfaceFormat::Nv12, VideoSurfaceTiling::Linear, 128) {
+    let id0 = match manager.allocate_surface(64, 32, VideoSurfaceFormat::Nv12, VideoSurfaceTiling::Linear, 128) {
         Ok(id) => id,
         Err(_) => return false,
     };
-    let id1 = match manager.allocate_surface(1280, 720, VideoSurfaceFormat::Nv12, VideoSurfaceTiling::Linear, 128) {
+    let id1 = match manager.allocate_surface(64, 32, VideoSurfaceFormat::Nv12, VideoSurfaceTiling::Linear, 128) {
         Ok(id) => id,
         Err(_) => return false,
     };
-    let id2 = match manager.allocate_surface(1280, 720, VideoSurfaceFormat::Nv12, VideoSurfaceTiling::Linear, 128) {
+    let id2 = match manager.allocate_surface(64, 32, VideoSurfaceFormat::Nv12, VideoSurfaceTiling::Linear, 128) {
         Ok(id) => id,
         Err(_) => return false,
     };
-    let id3 = match manager.allocate_surface(1280, 720, VideoSurfaceFormat::Nv12, VideoSurfaceTiling::Linear, 128) {
+    let id3 = match manager.allocate_surface(64, 32, VideoSurfaceFormat::Nv12, VideoSurfaceTiling::Linear, 128) {
         Ok(id) => id,
         Err(_) => return false,
     };
@@ -974,7 +975,7 @@ pub fn test_nv12_p010_allocator_and_dpb() -> bool {
     }
 
     // Allocate 5th surface: should trigger eviction of oldest reference (id0)
-    let id4 = match manager.allocate_surface(1280, 720, VideoSurfaceFormat::Nv12, VideoSurfaceTiling::Linear, 128) {
+    let id4 = match manager.allocate_surface(64, 32, VideoSurfaceFormat::Nv12, VideoSurfaceTiling::Linear, 128) {
         Ok(id) => id,
         Err(_) => return false,
     };
