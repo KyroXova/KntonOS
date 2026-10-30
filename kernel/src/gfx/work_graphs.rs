@@ -524,3 +524,243 @@ impl WorkGraphScheduler {
         self.stats = WorkGraphSchedulerStats::default();
     }
 }
+
+/// Status of a completed or halted Work Graph execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkGraphStatus {
+    /// Work graph completed all autonomous tasks successfully.
+    Completed,
+    /// Work graph halted due to reaching maximum recursion limit.
+    RecursionLimitExceeded,
+    /// Work graph halted due to backing store exhaustion or memory error.
+    MemoryExhausted,
+}
+
+impl Default for WorkGraphStatus {
+    fn default() -> Self {
+        Self::Completed
+    }
+}
+
+/// Direct3D 12 `DispatchGraph` command parameters.
+#[derive(Debug, Clone)]
+pub struct DispatchGraphDesc {
+    /// Entry node ID invoked by the host command list.
+    pub entry_node_id: NodeId,
+    /// Initial root records provided to the entry node.
+    pub entry_records: Vec<NodeRecord>,
+    /// Backing store GPU virtual address and size.
+    pub backing_store: WorkGraphBackingStore,
+    /// Maximum recursive expansion depth.
+    pub max_recursion_depth: u32,
+}
+
+/// Execution telemetry and results from a `DispatchGraph` invocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct WorkGraphExecutionResult {
+    /// Total node invocations executed across all stages.
+    pub total_node_invocations: u64,
+    /// Total records generated dynamically by nodes on the GPU.
+    pub total_records_generated: u64,
+    /// Total records consumed by downstream nodes.
+    pub total_records_consumed: u64,
+    /// Maximum recursion depth reached during node expansion.
+    pub max_recursion_depth_reached: u32,
+    /// Final execution status.
+    pub status: WorkGraphStatus,
+}
+
+/// Autonomous GPU Work Graph Execution Engine.
+///
+/// Orchestrates autonomous GPU shader graphs without CPU synchronization:
+/// processes entry points, expands broadcasting/coalescing/threadgroup nodes,
+/// routes dynamic records across edges, tracks recursion depth, and executes
+/// work to completion.
+#[derive(Debug)]
+pub struct WorkGraphEngine {
+    scheduler: WorkGraphScheduler,
+    backing_store: Option<WorkGraphBackingStore>,
+}
+
+impl WorkGraphEngine {
+    /// Creates a new WorkGraphEngine.
+    pub fn new() -> Self {
+        Self {
+            scheduler: WorkGraphScheduler::new(),
+            backing_store: None,
+        }
+    }
+
+    /// Reference to the internal scheduler.
+    #[inline]
+    pub fn scheduler(&self) -> &WorkGraphScheduler {
+        &self.scheduler
+    }
+
+    /// Mutably access the internal scheduler.
+    #[inline]
+    pub fn scheduler_mut(&mut self) -> &mut WorkGraphScheduler {
+        &mut self.scheduler
+    }
+
+    /// Sets the GPU backing store for the work graph.
+    pub fn set_backing_store(&mut self, backing_store: WorkGraphBackingStore) {
+        self.backing_store = Some(backing_store);
+    }
+
+    /// Registers a node descriptor in the work graph.
+    pub fn register_node(&mut self, desc: WorkGraphNodeDescriptor) -> Result<(), WorkGraphError> {
+        self.scheduler.register_node(desc)
+    }
+
+    /// Executes an autonomous Work Graph dispatch (`DispatchGraph`).
+    ///
+    /// Seeds the graph with `entry_records` at `entry_node_id` and processes all
+    /// downstream node expansions on the simulated GPU scheduler until all record
+    /// queues and coalescing buffers are drained.
+    pub fn dispatch_graph(
+        &mut self,
+        desc: &DispatchGraphDesc,
+    ) -> Result<WorkGraphExecutionResult, WorkGraphError> {
+        // 1. Verify backing store
+        if (desc.backing_store.gpu_virtual_address % D3D12_WORK_GRAPH_BACKING_MEMORY_ALIGNMENT) != 0 {
+            return Err(WorkGraphError::UnalignedBackingMemory(desc.backing_store.gpu_virtual_address));
+        }
+        self.backing_store = Some(desc.backing_store);
+
+        // 2. Enqueue initial entry records
+        for record in &desc.entry_records {
+            let mut rec = *record;
+            rec.target_node = desc.entry_node_id;
+            self.scheduler.enqueue_record(rec)?;
+        }
+
+        let mut result = WorkGraphExecutionResult::default();
+        let mut current_depth: u32 = 0;
+
+        // 3. Autonomous GPU execution loop
+        while self.scheduler.has_pending_work() {
+            current_depth += 1;
+            if current_depth > desc.max_recursion_depth {
+                result.status = WorkGraphStatus::RecursionLimitExceeded;
+                result.max_recursion_depth_reached = current_depth;
+                return Ok(result);
+            }
+
+            result.max_recursion_depth_reached = core::cmp::max(
+                result.max_recursion_depth_reached,
+                current_depth,
+            );
+
+            let mut work_done_in_pass = false;
+
+            // Collect node IDs to iterate over
+            let node_ids: Vec<NodeId> = self.scheduler.nodes.iter().map(|n| n.node_id).collect();
+
+            for node_id in node_ids {
+                let node_desc = match self.scheduler.get_node(node_id) {
+                    Some(d) => *d,
+                    None => continue,
+                };
+
+                match node_desc.node_type {
+                    WorkGraphNodeType::Broadcasting => {
+                        // Pop records one by one
+                        while let Some(input_record) = self.scheduler.pop_record(node_id) {
+                            work_done_in_pass = true;
+                            result.total_node_invocations += 1;
+                            result.total_records_consumed += 1;
+                            self.scheduler.stats_mut().broadcasting_dispatches += 1;
+
+                            // Broadcasting node generates downstream records to each valid target
+                            for target in node_desc.output_targets.iter().flatten() {
+                                let mut out_payload = [0u8; MAX_NODE_RECORD_PAYLOAD_BYTES];
+                                let copy_len = core::cmp::min(
+                                    input_record.payload_size as usize,
+                                    node_desc.input_record_size,
+                                );
+                                out_payload[..copy_len].copy_from_slice(&input_record.payload[..copy_len]);
+
+                                let child_record = NodeRecord {
+                                    target_node: *target,
+                                    payload_size: copy_len as u16,
+                                    priority: input_record.priority,
+                                    flags: 0,
+                                    payload: out_payload,
+                                };
+                                self.scheduler.enqueue_record(child_record)?;
+                                result.total_records_generated += 1;
+                            }
+                        }
+                    }
+                    WorkGraphNodeType::Coalescing => {
+                        // Check if ready or if this is a flush
+                        let force_flush = !self.scheduler.rings.iter().any(|r| !r.is_empty());
+                        if let Some(batch) = self.scheduler.pop_coalesced_batch(node_id, force_flush) {
+                            work_done_in_pass = true;
+                            result.total_node_invocations += 1;
+                            result.total_records_consumed += batch.len() as u64;
+                            self.scheduler.stats_mut().coalescing_dispatches += 1;
+
+                            // Coalescing node emits downstream records per target
+                            for target in node_desc.output_targets.iter().flatten() {
+                                let mut out_payload = [0u8; MAX_NODE_RECORD_PAYLOAD_BYTES];
+                                out_payload[0] = batch.len() as u8; // Write batch count into header
+
+                                let child_record = NodeRecord {
+                                    target_node: *target,
+                                    payload_size: core::cmp::max(1, node_desc.input_record_size as u16),
+                                    priority: 0,
+                                    flags: 0,
+                                    payload: out_payload,
+                                };
+                                self.scheduler.enqueue_record(child_record)?;
+                                result.total_records_generated += 1;
+                            }
+                        }
+                    }
+                    WorkGraphNodeType::Threadgroup => {
+                        while let Some(input_record) = self.scheduler.pop_record(node_id) {
+                            work_done_in_pass = true;
+                            result.total_node_invocations += 1;
+                            result.total_records_consumed += 1;
+                            self.scheduler.stats_mut().threadgroup_dispatches += 1;
+
+                            for target in node_desc.output_targets.iter().flatten() {
+                                let child_record = NodeRecord {
+                                    target_node: *target,
+                                    payload_size: input_record.payload_size,
+                                    priority: input_record.priority,
+                                    flags: 0,
+                                    payload: input_record.payload,
+                                };
+                                self.scheduler.enqueue_record(child_record)?;
+                                result.total_records_generated += 1;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !work_done_in_pass {
+                // If no work was done but coalescing buffers still hold un-flushed records, force-flush them
+                let mut flushed_any = false;
+                let c_node_ids: Vec<NodeId> = self.scheduler.coalescing_buffers.iter().map(|b| b.target_node).collect();
+                for c_id in c_node_ids {
+                    if let Some(batch) = self.scheduler.pop_coalesced_batch(c_id, true) {
+                        flushed_any = true;
+                        result.total_node_invocations += 1;
+                        result.total_records_consumed += batch.len() as u64;
+                        self.scheduler.stats_mut().coalescing_dispatches += 1;
+                    }
+                }
+                if !flushed_any {
+                    break;
+                }
+            }
+        }
+
+        result.status = WorkGraphStatus::Completed;
+        Ok(result)
+    }
+}
