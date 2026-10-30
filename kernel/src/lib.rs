@@ -23,6 +23,7 @@ pub mod power;
 pub mod mm;
 pub mod trace;
 pub mod bpf;
+pub mod audio;
 
 pub use memory::ALLOCATOR;
 
