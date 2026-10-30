@@ -6,6 +6,22 @@
 //! - Screen-space Shading Rate Image (SRI) tile map generation and sampling (8x8, 16x16, 32x32)
 //! - Per-draw command list shading rate configuration and multi-source rate resolution.
 
+use alloc::vec;
+use alloc::vec::Vec;
+
+/// Errors returned by the Variable Rate Shading subsystem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VrsError {
+    /// Screen dimensions or tile parameters are invalid (e.g. zero width or height).
+    InvalidDimensions,
+    /// Tile coordinate or screen pixel coordinate is out of bounds.
+    OutOfBounds,
+    /// Feature requested is not supported by the configured VRS tier.
+    TierNotSupported,
+    /// Shading Rate Image buffer length does not match tile dimensions.
+    TileBufferMismatch,
+}
+
 /// Direct3D 12 discrete coarse pixel shading rates.
 ///
 /// Follows D3D12_SHADING_RATE enumeration bitmasks where the lower 2 bits represent
@@ -172,11 +188,9 @@ pub fn combine_shading_rates(
             ShadingRate::from_dimensions(w, h).unwrap_or(ShadingRate::Rate4x4)
         }
         ShadingRateCombiner::Sum => {
-            // In D3D12, Sum multiplies coarse axes (e.g., 2x1 combined with 1x2 yields 2x2),
-            // clamping at maximum 4 on each axis.
+            // In D3D12, Sum multiplies coarse axes, clamping at maximum 4 on each axis.
             let w = core::cmp::min(4, rate_a.width() * rate_b.width());
             let h = core::cmp::min(4, rate_a.height() * rate_b.height());
-            // Round to valid power of two (1, 2, or 4)
             let w_valid = if w >= 4 { 4 } else if w >= 2 { 2 } else { 1 };
             let h_valid = if h >= 4 { 4 } else if h >= 2 { 2 } else { 1 };
             ShadingRate::from_dimensions(w_valid, h_valid).unwrap_or(ShadingRate::Rate4x4)
@@ -228,5 +242,353 @@ impl PerDrawShadingState {
         self.base_rate = rate;
         self.combiner_draw_vs_image = combiners[0];
         self.combiner_image_vs_primitive = combiners[1];
+    }
+}
+
+/// Screen-space Shading Rate Image (SRI) tile map surface.
+///
+/// Divides the screen into tiles of `TileGranularity` (e.g. 8x8, 16x16, 32x32 pixels),
+/// each specifying the coarse shading rate for rasterization in that tile.
+#[derive(Debug, Clone)]
+pub struct ShadingRateImage {
+    /// Viewport width in pixels.
+    width_pixels: u32,
+    /// Viewport height in pixels.
+    height_pixels: u32,
+    /// Tile granularity (8x8, 16x16, 32x32).
+    granularity: TileGranularity,
+    /// Number of horizontal tiles.
+    tiles_x: u32,
+    /// Number of vertical tiles.
+    tiles_y: u32,
+    /// Array of shading rates for each tile (row-major order: index = y * tiles_x + x).
+    tile_rates: Vec<ShadingRate>,
+}
+
+impl ShadingRateImage {
+    /// Creates a new Shading Rate Image initialized to a default shading rate.
+    pub fn new(
+        width_pixels: u32,
+        height_pixels: u32,
+        granularity: TileGranularity,
+        default_rate: ShadingRate,
+    ) -> Result<Self, VrsError> {
+        if width_pixels == 0 || height_pixels == 0 {
+            return Err(VrsError::InvalidDimensions);
+        }
+
+        let tile_size = granularity.pixel_size();
+        let tiles_x = (width_pixels + tile_size - 1) / tile_size;
+        let tiles_y = (height_pixels + tile_size - 1) / tile_size;
+        let total_tiles = (tiles_x as usize)
+            .checked_mul(tiles_y as usize)
+            .ok_or(VrsError::InvalidDimensions)?;
+
+        let tile_rates = vec![default_rate; total_tiles];
+
+        Ok(Self {
+            width_pixels,
+            height_pixels,
+            granularity,
+            tiles_x,
+            tiles_y,
+            tile_rates,
+        })
+    }
+
+    /// Creates a Shading Rate Image from existing tile data.
+    pub fn from_rates(
+        width_pixels: u32,
+        height_pixels: u32,
+        granularity: TileGranularity,
+        rates: Vec<ShadingRate>,
+    ) -> Result<Self, VrsError> {
+        if width_pixels == 0 || height_pixels == 0 {
+            return Err(VrsError::InvalidDimensions);
+        }
+
+        let tile_size = granularity.pixel_size();
+        let tiles_x = (width_pixels + tile_size - 1) / tile_size;
+        let tiles_y = (height_pixels + tile_size - 1) / tile_size;
+        let total_tiles = (tiles_x as usize)
+            .checked_mul(tiles_y as usize)
+            .ok_or(VrsError::InvalidDimensions)?;
+
+        if rates.len() != total_tiles {
+            return Err(VrsError::TileBufferMismatch);
+        }
+
+        Ok(Self {
+            width_pixels,
+            height_pixels,
+            granularity,
+            tiles_x,
+            tiles_y,
+            tile_rates: rates,
+        })
+    }
+
+    /// Viewport width in pixels.
+    #[inline]
+    pub fn width_pixels(&self) -> u32 {
+        self.width_pixels
+    }
+
+    /// Viewport height in pixels.
+    #[inline]
+    pub fn height_pixels(&self) -> u32 {
+        self.height_pixels
+    }
+
+    /// Tile granularity.
+    #[inline]
+    pub fn granularity(&self) -> TileGranularity {
+        self.granularity
+    }
+
+    /// Number of horizontal tiles.
+    #[inline]
+    pub fn tiles_x(&self) -> u32 {
+        self.tiles_x
+    }
+
+    /// Number of vertical tiles.
+    #[inline]
+    pub fn tiles_y(&self) -> u32 {
+        self.tiles_y
+    }
+
+    /// Total number of tiles in the image.
+    #[inline]
+    pub fn total_tiles(&self) -> usize {
+        self.tile_rates.len()
+    }
+
+    /// Retrieves the shading rate for a given tile coordinate `(tile_x, tile_y)`.
+    pub fn get_tile_rate(&self, tile_x: u32, tile_y: u32) -> Option<ShadingRate> {
+        if tile_x >= self.tiles_x || tile_y >= self.tiles_y {
+            return None;
+        }
+        let index = (tile_y as usize) * (self.tiles_x as usize) + (tile_x as usize);
+        self.tile_rates.get(index).copied()
+    }
+
+    /// Sets the shading rate for a given tile coordinate `(tile_x, tile_y)`.
+    pub fn set_tile_rate(&mut self, tile_x: u32, tile_y: u32, rate: ShadingRate) -> bool {
+        if tile_x >= self.tiles_x || tile_y >= self.tiles_y {
+            return false;
+        }
+        let index = (tile_y as usize) * (self.tiles_x as usize) + (tile_x as usize);
+        if let Some(slot) = self.tile_rates.get_mut(index) {
+            *slot = rate;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Samples the shading rate image at a given screen-space pixel coordinate `(x, y)`.
+    pub fn sample_pixel(&self, x: u32, y: u32) -> ShadingRate {
+        let tile_size = self.granularity.pixel_size();
+        let tile_x = core::cmp::min(x / tile_size, self.tiles_x.saturating_sub(1));
+        let tile_y = core::cmp::min(y / tile_size, self.tiles_y.saturating_sub(1));
+        self.get_tile_rate(tile_x, tile_y).unwrap_or(ShadingRate::Rate1x1)
+    }
+
+    /// Encodes all tile rates to raw D3D12 bytes (1 byte per tile, `R8_UINT` format).
+    pub fn to_raw_d3d12_bytes(&self) -> Vec<u8> {
+        self.tile_rates.iter().map(|&r| r.to_d3d12()).collect()
+    }
+
+    /// Fills the entire SRI tile map with a single uniform rate.
+    pub fn fill(&mut self, rate: ShadingRate) {
+        for slot in self.tile_rates.iter_mut() {
+            *slot = rate;
+        }
+    }
+}
+
+/// Statistics and telemetry for VRS rasterization profiling.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct VrsMetrics {
+    /// Total screen pixels represented across all shaded fragments.
+    pub total_pixels_rasterized: u64,
+    /// Effective pixel shader invocations dispatched to hardware execution units.
+    pub effective_shader_invocations: u64,
+    /// Counter for 1x1 full shading fragments.
+    pub count_1x1: u64,
+    /// Counter for 1x2 coarse shading fragments.
+    pub count_1x2: u64,
+    /// Counter for 2x1 coarse shading fragments.
+    pub count_2x1: u64,
+    /// Counter for 2x2 coarse shading fragments.
+    pub count_2x2: u64,
+    /// Counter for 2x4 coarse shading fragments.
+    pub count_2x4: u64,
+    /// Counter for 4x2 coarse shading fragments.
+    pub count_4x2: u64,
+    /// Counter for 4x4 maximum coarse shading fragments.
+    pub count_4x4: u64,
+}
+
+impl VrsMetrics {
+    /// Calculates shader invocation reduction percentage (0 to 99%).
+    ///
+    /// For example, if total_pixels is 1,000,000 and effective_invocations is 450,000,
+    /// the reduction is 55%.
+    pub fn invocation_reduction_percentage(&self) -> u32 {
+        if self.total_pixels_rasterized == 0 {
+            return 0;
+        }
+        let invocations = self.effective_shader_invocations;
+        let total = self.total_pixels_rasterized;
+        if invocations >= total {
+            0
+        } else {
+            let reduction = (total - invocations) * 100 / total;
+            reduction as u32
+        }
+    }
+}
+
+/// Direct3D 12 Variable Rate Shading Tier 2 Engine.
+///
+/// Orchestrates per-draw command list shading rates, screen-space Shading Rate Image (SRI)
+/// tile maps, multi-stage combiner state resolution, and rasterizer shader invocation metrics.
+#[derive(Debug)]
+pub struct VariableRateShadingManager {
+    /// Supported VRS hardware tier.
+    tier: VrsTier,
+    /// Configured tile granularity (8x8, 16x16, 32x32).
+    granularity: TileGranularity,
+    /// Active per-draw shading state (command list).
+    draw_state: PerDrawShadingState,
+    /// Active bound screen-space Shading Rate Image (Tier 2).
+    bound_sri: Option<ShadingRateImage>,
+    /// Profiling telemetry and metrics.
+    metrics: VrsMetrics,
+}
+
+impl VariableRateShadingManager {
+    /// Creates a new VariableRateShadingManager with the specified tier and tile granularity.
+    pub fn new(tier: VrsTier, granularity: TileGranularity) -> Self {
+        Self {
+            tier,
+            granularity,
+            draw_state: PerDrawShadingState::default(),
+            bound_sri: None,
+            metrics: VrsMetrics::default(),
+        }
+    }
+
+    /// Supported VRS tier.
+    #[inline]
+    pub fn tier(&self) -> VrsTier {
+        self.tier
+    }
+
+    /// Supported tile granularity.
+    #[inline]
+    pub fn granularity(&self) -> TileGranularity {
+        self.granularity
+    }
+
+    /// Active per-draw shading state.
+    #[inline]
+    pub fn draw_state(&self) -> &PerDrawShadingState {
+        &self.draw_state
+    }
+
+    /// Sets the per-draw shading rate and combiners (`RSSetShadingRate`).
+    pub fn set_shading_rate(
+        &mut self,
+        rate: ShadingRate,
+        combiners: [ShadingRateCombiner; 2],
+    ) {
+        self.draw_state.set_shading_rate(rate, combiners);
+    }
+
+    /// Binds a screen-space Shading Rate Image (SRI) for Tier 2 rasterization.
+    pub fn bind_shading_rate_image(&mut self, image: ShadingRateImage) -> Result<(), VrsError> {
+        if self.tier < VrsTier::Tier2 {
+            return Err(VrsError::TierNotSupported);
+        }
+        self.bound_sri = Some(image);
+        Ok(())
+    }
+
+    /// Unbinds the current Shading Rate Image.
+    pub fn unbind_shading_rate_image(&mut self) {
+        self.bound_sri = None;
+    }
+
+    /// Reference to the currently bound SRI, if any.
+    pub fn bound_sri(&self) -> Option<&ShadingRateImage> {
+        self.bound_sri.as_ref()
+    }
+
+    /// Resolves the final effective coarse shading rate for a given screen pixel coordinate `(x, y)`,
+    /// taking into account the per-draw base rate, the screen-space SRI, combiners, and optional
+    /// per-primitive SV_ShadingRate.
+    pub fn resolve_shading_rate(
+        &self,
+        screen_x: u32,
+        screen_y: u32,
+        primitive_rate: Option<ShadingRate>,
+    ) -> ShadingRate {
+        let base_rate = self.draw_state.base_rate;
+
+        // Stage 1: Combine per-draw base rate with screen-space SRI tile map rate
+        let stage1_rate = if let Some(sri) = &self.bound_sri {
+            if self.tier >= VrsTier::Tier2 {
+                let image_rate = sri.sample_pixel(screen_x, screen_y);
+                combine_shading_rates(base_rate, image_rate, self.draw_state.combiner_draw_vs_image)
+            } else {
+                base_rate
+            }
+        } else {
+            base_rate
+        };
+
+        // Stage 2: Combine stage 1 result with per-primitive rate (if provided)
+        if let Some(prim_rate) = primitive_rate {
+            if self.tier >= VrsTier::Tier2 {
+                combine_shading_rates(
+                    stage1_rate,
+                    prim_rate,
+                    self.draw_state.combiner_image_vs_primitive,
+                )
+            } else {
+                stage1_rate
+            }
+        } else {
+            stage1_rate
+        }
+    }
+
+    /// Records rasterization of a coarse pixel fragment into profiling metrics.
+    pub fn record_rasterization(&mut self, rate: ShadingRate) {
+        self.metrics.total_pixels_rasterized += rate.pixel_area() as u64;
+        self.metrics.effective_shader_invocations += 1;
+        match rate {
+            ShadingRate::Rate1x1 => self.metrics.count_1x1 += 1,
+            ShadingRate::Rate1x2 => self.metrics.count_1x2 += 1,
+            ShadingRate::Rate2x1 => self.metrics.count_2x1 += 1,
+            ShadingRate::Rate2x2 => self.metrics.count_2x2 += 1,
+            ShadingRate::Rate2x4 => self.metrics.count_2x4 += 1,
+            ShadingRate::Rate4x2 => self.metrics.count_4x2 += 1,
+            ShadingRate::Rate4x4 => self.metrics.count_4x4 += 1,
+        }
+    }
+
+    /// Active telemetry metrics.
+    #[inline]
+    pub fn metrics(&self) -> &VrsMetrics {
+        &self.metrics
+    }
+
+    /// Resets telemetry metrics.
+    pub fn reset_metrics(&mut self) {
+        self.metrics = VrsMetrics::default();
     }
 }
